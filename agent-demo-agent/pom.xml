@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.agentdemo</groupId>
+        <artifactId>agent-demo</artifactId>
+        <version>1.0.0</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>agent-demo-agent</artifactId>
+    <name>agent-demo-agent</name>
+    <description>Agent 核心 - 单 Agent、多 Agent、工作流编排</description>
+
+    <dependencies>
+        <!-- 内部模块 -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-common</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-llm</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-tools</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-memory</artifactId>
+        </dependency>
+
+        <!-- LangChain4j（AiServices、@Tool 等） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+
+        <!-- 测试 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

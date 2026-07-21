@@ -1,0 +1,131 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- BOM 独立存在，不继承根 pom，避免循环依赖 -->
+    <groupId>com.agentdemo</groupId>
+    <artifactId>agent-demo-bom</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>agent-demo-bom</name>
+    <description>物料清单 - 统一管理所有第三方依赖版本</description>
+
+    <!-- 版本属性集中声明 -->
+    <properties>
+        <!-- LangChain4j 版本管理：
+             核心模块（langchain4j / langchain4j-open-ai）为 GA 稳定版
+             集成模块（langchain4j-milvus / langchain4j-mcp 等）为 beta 版，版本线独立 -->
+        <langchain4j.version>1.17.2</langchain4j.version>
+        <langchain4j.beta.version>1.17.2-beta27</langchain4j.beta.version>
+        <milvus.version>2.4.3</milvus.version>
+        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <springdoc.version>2.5.0</springdoc.version>
+        <hutool.version>5.8.27</hutool.version>
+    </properties>
+
+    <!-- 集中管理所有依赖版本 -->
+    <dependencyManagement>
+        <dependencies>
+            <!-- 项目内部模块 -->
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-llm</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-tools</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-memory</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-rag</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-mcp</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-agent</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-app</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-web</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- LangChain4j 全家桶 -->
+            <!-- 核心模块（GA 稳定版） -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-open-ai</artifactId>
+                <version>${langchain4j.version}</version>
+            </dependency>
+            <!-- 集成模块（beta 版，版本线独立于核心模块） -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-milvus</artifactId>
+                <version>${langchain4j.beta.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-mcp</artifactId>
+                <version>${langchain4j.beta.version}</version>
+            </dependency>
+
+            <!-- Milvus 向量数据库 -->
+            <dependency>
+                <groupId>io.milvus</groupId>
+                <artifactId>milvus-sdk-java</artifactId>
+                <version>${milvus.version}</version>
+            </dependency>
+
+            <!-- MyBatis-Plus -->
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
+                <version>${mybatis-plus.version}</version>
+            </dependency>
+
+            <!-- Springdoc OpenAPI -->
+            <dependency>
+                <groupId>org.springdoc</groupId>
+                <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+                <version>${springdoc.version}</version>
+            </dependency>
+
+            <!-- Hutool 工具集 -->
+            <dependency>
+                <groupId>cn.hutool</groupId>
+                <artifactId>hutool-all</artifactId>
+                <version>${hutool.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

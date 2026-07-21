@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 父 POM：Spring Boot -->
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.2.5</version>
+        <relativePath/>
+    </parent>
+
+    <!-- 项目坐标 -->
+    <groupId>com.agentdemo</groupId>
+    <artifactId>agent-demo</artifactId>
+    <version>1.0.0</version>
+    <packaging>pom</packaging>
+    <name>agent-demo</name>
+    <description>AI Agent 示例项目 - 基于 Java + LangChain4j + 火山引擎</description>
+
+    <!-- 子模块声明 -->
+    <modules>
+        <module>agent-demo-bom</module>
+        <module>agent-demo-common</module>
+        <module>agent-demo-llm</module>
+        <module>agent-demo-tools</module>
+        <module>agent-demo-memory</module>
+        <module>agent-demo-rag</module>
+        <module>agent-demo-mcp</module>
+        <module>agent-demo-agent</module>
+        <module>agent-demo-app</module>
+        <module>agent-demo-web</module>
+        <module>agent-demo-bootstrap</module>
+    </modules>
+
+    <!-- 全局属性 -->
+    <properties>
+        <java.version>17</java.version>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+        <!-- 第三方依赖版本（与 BOM 保持一致，实际版本由 BOM 统一管理） -->
+        <langchain4j.version>1.17.2</langchain4j.version>
+        <langchain4j.beta.version>1.17.2-beta27</langchain4j.beta.version>
+        <milvus.version>2.4.3</milvus.version>
+        <mybatis-plus.version>3.5.7</mybatis-plus.version>
+        <springdoc.version>2.5.0</springdoc.version>
+        <hutool.version>5.8.27</hutool.version>
+    </properties>
+
+    <!-- 依赖管理：引入 BOM -->
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-bom</artifactId>
+                <version>${project.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <!-- 构建配置 -->
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <configuration>
+                        <excludes>
+                            <exclude>
+                                <groupId>org.springframework.boot</groupId>
+                                <artifactId>spring-boot-devtools</artifactId>
+                            </exclude>
+                        </excludes>
+                    </configuration>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+    </build>
+
+    <!-- 仓库配置 -->
+    <repositories>
+        <repository>
+            <id>spring-milestones</id>
+            <name>Spring Milestones</name>
+            <url>https://repo.spring.io/milestone</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+</project>

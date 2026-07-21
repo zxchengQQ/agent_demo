@@ -1,0 +1,63 @@
+# AI Agent 示例项目主配置
+# 业务含义：通用配置，所有环境共享
+
+spring:
+  application:
+    name: agent-demo
+  profiles:
+    active: dev  # 默认开发环境
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+    time-zone: Asia/Shanghai
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+  tomcat:
+    connection-timeout: 300000  # SSE 流式接口超时 5 分钟
+
+# 火山引擎方舟 Coding Plan 配置
+# 业务含义：使用 Coding Plan 专用地址（/api/coding/v3）按次计费，非标准 /api/v3 按 Token 计费
+ark:
+  coding-plan:
+    base-url: https://ark.cn-beijing.volces.com/api/coding/v3
+    api-key: ${ARK_API_KEY}  # 从环境变量注入，禁止硬编码
+    default-model: doubao-seed-2.0-code
+    models:
+      chat: doubao-seed-2.0-pro
+      code: doubao-seed-2.0-code
+      lite: doubao-seed-2.0-lite
+    timeout: 60s
+    max-retries: 3
+    temperature: 0.7
+
+# Agent 配置
+agent:
+  max-iterations: 10
+  chat-memory-window-size: 20
+  default-system-prompt: "你是一个有用的 AI 助手，可以调用工具帮助用户解决问题。当问题需要计算、查询时间、获取网络信息时，请主动调用相应工具。"
+  enable-logging: true
+  file-allowed-dir: ./data
+
+# 会话配置
+session:
+  timeout-minutes: 30
+
+# Springdoc Swagger
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    enabled: true
+
+# 日志配置
+logging:
+  level:
+    root: INFO
+    com.agentdemo: DEBUG
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] [%X{traceId}] %-5level %logger{36} - %msg%n"

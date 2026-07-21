@@ -1,0 +1,20 @@
+# 生产环境配置
+# 业务含义：使用 Pro 模型保证质量，简洁日志，关闭 devtools
+
+spring:
+  devtools:
+    restart:
+      enabled: false
+
+ark:
+  coding-plan:
+    default-model: doubao-seed-2.0-pro
+
+logging:
+  level:
+    com.agentdemo: INFO
+    dev.langchain4j: WARN
+
+springdoc:
+  swagger-ui:
+    enabled: false  # 生产环境关闭 Swagger

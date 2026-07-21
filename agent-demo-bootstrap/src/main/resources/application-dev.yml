@@ -1,0 +1,16 @@
+# 开发环境配置
+# 业务含义：使用 Lite 模型节省套餐额度，详细日志便于调试
+
+spring:
+  devtools:
+    restart:
+      enabled: true
+
+ark:
+  coding-plan:
+    default-model: doubao-seed-2.0-lite
+
+logging:
+  level:
+    com.agentdemo: DEBUG
+    dev.langchain4j: DEBUG
