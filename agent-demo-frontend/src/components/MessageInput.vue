@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   isStreaming: boolean;
-}>();
+  /** 是否开启深度思考（CR-001，AC-021），可选，默认 false 向前兼容 */
+  enableThinking?: boolean;
+}>(), {
+  enableThinking: false,
+});
 
 const emit = defineEmits<{
   send: [message: string];
   stop: [];
+  /** 切换深度思考开关（CR-001，AC-021） */
+  toggleThinking: [];
 }>();
 
 const inputText = ref('');
@@ -44,9 +50,9 @@ function handleSend() {
   emit('send', msg);
 }
 
-/** Ctrl/Cmd + Enter 发送 */
+/** Enter 发送，Shift+Enter 换行 */
 function handleKeydown(e: KeyboardEvent) {
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     handleSend();
   }
@@ -60,7 +66,7 @@ function handleKeydown(e: KeyboardEvent) {
         ref="textareaRef"
         v-model="inputText"
         class="textarea"
-        :placeholder="isStreaming ? '生成中...' : '输入消息，Ctrl+Enter 发送'"
+        :placeholder="isStreaming ? '生成中...' : '输入消息，Enter 发送，Shift+Enter 换行'"
         :disabled="isStreaming"
         rows="1"
         @input="autoResize"
@@ -87,6 +93,14 @@ function handleKeydown(e: KeyboardEvent) {
 
     <!-- 字符计数 + 超长提示 -->
     <div class="input-footer">
+      <!-- 深度思考 toggle（CR-001，AC-021）：开启时高亮，点击切换状态 -->
+      <button
+        class="btn-thinking"
+        :class="{ active: props.enableThinking }"
+        @click="emit('toggleThinking')"
+      >
+        🧠 深度思考
+      </button>
       <span v-if="isOverLimit" class="char-warn">
         消息长度不能超过 {{ MAX_LENGTH }} 字符
       </span>
@@ -180,11 +194,36 @@ function handleKeydown(e: KeyboardEvent) {
 
 .input-footer {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
   align-items: center;
   gap: var(--spacing-md);
   margin-top: var(--spacing-xs);
   min-height: 18px;
+}
+
+/* 深度思考 toggle 按钮（CR-001，AC-021） */
+.btn-thinking {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-thinking:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* 开启时高亮 */
+.btn-thinking.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
 }
 
 .char-warn {

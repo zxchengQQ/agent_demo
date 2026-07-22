@@ -8,6 +8,14 @@ import MessageInput from './MessageInput.vue';
 
 const store = useSessionStore();
 const isStreaming = ref(false);
+
+/**
+ * 深度思考开关状态（CR-001，AC-021）
+ * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，影响下一条消息的 streamChat 调用参数。
+ * 状态在当前会话内保持，切换会话时不影响其他会话。
+ */
+const enableThinking = ref(false);
+
 let abortController: AbortController | null = null;
 
 /** 当前会话的消息列表 */
@@ -42,6 +50,7 @@ async function sendMessage(message: string) {
     content: message,
     createdAt: Date.now(),
     status: 'complete',
+    reasoning: '',
   });
 
   // 创建助手消息占位（流式追加内容）
@@ -52,6 +61,7 @@ async function sendMessage(message: string) {
     content: '',
     createdAt: Date.now(),
     status: 'incomplete',
+    reasoning: '',
   });
 
   // 流式调用
@@ -62,6 +72,7 @@ async function sendMessage(message: string) {
     await streamChat(
       sessionId,
       message,
+      enableThinking.value,
       {
         // AC-010: 透明续聊 - 后端返回新 sessionId 时更新关联
         onSession: (newSessionId: string) => {
@@ -70,6 +81,10 @@ async function sendMessage(message: string) {
         // AC-020: 逐字追加
         onToken: (token: string) => {
           store.appendContent(assistantMsgId, token);
+        },
+        // CR-001: 推理过程流式展示（AC-022），追加到助手消息 reasoning 字段
+        onReasoning: (reasoning: string) => {
+          store.appendReasoning(assistantMsgId, reasoning);
         },
         // 流式完成
         onDone: () => {
@@ -114,8 +129,10 @@ function stopGeneration() {
     <!-- 输入区 -->
     <MessageInput
       :is-streaming="isStreaming"
+      :enable-thinking="enableThinking"
       @send="sendMessage"
       @stop="stopGeneration"
+      @toggle-thinking="enableThinking = !enableThinking"
     />
   </div>
 </template>

@@ -21,6 +21,12 @@ export interface Message {
   createdAt: number;
   /** 消息状态（incomplete 用于流式中断标记，AC-012） */
   status: MessageStatus;
+  /**
+   * 推理内容（CR-001 新增，AC-022/AC-024）
+   * 业务含义：开启深度思考时，模型推理过程随消息持久化到 localStorage，历史回看可见。
+   * 可选字段，向前兼容旧数据（未开启思考的旧消息 reasoning 为 undefined）。
+   */
+  reasoning?: string;
 }
 
 /** 会话纪录（localStorage 存储单元） */
@@ -43,6 +49,12 @@ export interface StreamCallbacks {
   onSession: (sessionId: string) => void;
   /** 收到 token 事件（逐字显示，AC-020） */
   onToken: (token: string) => void;
+  /**
+   * 收到 reasoning 事件（CR-001 新增，AC-022）
+   * 业务含义：开启深度思考时，模型推理片段逐字追加到推理区块。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onReasoning?: (reasoning: string) => void;
   /** 收到 done 事件（流式完成） */
   onDone: (duration: number) => void;
   /** 收到 error 事件（错误提示，AC-012/AC-013） */

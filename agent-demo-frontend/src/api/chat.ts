@@ -16,12 +16,14 @@ const API_BASE = '/api/agent';
  *
  * @param sessionId 会话 ID（首次为空字符串）
  * @param message 用户消息
+ * @param enableThinking 是否开启深度思考（CR-001，AC-021），后端据此分流是否推送 reasoning 事件
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
  */
 export async function streamChat(
   sessionId: string,
   message: string,
+  enableThinking: boolean,
   callbacks: StreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
@@ -30,7 +32,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message }),
+      body: JSON.stringify({ sessionId, message, enableThinking }),
       signal,
     });
   } catch {
@@ -46,31 +48,43 @@ export async function streamChat(
     return;
   }
 
-  // 解析 SSE 流
+  // 解析 SSE 流（按 SSE 规范：事件以空行分隔，多行 data: 用 \n 拼接）
+  // 不 trim 内容以保留 Markdown 语法所需的空格（AC-023 回归修复）
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let currentEvent = '';
+  let dataLines: string[] = [];
 
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
-      // 累积到 buffer，按行处理（保留最后不完整行）
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
 
-      for (const line of lines) {
-        if (line.startsWith('event:')) {
+      for (const rawLine of lines) {
+        const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+        if (line === '') {
+          // 空行 = 事件分隔符，派发累积的事件
+          if (currentEvent && dataLines.length > 0) {
+            handleSseEvent(currentEvent, dataLines.join('\n'), callbacks);
+          }
+          currentEvent = '';
+          dataLines = [];
+        } else if (line.startsWith('event:')) {
           currentEvent = line.slice(6).trim();
         } else if (line.startsWith('data:')) {
-          const data = line.slice(5).trim();
-          handleSseEvent(currentEvent, data, callbacks);
-          currentEvent = '';
+          // Spring SseEmitter 输出 data: 后不加空格，直接取内容（保留 Markdown 所需空格）
+          dataLines.push(line.slice(5));
         }
       }
+    }
+    // 流结束后派发最后一个未分隔的事件
+    if (currentEvent && dataLines.length > 0) {
+      handleSseEvent(currentEvent, dataLines.join('\n'), callbacks);
     }
   } catch {
     // AC-012: 流式过程网络断开（非主动 abort）
@@ -92,6 +106,10 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
     case 'token':
       // AC-020: 逐字显示
       callbacks.onToken(data);
+      break;
+    case 'reasoning':
+      // CR-001: 推理过程流式展示（AC-022），可选链兼容未注册 onReasoning 的旧调用方
+      callbacks.onReasoning?.(data);
       break;
     case 'done':
       callbacks.onDone(Number(data));

@@ -1,6 +1,6 @@
 package com.agentdemo.web.controller;
 
-import com.agentdemo.agent.core.BaseAgent;
+import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.common.result.Result;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
@@ -35,12 +35,17 @@ public class AgentController {
 
     private static final Logger log = LoggerFactory.getLogger(AgentController.class);
 
-    private final BaseAgent agent;
+    /**
+     * Agent 实例（CR-001 调整：由 BaseAgent 接口改为 SimpleAgent 具体类型）
+     * 业务含义：SimpleAgent 实现 BaseAgent 接口，同时提供 chat/chatStream（原路径）和
+     * chatThinkingStream（CR-001 思考路径）。注入具体类型避免 BaseAgent 类型多候选注入歧义。
+     */
+    private final SimpleAgent simpleAgent;
     private final SessionManager sessionManager;
     private final ChatMemoryManager memoryManager;
 
-    public AgentController(BaseAgent agent, SessionManager sessionManager, ChatMemoryManager memoryManager) {
-        this.agent = agent;
+    public AgentController(SimpleAgent simpleAgent, SessionManager sessionManager, ChatMemoryManager memoryManager) {
+        this.simpleAgent = simpleAgent;
         this.sessionManager = sessionManager;
         this.memoryManager = memoryManager;
     }
@@ -69,7 +74,7 @@ public class AgentController {
 
         // 调用 Agent（ReAct 循环由 LangChain4j 自动处理）
         long start = System.currentTimeMillis();
-        String response = agent.chat(sessionId, request.getMessage());
+        String response = simpleAgent.chat(sessionId, request.getMessage());
         long duration = System.currentTimeMillis() - start;
 
         // 记录助手回复到记忆
@@ -121,27 +126,54 @@ public class AgentController {
         StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
 
-        // 流式调用 Agent，注册回调
-        agent.chatStream(effectiveSessionId, request.getMessage())
-                .onPartialResponse(token -> {
-                    sendEvent(emitter, "token", token);
-                    fullResponse.append(token);
-                })
-                .onCompleteResponse(response -> {
-                    // 业务含义：流式完成后，将完整助手回复写入记忆，保证下一轮对话有上下文
-                    memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
-                    long duration = System.currentTimeMillis() - start;
-                    sendEvent(emitter, "done", duration);
-                    emitter.complete();
-                })
-                .onError(error -> {
-                    // 业务含义：流式过程中的异常无法走 GlobalExceptionHandler（响应已开始），
-                    // 通过 SSE error 事件通知前端
-                    log.error("流式对话异常: sessionId={}", effectiveSessionId, error);
-                    sendEvent(emitter, "error", "生成回复时发生错误，请重试");
-                    emitter.complete();
-                })
-                .start();
+        // 业务含义：根据 enableThinking 分流（CR-001 新增）
+        // - true：走思考流式路径，推送 reasoning + token 事件
+        // - false/null：走原 agent.chatStream 路径，仅推送 token 事件（零回归）
+        if (Boolean.TRUE.equals(request.getEnableThinking())) {
+            // 思考流式路径（CR-001 新增）
+            simpleAgent.chatThinkingStream(effectiveSessionId, request.getMessage())
+                    .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
+                    .onPartialResponse(token -> {
+                        sendEvent(emitter, "token", token);
+                        fullResponse.append(token);
+                    })
+                    .onComplete(fullResponseStr -> {
+                        // 业务含义：流式完成后，将完整助手回复写入记忆（不含推理内容），保证下一轮对话有上下文
+                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
+                        long duration = System.currentTimeMillis() - start;
+                        sendEvent(emitter, "done", duration);
+                        emitter.complete();
+                    })
+                    .onError(error -> {
+                        // 业务含义：思考流式过程中的异常通过 SSE error 事件通知前端
+                        log.error("思考流式对话异常: sessionId={}", effectiveSessionId, error);
+                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
+                        emitter.complete();
+                    })
+                    .start();
+        } else {
+            // 原路径（零回归）
+            simpleAgent.chatStream(effectiveSessionId, request.getMessage())
+                    .onPartialResponse(token -> {
+                        sendEvent(emitter, "token", token);
+                        fullResponse.append(token);
+                    })
+                    .onCompleteResponse(response -> {
+                        // 业务含义：流式完成后，将完整助手回复写入记忆，保证下一轮对话有上下文
+                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
+                        long duration = System.currentTimeMillis() - start;
+                        sendEvent(emitter, "done", duration);
+                        emitter.complete();
+                    })
+                    .onError(error -> {
+                        // 业务含义：流式过程中的异常无法走 GlobalExceptionHandler（响应已开始），
+                        // 通过 SSE error 事件通知前端
+                        log.error("流式对话异常: sessionId={}", effectiveSessionId, error);
+                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
+                        emitter.complete();
+                    })
+                    .start();
+        }
 
         return emitter;
     }

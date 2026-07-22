@@ -41,4 +41,13 @@ public class ChatRequest {
      * 扩展参数
      */
     private Map<String, Object> options;
+
+    /**
+     * 是否开启深度思考（CR-001 新增），默认 false
+     * <p>
+     * 业务含义：前端"深度思考"开关状态，true 时后端走思考流式路径（推送 reasoning + token 事件），
+     * null/false 时走原有流式路径（仅 token 事件，零回归）。
+     * </p>
+     */
+    private Boolean enableThinking;
 }

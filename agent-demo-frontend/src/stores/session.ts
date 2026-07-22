@@ -158,6 +158,26 @@ export const useSessionStore = defineStore('session', {
     },
 
     /**
+     * 追加推理内容到指定消息（CR-001 新增，AC-024 推理过程持久化）
+     * 业务含义：开启深度思考时，模型推理片段逐字追加到 reasoning 字段，
+     * 随消息持久化到 localStorage，历史回看可见。
+     * reasoning 为可选字段，旧数据可能为 undefined，首次追加时初始化为空字符串。
+     */
+    appendReasoning(messageId: string, reasoning: string) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          if (msg.reasoning === undefined) {
+            msg.reasoning = '';
+          }
+          msg.reasoning += reasoning;
+          storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
      * 标记消息完成
      */
     markComplete(messageId: string) {

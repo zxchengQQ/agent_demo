@@ -2,15 +2,23 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.BaseAgent;
+import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.common.enums.AgentType;
+import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolRegistry;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * 单 Agent 实现
@@ -115,6 +123,54 @@ public class SimpleAgent implements BaseAgent {
             log.info("Agent 流式对话: sessionId={}, message={}", sessionId, message);
         }
         return getDelegate().chatStream(sessionId, message);
+    }
+
+    /**
+     * 思考流式对话（CR-001 新增）
+     * <p>
+     * 业务含义：区别于 chatStream（基于 LangChain4j AiServices 自动处理记忆与工具），
+     * 本方法手动组装 ChatMessage（系统提示词 + 历史消息 + 当前用户消息），
+     * 委托给 ArkThinkingStreamingChatModel 直连方舟 API，解析 reasoning_content 与 content 分别回调。
+     * </p>
+     * <p>
+     * 调用方：web 层 AgentController.chatStream（当 enableThinking=true 时使用）
+     * </p>
+     *
+     * @param sessionId 会话 ID
+     * @param message   用户消息
+     * @return ThinkingTokenStream 思考流式令牌（需调用 start() 启动）
+     */
+    public ThinkingTokenStream chatThinkingStream(String sessionId, String message) {
+        if (agentConfig.isEnableLogging()) {
+            log.info("Agent 思考流式对话: sessionId={}, message={}", sessionId, message);
+        }
+
+        // 业务含义：手动组装消息列表（系统提示词 + 历史消息 + 当前用户消息）
+        // 区别于 AiServices 自动注入记忆，此处需显式拼接以保证多轮上下文完整传递给方舟 API
+        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        List<ChatMessage> messages = buildMessagesWithMemory(sessionId, message);
+
+        return new ArkThinkingTokenStream(thinkingModel, messages);
+    }
+
+    /**
+     * 组装带记忆的消息列表（CR-001 新增）
+     * 业务含义：系统提示词 + 会话历史消息 + 当前用户消息，供思考流式路径使用。
+     * 消息顺序与方舟 API 多轮对话约定一致：system -> 历史 user/assistant 交替 -> 当前 user。
+     *
+     * @param sessionId 会话 ID
+     * @param message   当前用户消息
+     * @return 组装后的消息列表
+     */
+    private List<ChatMessage> buildMessagesWithMemory(String sessionId, String message) {
+        List<ChatMessage> messages = new ArrayList<>();
+        // 系统提示词（角色设定）
+        messages.add(SystemMessage.from(agentConfig.getDefaultSystemPrompt()));
+        // 历史消息（多轮上下文，由 ChatMemoryManager 维护窗口）
+        messages.addAll(memoryManager.getMemory(sessionId).messages());
+        // 当前用户消息
+        messages.add(UserMessage.from(message));
+        return messages;
     }
 
     /**

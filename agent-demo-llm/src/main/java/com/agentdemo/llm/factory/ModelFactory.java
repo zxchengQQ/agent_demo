@@ -44,6 +44,12 @@ public class ModelFactory {
     private final ConcurrentHashMap<String, StreamingChatModel> streamingModelCache = new ConcurrentHashMap<>();
 
     /**
+     * 思考流式模型缓存（key: 模型名称）
+     * 业务含义：ArkThinkingStreamingChatModel 创建成本较高（含 HTTP 连接配置），按 modelName 缓存复用（BR-LLM-004）
+     */
+    private final ConcurrentHashMap<String, ArkThinkingStreamingChatModel> thinkingStreamingModelCache = new ConcurrentHashMap<>();
+
+    /**
      * Embedding 模型缓存（单例，volatile 保证可见性）
      */
     private volatile EmbeddingModel embeddingModel;
@@ -93,6 +99,43 @@ public class ModelFactory {
      */
     public StreamingChatModel getDefaultStreamingChatModel() {
         return getStreamingChatModel(null);
+    }
+
+    /**
+     * 获取默认思考流式对话模型（CR-001 新增）
+     * <p>
+     * 业务含义：返回 ArkThinkingStreamingChatModel 实例，用于深度思考模式下的流式输出。
+     * 该模型直连方舟 Chat Completions API，解析 SSE 流中的 reasoning_content 与 content，
+     * 分别通过 ThinkingStreamHandler 回调暴露推理内容与正式回复。
+     * </p>
+     * <p>
+     * 遵循 BR-LLM-004：按 modelName 缓存复用，避免重复创建实例。
+     * 遵循 BR-LLM-001：API Key 从 ArkProperties 注入，禁止硬编码。
+     * </p>
+     *
+     * @return ArkThinkingStreamingChatModel 实例
+     * @throws BusinessException API Key 未配置时抛出（LLM_API_KEY_INVALID）
+     */
+    public ArkThinkingStreamingChatModel getThinkingStreamingChatModel() {
+        // 业务含义：用默认模型名作为缓存键（scene=null 时 ArkProperties 回退到 defaultModel）
+        String modelName = properties.getModelName(null);
+        return thinkingStreamingModelCache.computeIfAbsent(modelName, this::createThinkingStreamingChatModel);
+    }
+
+    /**
+     * 创建思考流式模型实例（CR-001 新增）
+     * 业务含义：基于 ArkProperties 配置构造 ArkThinkingStreamingChatModel，baseUrl 指向 Coding Plan 专用地址（BR-LLM-002）
+     *
+     * @param modelName 模型名称
+     * @return ArkThinkingStreamingChatModel 实例
+     */
+    private ArkThinkingStreamingChatModel createThinkingStreamingChatModel(String modelName) {
+        validateApiKey();
+        return new ArkThinkingStreamingChatModel(
+                properties.getBaseUrl(),
+                properties.getApiKey(),
+                modelName,
+                properties.getTimeout());
     }
 
     /**

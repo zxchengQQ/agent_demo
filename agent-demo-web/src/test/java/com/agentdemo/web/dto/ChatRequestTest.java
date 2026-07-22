@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -71,5 +72,42 @@ class ChatRequestTest {
         Set<ConstraintViolation<ChatRequest>> violations = validator.validate(request);
 
         assertFalse(violations.isEmpty(), "空消息应被 @NotBlank 拦截");
+    }
+
+    // ========== CR-001 新增：enableThinking 字段测试 ==========
+
+    /**
+     * 验证标准 2：不传 enableThinking 时字段为 null
+     * 业务含义：enableThinking 为可选字段，默认 null（Controller 兜底为 false）
+     */
+    @Test
+    void enableThinkingShouldBeNullByDefault() {
+        ChatRequest request = new ChatRequest();
+
+        assertNull(request.getEnableThinking(), "不传 enableThinking 时应为 null");
+    }
+
+    /**
+     * 验证标准 3：传 enableThinking=true 时字段为 true
+     * 业务含义：前端开启深度思考开关时携带 enableThinking=true
+     */
+    @Test
+    void enableThinkingShouldBeTrueWhenSet() {
+        ChatRequest request = new ChatRequest();
+        request.setEnableThinking(true);
+
+        assertTrue(request.getEnableThinking(), "传 true 时应为 true");
+    }
+
+    /**
+     * 验证标准 1：ChatRequest 包含 enableThinking 字段（通过 setter/getter 可访问）
+     * 业务含义：DTO 必须支持 enableThinking 字段的读写
+     */
+    @Test
+    void enableThinkingShouldBeAccessibleViaSetter() {
+        ChatRequest request = new ChatRequest();
+        request.setEnableThinking(false);
+
+        assertFalse(request.getEnableThinking(), "setEnableThinking(false) 后应为 false");
     }
 }

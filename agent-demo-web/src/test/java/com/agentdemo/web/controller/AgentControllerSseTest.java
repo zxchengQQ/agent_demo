@@ -1,6 +1,7 @@
 package com.agentdemo.web.controller;
 
-import com.agentdemo.agent.core.BaseAgent;
+import com.agentdemo.agent.core.ThinkingTokenStream;
+import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.web.dto.ChatRequest;
@@ -15,6 +16,8 @@ import org.springframework.test.web.servlet.MockMvc;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -23,8 +26,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /**
  * AgentController SSE 流式接口测试
  * <p>
- * 验证标准来源：T-04 验证标准
- * 关联 AC：AC-002、AC-014、AC-015
+ * 验证标准来源：T-04 验证标准（CR-001 扩展：enableThinking 分流）
+ * 关联 AC：AC-002、AC-014、AC-015、AC-021、AC-022
  * </p>
  */
 @WebMvcTest(AgentController.class)
@@ -34,7 +37,7 @@ class AgentControllerSseTest {
     MockMvc mockMvc;
 
     @MockBean
-    BaseAgent agent;
+    SimpleAgent simpleAgent;
     @MockBean
     SessionManager sessionManager;
     @MockBean
@@ -75,12 +78,69 @@ class AgentControllerSseTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(agent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"message\":\"你好\"}"))
             .andExpect(status().isOk())
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
+    }
+
+    // ========== CR-001 新增：enableThinking 分流测试 ==========
+
+    /**
+     * 验证标准 1：请求 enableThinking=true 时，应走思考流式路径（调用 simpleAgent.chatThinkingStream）
+     * 业务含义：开启深度思考时，Controller 分流到思考流式路径，推送 reasoning + token 事件
+     */
+    @Test
+    void shouldCallChatThinkingStreamWhenEnableThinkingIsTrue() throws Exception {
+        when(sessionManager.createSession()).thenReturn("test-session-id");
+
+        // mock ThinkingTokenStream 链式调用（避免 NPE）
+        ThinkingTokenStream thinkingStream = mock(ThinkingTokenStream.class);
+        when(thinkingStream.onPartialThinking(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onPartialResponse(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onComplete(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onError(any())).thenReturn(thinkingStream);
+        when(simpleAgent.chatThinkingStream(anyString(), anyString())).thenReturn(thinkingStream);
+
+        mockMvc.perform(post("/api/agent/chat/stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"你好\",\"enableThinking\":true}"))
+            .andExpect(status().isOk())
+            .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
+
+        // 验证走了思考流式路径
+        verify(simpleAgent).chatThinkingStream(anyString(), anyString());
+        // 验证没走原路径（chatStream 未被调用）
+        verify(simpleAgent, never()).chatStream(anyString(), anyString());
+    }
+
+    /**
+     * 验证标准 2：请求 enableThinking=false 时，SSE 流与原行为一致（零回归）
+     * 业务含义：未开启深度思考时，Controller 走原有 chatStream 路径
+     */
+    @Test
+    void shouldNotCallChatThinkingStreamWhenEnableThinkingIsFalse() throws Exception {
+        when(sessionManager.createSession()).thenReturn("test-session-id");
+
+        // mock TokenStream 链式调用
+        TokenStream tokenStream = mock(TokenStream.class);
+        when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
+        when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
+        when(tokenStream.onError(any())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+
+        mockMvc.perform(post("/api/agent/chat/stream")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"message\":\"你好\",\"enableThinking\":false}"))
+            .andExpect(status().isOk())
+            .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
+
+        // 验证走了原路径
+        verify(simpleAgent).chatStream(anyString(), anyString());
+        // 验证没走思考流式路径
+        verify(simpleAgent, never()).chatThinkingStream(anyString(), anyString());
     }
 }

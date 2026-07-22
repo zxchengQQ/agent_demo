@@ -1,7 +1,52 @@
 <script setup lang="ts">
+import { ref, computed, watch } from 'vue';
 import type { Message } from '@/types';
+import { renderMarkdown } from '@/utils/markdown';
 
 const props = defineProps<{ message: Message }>();
+
+/**
+ * 推理区块展开状态（AC-022）
+ * 业务含义：流式中保持展开让用户实时看到推理过程；完成后默认折叠，用户可手动展开回看。
+ * 初始值依据当前消息状态：incomplete 展开，complete 折叠。
+ */
+const isThinkingExpanded = ref(props.message.status === 'incomplete');
+
+// 监听状态变化：流式完成时自动折叠（流式 -> 完成的过渡场景）
+watch(
+  () => props.message.status,
+  (newStatus) => {
+    if (newStatus === 'complete') {
+      isThinkingExpanded.value = false;
+    } else if (newStatus === 'incomplete') {
+      isThinkingExpanded.value = true;
+    }
+  },
+);
+
+/** 推理区块标题：流式中"思考中..."，完成后"已思考"（AC-022） */
+const thinkingTitle = computed(() =>
+  props.message.status === 'incomplete' ? '思考中...' : '已思考',
+);
+
+/**
+ * 切换推理区块展开/折叠（AC-022）
+ * 业务含义：流式中保持展开不可切换（用户需看到完整推理过程），完成后允许手动切换。
+ */
+function toggleThinking() {
+  if (props.message.status === 'incomplete') return;
+  isThinkingExpanded.value = !isThinkingExpanded.value;
+}
+
+/**
+ * 助手消息 Markdown 渲染内容（AC-023）
+ * 业务含义：助手正式回复按 Markdown 格式渲染，content 为空时返回空字符串避免空渲染。
+ * XSS 防护已由 renderMarkdown 内部 DOMPurify 处理。
+ */
+const renderedContent = computed(() => {
+  if (!props.message.content) return '';
+  return renderMarkdown(props.message.content);
+});
 </script>
 
 <template>
@@ -13,6 +58,23 @@ const props = defineProps<{ message: Message }>();
     <div v-if="props.message.role === 'assistant'" class="avatar">AI</div>
 
     <div class="message-content">
+      <!-- 推理折叠区块（CR-001，AC-022）：助手消息 reasoning 非空时显示在正式回复上方 -->
+      <div
+        v-if="props.message.role === 'assistant' && props.message.reasoning"
+        class="thinking-block"
+      >
+        <div class="thinking-header" @click="toggleThinking">
+          <span class="thinking-icon">{{ isThinkingExpanded ? '▼' : '▶' }}</span>
+          <span class="thinking-title">{{ thinkingTitle }}</span>
+        </div>
+        <div
+          class="thinking-content"
+          :style="{ display: isThinkingExpanded ? 'block' : 'none' }"
+        >
+          {{ props.message.reasoning }}
+        </div>
+      </div>
+
       <!-- 消息气泡 -->
       <div
         class="bubble"
@@ -21,7 +83,14 @@ const props = defineProps<{ message: Message }>();
           'error': props.message.status === 'error',
         }"
       >
-        <span class="text">{{ props.message.content }}</span>
+        <!-- 助手消息：Markdown 渲染（AC-023），content 为空时不渲染 -->
+        <div
+          v-if="props.message.role === 'assistant' && props.message.content"
+          class="markdown-body"
+          v-html="renderedContent"
+        ></div>
+        <!-- 用户消息：纯文本（AC-023） -->
+        <span v-else class="text">{{ props.message.content }}</span>
         <span
           v-if="props.message.status === 'incomplete' && props.message.content"
           class="stream-cursor"
@@ -123,5 +192,153 @@ const props = defineProps<{ message: Message }>();
 
 .status-hint.error {
   color: var(--danger);
+}
+
+/* ===== CR-001 推理折叠区块样式（AC-022）===== */
+.thinking-block {
+  margin-bottom: var(--spacing-sm);
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.2s;
+}
+
+.thinking-header:hover {
+  background: var(--bg-input);
+}
+
+.thinking-icon {
+  font-size: 10px;
+}
+
+.thinking-title {
+  font-weight: 500;
+}
+
+.thinking-content {
+  padding: var(--spacing-sm);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ===== CR-001 Markdown 渲染样式（AC-023）===== */
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: var(--spacing-sm) 0 var(--spacing-xs);
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.markdown-body :deep(h1) {
+  font-size: 1.5em;
+}
+
+.markdown-body :deep(h2) {
+  font-size: 1.3em;
+}
+
+.markdown-body :deep(h3) {
+  font-size: 1.15em;
+}
+
+.markdown-body :deep(p) {
+  margin: var(--spacing-xs) 0;
+}
+
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) {
+  margin: var(--spacing-xs) 0;
+  padding-left: 1.5em;
+}
+
+.markdown-body :deep(li) {
+  margin: 2px 0;
+}
+
+.markdown-body :deep(code) {
+  background: var(--bg-input);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9em;
+}
+
+.markdown-body :deep(pre) {
+  background: var(--bg-input);
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  margin: var(--spacing-xs) 0;
+}
+
+.markdown-body :deep(pre code) {
+  background: transparent;
+  padding: 0;
+}
+
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: var(--spacing-xs) 0;
+  width: 100%;
+}
+
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid var(--border);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  text-align: left;
+}
+
+.markdown-body :deep(th) {
+  background: var(--bg-sidebar);
+  font-weight: 600;
+}
+
+.markdown-body :deep(blockquote) {
+  margin: var(--spacing-xs) 0;
+  padding-left: var(--spacing-md);
+  border-left: 3px solid var(--accent-dim);
+  color: var(--text-muted);
+}
+
+.markdown-body :deep(a) {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-body :deep(a:hover) {
+  text-decoration: underline;
+}
+
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--spacing-sm) 0;
 }
 </style>

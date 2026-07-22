@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { createPinia, setActivePinia } from 'pinia';
 import { useSessionStore } from './session';
+import type { Message } from '@/types';
 
 /**
  * Pinia 会话状态管理测试
@@ -107,5 +108,78 @@ describe('Session Store', () => {
     expect(raw).not.toBeNull();
     const sessions = JSON.parse(raw!);
     expect(sessions.length).toBeGreaterThanOrEqual(1);
+  });
+
+  // ========== CR-001 新增：appendReasoning 方法（AC-024）==========
+
+  it('appendReasoning 将片段追加到指定消息的 reasoning 字段（AC-024, CR-001）', () => {
+    const store = useSessionStore();
+    store.init();
+    const sessionId = store.sessions[0].sessionId;
+    const msg: Message = {
+      id: 'msg-r-1',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    };
+    store.addMessage(sessionId, msg);
+    store.appendReasoning('msg-r-1', '推理片段');
+    const found = store.sessions[0].messages.find((m) => m.id === 'msg-r-1');
+    expect(found?.reasoning).toBe('推理片段');
+  });
+
+  it('appendReasoning 多次调用能正确拼接（AC-024）', () => {
+    const store = useSessionStore();
+    store.init();
+    const sessionId = store.sessions[0].sessionId;
+    store.addMessage(sessionId, {
+      id: 'msg-r-2',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    });
+    store.appendReasoning('msg-r-2', '用户');
+    store.appendReasoning('msg-r-2', '问的是');
+    const found = store.sessions[0].messages.find((m) => m.id === 'msg-r-2');
+    expect(found?.reasoning).toBe('用户问的是');
+  });
+
+  it('appendReasoning 变更同步写入 localStorage（AC-024 持久化）', () => {
+    const store = useSessionStore();
+    store.init();
+    const sessionId = store.sessions[0].sessionId;
+    store.addMessage(sessionId, {
+      id: 'msg-r-3',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    });
+    store.appendReasoning('msg-r-3', '持久化测试');
+    const raw = localStorage.getItem('agent-demo:sessions');
+    expect(raw).not.toBeNull();
+    const sessions = JSON.parse(raw!);
+    const found = sessions[0].messages.find((m: Message) => m.id === 'msg-r-3');
+    expect(found.reasoning).toBe('持久化测试');
+  });
+
+  it('appendReasoning 不影响现有 appendContent 方法', () => {
+    const store = useSessionStore();
+    store.init();
+    const sessionId = store.sessions[0].sessionId;
+    store.addMessage(sessionId, {
+      id: 'msg-r-4',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    });
+    store.appendContent('msg-r-4', '正式回复');
+    store.appendReasoning('msg-r-4', '推理内容');
+    const found = store.sessions[0].messages.find((m) => m.id === 'msg-r-4');
+    expect(found?.content).toBe('正式回复');
+    expect(found?.reasoning).toBe('推理内容');
   });
 });
