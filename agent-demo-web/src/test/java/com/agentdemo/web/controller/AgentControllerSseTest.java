@@ -90,8 +90,8 @@ class AgentControllerSseTest {
     // ========== CR-001 新增：enableThinking 分流测试 ==========
 
     /**
-     * 验证标准 1：请求 enableThinking=true 时，应走思考流式路径（调用 simpleAgent.chatThinkingStream）
-     * 业务含义：开启深度思考时，Controller 分流到思考流式路径，推送 reasoning + token 事件
+     * 验证标准 1：请求 enableThinking=true 时，应走 ReAct 思考流式路径（调用 simpleAgent.chatThinkingReActStream）
+     * 业务含义：开启深度思考时，Controller 分流到 ReAct 思考流式路径，推送 reasoning + thought + action + observation 事件
      */
     @Test
     void shouldCallChatThinkingStreamWhenEnableThinkingIsTrue() throws Exception {
@@ -100,10 +100,14 @@ class AgentControllerSseTest {
         // mock ThinkingTokenStream 链式调用（避免 NPE）
         ThinkingTokenStream thinkingStream = mock(ThinkingTokenStream.class);
         when(thinkingStream.onPartialThinking(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onPartialThought(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onAction(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onObservation(any())).thenReturn(thinkingStream);
+        when(thinkingStream.onFinalAnswer(any())).thenReturn(thinkingStream);
         when(thinkingStream.onPartialResponse(any())).thenReturn(thinkingStream);
         when(thinkingStream.onComplete(any())).thenReturn(thinkingStream);
         when(thinkingStream.onError(any())).thenReturn(thinkingStream);
-        when(simpleAgent.chatThinkingStream(anyString(), anyString())).thenReturn(thinkingStream);
+        when(simpleAgent.chatThinkingReActStream(anyString(), anyString())).thenReturn(thinkingStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -111,8 +115,8 @@ class AgentControllerSseTest {
             .andExpect(status().isOk())
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
-        // 验证走了思考流式路径
-        verify(simpleAgent).chatThinkingStream(anyString(), anyString());
+        // 验证走了 ReAct 思考流式路径
+        verify(simpleAgent).chatThinkingReActStream(anyString(), anyString());
         // 验证没走原路径（chatStream 未被调用）
         verify(simpleAgent, never()).chatStream(anyString(), anyString());
     }
@@ -140,7 +144,7 @@ class AgentControllerSseTest {
 
         // 验证走了原路径
         verify(simpleAgent).chatStream(anyString(), anyString());
-        // 验证没走思考流式路径
-        verify(simpleAgent, never()).chatThinkingStream(anyString(), anyString());
+        // 验证没走 ReAct 思考流式路径
+        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString());
     }
 }

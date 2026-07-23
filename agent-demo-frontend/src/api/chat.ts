@@ -111,6 +111,46 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       // CR-001: 推理过程流式展示（AC-022），可选链兼容未注册 onReasoning 的旧调用方
       callbacks.onReasoning?.(data);
       break;
+    case 'thought': {
+      // ReAct: 思考内容，data 为 JSON（含 content 和 iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onThought?.(parsed.content, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'action': {
+      // ReAct: 工具调用，data 为 JSON（含 toolName、arguments、iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onAction?.(parsed.toolName, parsed.arguments, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'observation': {
+      // ReAct: 工具结果，data 为 JSON（含 result 和 iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onObservation?.(parsed.result, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'final-answer': {
+      // ReAct: 最终答案，data 为 JSON（含 iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onFinalAnswer?.(parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
     case 'done':
       callbacks.onDone(Number(data));
       break;

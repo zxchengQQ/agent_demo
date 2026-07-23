@@ -86,6 +86,22 @@ async function sendMessage(message: string) {
         onReasoning: (reasoning: string) => {
           store.appendReasoning(assistantMsgId, reasoning);
         },
+        // ReAct: 思考内容，追加到对应 iteration 的 reactStep
+        onThought: (thought: string, iteration: number) => {
+          store.appendThought(assistantMsgId, thought, iteration);
+        },
+        // ReAct: 工具调用，追加工具调用信息
+        onAction: (toolName: string, args: string, iteration: number) => {
+          store.appendAction(assistantMsgId, toolName, args, iteration);
+        },
+        // ReAct: 工具结果，追加到对应工具调用
+        onObservation: (result: string, iteration: number) => {
+          store.appendObservation(assistantMsgId, result, iteration);
+        },
+        // ReAct: 最终答案，将 thought 移入 content
+        onFinalAnswer: (iteration: number) => {
+          store.moveThoughtToContent(assistantMsgId, iteration);
+        },
         // 流式完成
         onDone: () => {
           store.markComplete(assistantMsgId);

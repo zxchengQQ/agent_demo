@@ -204,8 +204,8 @@ class ArkThinkingStreamingChatModelTest {
 
         model.parseSseResponse(sseText, handler);
 
-        // 验证 onComplete 被触发，携带完整正式回复（content 拼接）
-        verify(handler).onComplete("你好世界");
+        // 验证 onComplete 被触发，携带完整正式回复（content 拼接）和 finishReason
+        verify(handler).onComplete("你好世界", "stop");
     }
 
     /**
@@ -236,7 +236,7 @@ class ArkThinkingStreamingChatModelTest {
 
         model.parseSseResponse(sseText, handler);
 
-        verify(handler).onComplete("");
+        verify(handler).onComplete("", "stop");
     }
 
     /**
@@ -293,6 +293,6 @@ class ArkThinkingStreamingChatModelTest {
 
         verify(handler).onPartialThinking("思考");
         verify(handler).onPartialResponse("回复");
-        verify(handler).onComplete("回复");
+        verify(handler).onComplete("回复", "stop");
     }
 }

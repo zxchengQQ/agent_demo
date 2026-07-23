@@ -7,7 +7,9 @@ import com.agentdemo.common.enums.AgentType;
 import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
+import com.agentdemo.tools.registry.ToolSchemaConverter;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
@@ -46,6 +48,8 @@ public class SimpleAgent implements BaseAgent {
     private final ToolRegistry toolRegistry;
     private final ChatMemoryManager memoryManager;
     private final AgentConfig agentConfig;
+    private final ToolSchemaConverter toolSchemaConverter;
+    private final ToolExecutor toolExecutor;
 
     /**
      * AiServices 创建的代理（懒加载，首次调用 chat 时创建）
@@ -56,11 +60,15 @@ public class SimpleAgent implements BaseAgent {
     public SimpleAgent(ModelFactory modelFactory,
                        ToolRegistry toolRegistry,
                        ChatMemoryManager memoryManager,
-                       AgentConfig agentConfig) {
+                       AgentConfig agentConfig,
+                       ToolSchemaConverter toolSchemaConverter,
+                       ToolExecutor toolExecutor) {
         this.modelFactory = modelFactory;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;
         this.agentConfig = agentConfig;
+        this.toolSchemaConverter = toolSchemaConverter;
+        this.toolExecutor = toolExecutor;
         log.info("SimpleAgent 构造完成（delegate 懒加载）");
     }
 
@@ -154,6 +162,69 @@ public class SimpleAgent implements BaseAgent {
     }
 
     /**
+     * ReAct 思考流式对话（Task-08 新增）
+     * <p>
+     * 业务含义：区别于 chatThinkingStream（单轮直连方舟 API，不调用工具），
+     * 本方法启动显式 ReAct 循环（推理 -> 工具调用 -> 观察 -> 继续推理 -> 最终回答），
+     * 通过方舟 LLM 原生驱动 ReAct，支持工具调用和双重推理层。
+     * </p>
+     * <p>
+     * 核心差异：
+     * - 使用 thinkingReactSystemPrompt（含 ReAct 引导 + 工具描述）替代 thinkingSystemPrompt
+     * - 通过 ToolSchemaConverter 生成工具 JSON Schema 传给方舟 API
+     * - 返回 ReActThinkingStream（实现 ReAct 循环）而非 ArkThinkingTokenStream（单轮）
+     * </p>
+     *
+     * @param sessionId 会话 ID
+     * @param message   用户消息
+     * @return ThinkingTokenStream 思考流式令牌（需调用 start() 启动）
+     */
+    public ThinkingTokenStream chatThinkingReActStream(String sessionId, String message) {
+        if (agentConfig.isEnableLogging()) {
+            log.info("Agent ReAct 思考流式对话: sessionId={}, message={}", sessionId, message);
+        }
+
+        // 业务含义：使用 ReAct 专用系统提示词（含 Thought/Action/Observation 引导 + 工具描述）
+        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        List<ChatMessage> messages = buildReActMessagesWithMemory(sessionId, message);
+
+        // 业务含义：将 @Tool 注解方法转换为 OpenAI 兼容的 tools JSON Schema，传给方舟 API
+        String toolsJson = toolSchemaConverter.convertToJson();
+
+        return new ReActThinkingStream(
+                thinkingModel,
+                messages,
+                toolsJson,
+                toolExecutor,
+                agentConfig.getThinkingMaxIterations());
+    }
+
+    /**
+     * 组装带记忆的 ReAct 消息列表（Task-08 新增，CR-001 修改）
+     * <p>
+     * 业务含义：与 buildMessagesWithMemory 类似，但使用 thinkingReactSystemPrompt（含 ReAct 引导）。
+     * CR-001 变更：工具描述不再硬编码在 thinkingReactSystemPrompt 中，改为运行时通过
+     * ToolSchemaConverter.convertToDescriptionText() 动态生成并拼接到系统提示词末尾。
+     * </p>
+     *
+     * @param sessionId 会话 ID
+     * @param message   当前用户消息
+     * @return 组装后的消息列表
+     */
+    private List<ChatMessage> buildReActMessagesWithMemory(String sessionId, String message) {
+        List<ChatMessage> messages = new ArrayList<>();
+        // ReAct 专用系统提示词（含 ReAct 引导）+ 动态工具描述（CR-001：工具描述不再硬编码在提示词中）
+        String systemPrompt = agentConfig.getThinkingReactSystemPrompt()
+                + "\n" + toolSchemaConverter.convertToDescriptionText();
+        messages.add(SystemMessage.from(systemPrompt));
+        // 历史消息（多轮上下文）
+        messages.addAll(memoryManager.getMemory(sessionId).messages());
+        // 当前用户消息
+        messages.add(UserMessage.from(message));
+        return messages;
+    }
+
+    /**
      * 组装带记忆的消息列表（CR-001 新增）
      * 业务含义：系统提示词 + 会话历史消息 + 当前用户消息，供思考流式路径使用。
      * 消息顺序与方舟 API 多轮对话约定一致：system -> 历史 user/assistant 交替 -> 当前 user。
@@ -164,8 +235,8 @@ public class SimpleAgent implements BaseAgent {
      */
     private List<ChatMessage> buildMessagesWithMemory(String sessionId, String message) {
         List<ChatMessage> messages = new ArrayList<>();
-        // 系统提示词（角色设定）
-        messages.add(SystemMessage.from(agentConfig.getDefaultSystemPrompt()));
+        // 系统提示词（思考模式专用，不提及工具调用，避免模型尝试调用不存在的工具）
+        messages.add(SystemMessage.from(agentConfig.getThinkingSystemPrompt()));
         // 历史消息（多轮上下文，由 ChatMemoryManager 维护窗口）
         messages.addAll(memoryManager.getMemory(sessionId).messages());
         // 当前用户消息

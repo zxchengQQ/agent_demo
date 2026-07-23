@@ -48,6 +48,18 @@ LLM 接入模块（agent-demo-llm）是 AI Agent 示例项目的 LLM 能力提�
 - **触发场景**：创建任何模型实例前。
 - **系统行为**：`validateApiKey()` 检查 apiKey 是否为空，为空抛出 BusinessException(5004)。
 
+### 3.6 思考流式模型获取（CR-001 新增）
+
+- **触发场景**：Agent 思考流式对话（enableThinking=true）时调用 `ModelFactory.getThinkingStreamingChatModel()`。
+- **操作步骤**：无需参数，直接返回缓存中的 ArkThinkingStreamingChatModel 实例。
+- **系统行为**：
+  1. 从 `ArkProperties` 获取 baseUrl/apiKey/defaultModel/timeout
+  2. 按 modelName 缓存复用，不同 modelName 返回不同实例
+  3. 返回 `ArkThinkingStreamingChatModel` 实例（自定义实现，直连方舟 API 解析 reasoning_content）
+- **业务规则**：遵循 BR-LLM-004（缓存复用）和 BR-LLM-007（不走 openai4j）。
+- **前置条件**：ARK_API_KEY 已配置。
+- **后置结果**：返回缓存的 ArkThinkingStreamingChatModel 实例。
+
 ## 4. 业务流程串联
 
 ```mermaid
@@ -85,9 +97,11 @@ flowchart TD
 
 ## 7. 核心数据实体
 
-- **ModelFactory**：模型工厂，管理 ChatModel/StreamingChatModel/EmbeddingModel 三类实例的创建与缓存。
-- **ArkProperties**：火山引擎配置属性绑定（`ark.coding-plan.*`），含 baseUrl/apiKey/defaultModel/models/timeout/maxRetries/temperature。
+- **ModelFactory**：模型工厂，管理 ChatModel/StreamingChatModel/EmbeddingModel/ArkThinkingStreamingChatModel 四类实例的创建与缓存（CR-001 新增思考流式模型）。
+- **ArkProperties**：火山引擎配置属性绑定（`ark.coding-plan.*`），含 baseUrl/apiKey/defaultModel/models/timeout/maxRetries/temperature/thinkingDefaultEnabled（CR-001 新增）。
 - **LlmConfig**：LLM 配置类，启用配置属性绑定。
+- **ArkThinkingStreamingChatModel**：自定义思考流式模型（CR-001 新增），HttpClient 直连方舟 Chat Completions API（stream=true, thinking.enabled），手动解析 SSE 流中的 delta.reasoning_content 和 delta.content。
+- **ThinkingStreamHandler**：思考流式回调接口（CR-001 新增），定义 onPartialThinking/onPartialResponse/onComplete/onError 四个回调方法。
 
 ## 8. API 接口清单
 
@@ -97,7 +111,9 @@ flowchart TD
 |------|---------|--------|
 | `ModelFactory.getChatModel(scene)` | 按场景获取对话模型 | agent 层 |
 | `ModelFactory.getDefaultChatModel()` | 获取默认对话模型 | agent 层 |
-| `ModelFactory.getStreamingChatModel(scene)` | 按场景获取流式模型 | web 层（SSE 规划中） |
+| `ModelFactory.getStreamingChatModel(scene)` | 按场景获取流式模型 | web 层（SSE） |
+| `ModelFactory.getDefaultStreamingChatModel()` | 获取默认流式模型 | web 层（SSE） |
+| `ModelFactory.getThinkingStreamingChatModel()` | 获取思考流式模型（ArkThinkingStreamingChatModel，CR-001 新增） | agent 层（chatThinkingStream） |
 | `ModelFactory.getEmbeddingModel()` | 获取 Embedding 模型 | rag/memory 层 |
 
 ## 9. 业务规则
@@ -110,6 +126,7 @@ flowchart TD
 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用 | 🔴 强制 |
 | BR-LLM-005 | 调用超时时间默认 60s | ⚪ 可覆盖 |
 | BR-LLM-006 | 最大重试次数默认 3 次 | ⚪ 可覆盖 |
+| BR-LLM-007 | 思考模式（thinking.enabled）必须通过自定义 ArkThinkingStreamingChatModel 直连方舟 API，不走 LangChain4j openai4j（因 openai4j 不透传 reasoning_content）（CR-001 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

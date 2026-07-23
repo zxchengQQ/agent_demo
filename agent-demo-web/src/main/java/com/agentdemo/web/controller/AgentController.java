@@ -19,6 +19,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -108,6 +109,13 @@ public class AgentController {
         // SSE 超时与 Tomcat connection-timeout 对齐（5 分钟）
         SseEmitter emitter = new SseEmitter(300_000L);
 
+        // 业务含义：空消息校验（AC-015），避免无效请求消耗会话与 LLM 资源
+        if (request.getMessage() == null || request.getMessage().trim().isEmpty()) {
+            sendEvent(emitter, "error", "消息不能为空");
+            emitter.complete();
+            return emitter;
+        }
+
         // 会话管理：sessionId 为空或不存在则新建（BR-MEM-005、BR-WEB-008）
         String sessionId = request.getSessionId();
         if (sessionId == null || sessionId.isEmpty() || !sessionManager.exists(sessionId)) {
@@ -126,20 +134,23 @@ public class AgentController {
         StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
 
-        // 业务含义：根据 enableThinking 分流（CR-001 新增）
-        // - true：走思考流式路径，推送 reasoning + token 事件
+        // 业务含义：根据 enableThinking 分流（CR-001 新增，Task-09 扩展为 ReAct）
+        // - true：走 ReAct 思考流式路径，推送 reasoning + thought + action + observation + final-answer 事件
         // - false/null：走原 agent.chatStream 路径，仅推送 token 事件（零回归）
         if (Boolean.TRUE.equals(request.getEnableThinking())) {
-            // 思考流式路径（CR-001 新增）
-            simpleAgent.chatThinkingStream(effectiveSessionId, request.getMessage())
+            // ReAct 思考流式路径（Task-09 新增）
+            // 业务含义：ReAct 模式中 content 通过 onPartialThought 推送为 thought 事件，
+            // 不再使用 onPartialResponse（ReActThinkingStream 中为空实现）
+            simpleAgent.chatThinkingReActStream(effectiveSessionId, request.getMessage())
                     .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
-                    .onPartialResponse(token -> {
-                        sendEvent(emitter, "token", token);
-                        fullResponse.append(token);
-                    })
+                    .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
+                    .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
+                    .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
+                    .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
                     .onComplete(fullResponseStr -> {
-                        // 业务含义：流式完成后，将完整助手回复写入记忆（不含推理内容），保证下一轮对话有上下文
-                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
+                        // 业务含义：流式完成后，将完整最终回答写入记忆（不含推理/工具过程），保证下一轮对话有上下文
+                        // ReActThinkingStream 的 onComplete 携带完整最终回答文本，直接使用参数而非 StringBuilder
+                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
                         long duration = System.currentTimeMillis() - start;
                         sendEvent(emitter, "done", duration);
                         emitter.complete();

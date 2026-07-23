@@ -18,8 +18,10 @@ watch(
   (newStatus) => {
     if (newStatus === 'complete') {
       isThinkingExpanded.value = false;
+      isReactExpanded.value = false;
     } else if (newStatus === 'incomplete') {
       isThinkingExpanded.value = true;
+      isReactExpanded.value = true;
     }
   },
 );
@@ -36,6 +38,33 @@ const thinkingTitle = computed(() =>
 function toggleThinking() {
   if (props.message.status === 'incomplete') return;
   isThinkingExpanded.value = !isThinkingExpanded.value;
+}
+
+// ===== ReAct 推理过程折叠区块 =====
+
+/**
+ * ReAct 推理区块展开状态
+ * 业务含义：流式中保持展开让用户实时看到 ReAct 推理过程；完成后默认折叠，用户可手动展开回看。
+ */
+const isReactExpanded = ref(props.message.status === 'incomplete');
+
+/** 是否有 ReAct 推理步骤需要展示 */
+const hasReactSteps = computed(
+  () => !!props.message.reactSteps && props.message.reactSteps.length > 0,
+);
+
+/** ReAct 区块标题：流式中"推理中..."，完成后"ReAct 推理过程" */
+const reactTitle = computed(() =>
+  props.message.status === 'incomplete' ? '推理中...' : 'ReAct 推理过程',
+);
+
+/**
+ * 切换 ReAct 区块展开/折叠
+ * 业务含义：流式中保持展开不可切换，完成后允许手动切换。
+ */
+function toggleReact() {
+  if (props.message.status === 'incomplete') return;
+  isReactExpanded.value = !isReactExpanded.value;
 }
 
 /**
@@ -72,6 +101,54 @@ const renderedContent = computed(() => {
           :style="{ display: isThinkingExpanded ? 'block' : 'none' }"
         >
           {{ props.message.reasoning }}
+        </div>
+      </div>
+
+      <!-- ReAct 推理过程折叠区块：位于 thinking-block 下方、bubble 上方 -->
+      <div
+        v-if="props.message.role === 'assistant' && hasReactSteps"
+        class="react-block"
+      >
+        <div class="react-header" @click="toggleReact">
+          <span class="react-icon">{{ isReactExpanded ? '▼' : '▶' }}</span>
+          <span class="react-title">{{ reactTitle }}</span>
+        </div>
+        <div
+          class="react-content"
+          :style="{ display: isReactExpanded ? 'block' : 'none' }"
+        >
+          <!-- 按 iteration 分组展示 -->
+          <div
+            v-for="step in props.message.reactSteps"
+            :key="step.iteration"
+            class="react-step"
+          >
+            <!-- Thought 文本 -->
+            <div v-if="step.thought" class="react-thought">
+              <span class="react-label">Thought</span>
+              <span class="react-thought-text">{{ step.thought }}</span>
+            </div>
+            <!-- Action 工具调用卡片 -->
+            <div
+              v-for="(toolCall, idx) in step.toolCalls"
+              :key="idx"
+              class="tool-card"
+            >
+              <div class="tool-card-header">
+                <span class="tool-icon">🔧</span>
+                <span class="tool-name">{{ toolCall.toolName }}</span>
+              </div>
+              <div class="tool-args">
+                <span class="tool-args-label">参数:</span>
+                <code class="tool-args-code">{{ toolCall.arguments }}</code>
+              </div>
+              <!-- Observation 结果 -->
+              <div v-if="toolCall.result" class="tool-result">
+                <span class="tool-result-label">结果:</span>
+                <span class="tool-result-text">{{ toolCall.result }}</span>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -234,6 +311,130 @@ const renderedContent = computed(() => {
   line-height: 1.6;
   color: var(--text-muted);
   border-top: 1px solid var(--border);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ===== ReAct 推理过程折叠区块样式 ===== */
+.react-block {
+  margin-bottom: var(--spacing-sm);
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.react-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.2s;
+}
+
+.react-header:hover {
+  background: var(--bg-input);
+}
+
+.react-icon {
+  font-size: 10px;
+}
+
+.react-title {
+  font-weight: 500;
+}
+
+.react-content {
+  padding: var(--spacing-sm);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  border-top: 1px solid var(--border);
+}
+
+.react-step {
+  margin-bottom: var(--spacing-sm);
+}
+
+.react-step:last-child {
+  margin-bottom: 0;
+}
+
+.react-thought {
+  margin-bottom: var(--spacing-xs);
+}
+
+.react-label {
+  font-weight: 600;
+  color: var(--accent);
+  margin-right: var(--spacing-xs);
+}
+
+.react-thought-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-card {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  margin-top: var(--spacing-xs);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tool-icon {
+  font-size: 12px;
+}
+
+.tool-name {
+  font-weight: 600;
+}
+
+.tool-args {
+  margin-top: var(--spacing-xs);
+  font-size: 12px;
+}
+
+.tool-args-label {
+  color: var(--text-muted);
+  margin-right: var(--spacing-xs);
+}
+
+.tool-args-code {
+  background: var(--bg-sidebar);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono, monospace);
+  font-size: 0.9em;
+}
+
+.tool-result {
+  margin-top: var(--spacing-xs);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.tool-result-label {
+  color: var(--text-muted);
+  margin-right: var(--spacing-xs);
+}
+
+.tool-result-text {
   white-space: pre-wrap;
   word-break: break-word;
 }

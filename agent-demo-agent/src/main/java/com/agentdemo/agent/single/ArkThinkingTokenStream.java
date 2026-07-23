@@ -3,6 +3,7 @@ package com.agentdemo.agent.single;
 import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
+import com.agentdemo.llm.factory.ToolCall;
 import dev.langchain4j.data.message.ChatMessage;
 
 import java.util.List;
@@ -27,6 +28,12 @@ public class ArkThinkingTokenStream implements ThinkingTokenStream {
     private ResponseConsumer responseConsumer;
     private CompleteConsumer completeConsumer;
     private ErrorConsumer errorConsumer;
+
+    // CR-001 单轮思考模式不使用显式 ReAct 回调，以下字段仅保证接口适配编译通过
+    private ThoughtConsumer thoughtConsumer;
+    private ActionConsumer actionConsumer;
+    private ObservationConsumer observationConsumer;
+    private FinalAnswerConsumer finalAnswerConsumer;
 
     public ArkThinkingTokenStream(ArkThinkingStreamingChatModel model, List<ChatMessage> messages) {
         this.model = model;
@@ -57,6 +64,32 @@ public class ArkThinkingTokenStream implements ThinkingTokenStream {
         return this;
     }
 
+    // 以下 4 个方法为 CR-001 单轮思考模式的空实现（仅赋值不消费），
+    // 保证 ThinkingTokenStream 接口适配编译通过，向后兼容现有调用方
+    @Override
+    public ThinkingTokenStream onPartialThought(ThoughtConsumer consumer) {
+        this.thoughtConsumer = consumer;
+        return this;
+    }
+
+    @Override
+    public ThinkingTokenStream onAction(ActionConsumer consumer) {
+        this.actionConsumer = consumer;
+        return this;
+    }
+
+    @Override
+    public ThinkingTokenStream onObservation(ObservationConsumer consumer) {
+        this.observationConsumer = consumer;
+        return this;
+    }
+
+    @Override
+    public ThinkingTokenStream onFinalAnswer(FinalAnswerConsumer consumer) {
+        this.finalAnswerConsumer = consumer;
+        return this;
+    }
+
     /**
      * 启动流式调用
      * 业务含义：构造 ThinkingStreamHandler 桥接 4 个回调，调用 model.stream 执行流式调用。
@@ -80,11 +113,19 @@ public class ArkThinkingTokenStream implements ThinkingTokenStream {
                 }
             }
 
+            // 业务含义：适配 Task-02 新签名，finishReason 由 ArkThinkingStreamingChatModel 传入，
+            // 当前 ThinkingTokenStream 的 CompleteConsumer 仅消费 fullResponse，finishReason 暂不透传
             @Override
-            public void onComplete(String fullResponse) {
+            public void onComplete(String fullResponse, String finishReason) {
                 if (completeConsumer != null) {
                     completeConsumer.accept(fullResponse);
                 }
+            }
+
+            // 业务含义：Task-02 新增，调用方未注册工具调用消费者时做空实现
+            @Override
+            public void onToolCalls(List<ToolCall> toolCalls) {
+                // 当前 ArkThinkingTokenStream 未注册工具调用消费者，不做任何事
             }
 
             @Override

@@ -1,4 +1,4 @@
-import type { SessionRecord } from '@/types';
+import type { SessionRecord, Message } from '@/types';
 
 /**
  * localStorage 会话纪录封装
@@ -10,6 +10,15 @@ const STORAGE_KEY = 'agent-demo:sessions';
 
 /** 最大保留会话数（超出按 updatedAt 淘汰最旧，AC-016） */
 const MAX_SESSIONS = 50;
+
+/**
+ * 序列化前剥离 reactSteps 字段（内部辅助方法）
+ * 业务含义：ReAct 推理过程仅用于当前会话实时展示，不持久化到 localStorage（仅持久化 content）。
+ * 使用解构复制避免修改内存中的原始对象。
+ */
+function stripReactSteps(messages: Message[]): Omit<Message, 'reactSteps'>[] {
+  return messages.map(({ reactSteps: _reactSteps, ...rest }) => rest);
+}
 
 /**
  * 读取全部会话（按 updatedAt 倒序）
@@ -32,7 +41,12 @@ export function loadSessions(): SessionRecord[] {
  * 业务含义：按 updatedAt 倒序后截断保留前 50 个（AC-016）
  */
 export function saveSessions(sessions: SessionRecord[]): void {
-  const sorted = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+  // 序列化时剥离 reactSteps（ReAct 推理过程不持久化，仅保留 content）
+  const stripped = sessions.map((s) => ({
+    ...s,
+    messages: stripReactSteps(s.messages),
+  }));
+  const sorted = [...stripped].sort((a, b) => b.updatedAt - a.updatedAt);
   const trimmed = sorted.slice(0, MAX_SESSIONS);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(trimmed));

@@ -72,6 +72,22 @@ Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层�
 - **系统行为**：`TraceIdInterceptor` 生成 traceId 存入 MDC，日志中通过 `%X{traceId}` 输出。
 - **业务规则**：traceId 贯穿一次请求的所有日志，便于问题定位。
 
+### 3.8 流式对话（SSE）
+
+- **触发场景**：用户发送消息，期望逐字接收 Agent 回复。
+- **操作步骤**：`POST /api/agent/chat/stream`，请求体含 sessionId（可选）+ message（必填）+ enableThinking（可选，CR-001 新增）。
+- **系统行为**：
+  1. 校验 sessionId，无效则新建并发送 `session` 事件
+  2. 记录用户消息到 ChatMemory
+  3. 根据 `enableThinking` 分流：
+     - true：走 `SimpleAgent.chatThinkingStream()`，推送 `reasoning` + `token` 事件
+     - false/null：走 `BaseAgent.chatStream()`，推送 `token` 事件
+  4. 流式完成后记录助手回复到 ChatMemory，发送 `done` 事件
+- **SSE 事件协议**：session（新建会话时）/ reasoning（推理片段，CR-001 新增）/ token（文本片段）/ done（完成）/ error（异常）。
+- **前置条件**：message 不能为空（`@NotBlank`）。
+- **后置结果**：SSE 事件流，客户端逐字接收。
+- **异常处理**：SSE 响应一旦开始写入，异常无法走 `@RestControllerAdvice`，需内部捕获并通过 `error` 事件通知前端。
+
 ## 4. 业务流程串联
 
 ```mermaid
@@ -118,8 +134,8 @@ flowchart TD
 
 ## 7. 核心数据实体
 
-- **AgentController**：Agent 对话 Controller，提供 chat/session 接口。
-- **ChatRequest**：对话请求 DTO，含 sessionId/message/agentType/model/options。
+- **AgentController**：Agent 对话 Controller，提供 chat/session 接口，CR-001 扩展 chatStream 方法支持 enableThinking 分流 + reasoning 事件推送。
+- **ChatRequest**：对话请求 DTO，含 sessionId/message/enableThinking（CR-001 新增，Boolean 可选，默认 false）。
 - **ChatResponse**：对话响应 DTO，含 sessionId/response/toolCalls/duration/usage。
 - **GlobalExceptionHandler**：全局异常处理器，统一异常转换。
 - **TraceIdInterceptor**：链路追踪拦截器，注入 traceId 到 MDC。
@@ -131,6 +147,7 @@ flowchart TD
 | 接口路径 | HTTP方法 | 功能说明 | 权限要求 | 请求参数 | 响应类型 |
 |---------|---------|---------|---------|---------|---------|
 | `/api/agent/chat` | POST | 同步对话 | 无 | ChatRequest | `Result<ChatResponse>` |
+| `/api/agent/chat/stream` | POST | 流式对话（SSE） | 无 | ChatRequest（含 enableThinking，CR-001 扩展） | `SseEmitter`（text/event-stream） |
 | `/api/agent/session` | POST | 创建会话 | 无 | 无 | `Result<String>` |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 | path: sessionId | `Result<Boolean>` |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 | path: sessionId | `Result<Void>` |
@@ -140,10 +157,8 @@ flowchart TD
 | 字段 | 类型 | 必填 | 校验 | 说明 |
 |------|------|------|------|------|
 | sessionId | String | 否 | - | 为空则新建 |
-| message | String | 是 | `@NotBlank` | 用户消息 |
-| agentType | String | 否 | - | 默认 SINGLE |
-| model | String | 否 | - | 指定模型 |
-| options | Map | 否 | - | 扩展参数 |
+| message | String | 是 | `@NotBlank`、`@Size(max=4000)` | 用户消息，上限 4000 字符（AC-015） |
+| enableThinking | Boolean | 否 | - | 是否开启深度思考（CR-001 新增，默认 false） |
 
 **ChatResponse 字段**：
 
@@ -168,6 +183,7 @@ flowchart TD
 | BR-WEB-007 | 生产环境应关闭 Swagger UI 访问 | 🟡 尽量 |
 | BR-WEB-008 | 传入无效 sessionId 时自动新建，不抛错 | 🔴 强制 |
 | BR-WEB-009 | `NoResourceFoundException` 必须专门处理返回 404，禁止落入兜底 `Exception` 处理器导致 500 + 堆栈污染 | 🔴 强制 |
+| BR-WEB-010 | SSE 流式响应一旦开始写入，内部异常必须通过 `error` 事件通知前端，无法走 `@RestControllerAdvice`（CR-001 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

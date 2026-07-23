@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import type { SessionRecord, Message } from '@/types';
+import type { SessionRecord, Message, ReactStep } from '@/types';
 import * as storage from '@/utils/storage';
 
 /**
@@ -172,6 +172,92 @@ export const useSessionStore = defineStore('session', {
           }
           msg.reasoning += reasoning;
           storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
+     * 获取或创建指定 iteration 的 ReactStep（内部辅助方法）
+     * 业务含义：ReAct 模式下按 iteration 分组管理 Thought/Action/Observation，
+     * 首次访问时初始化 reactSteps 数组和对应 step。
+     */
+    _getOrCreateStep(messageId: string, iteration: number): ReactStep | undefined {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          if (msg.reactSteps === undefined) {
+            msg.reactSteps = [];
+          }
+          let step = msg.reactSteps.find((s) => s.iteration === iteration);
+          if (!step) {
+            step = { iteration, thought: '', toolCalls: [] };
+            msg.reactSteps.push(step);
+          }
+          return step;
+        }
+      }
+      return undefined;
+    },
+
+    /**
+     * 追加 ReAct 思考内容到指定消息
+     * 业务含义：收到 thought 事件时，将思考文本追加到对应 iteration 的 reactStep。
+     */
+    appendThought(messageId: string, thought: string, iteration: number) {
+      const step = this._getOrCreateStep(messageId, iteration);
+      if (step) {
+        step.thought += thought;
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    /**
+     * 追加 ReAct 工具调用信息到指定消息
+     * 业务含义：收到 action 事件时，在对应 iteration 的 reactStep 中新增一条工具调用记录。
+     */
+    appendAction(messageId: string, toolName: string, args: string, iteration: number) {
+      const step = this._getOrCreateStep(messageId, iteration);
+      if (step) {
+        step.toolCalls.push({ toolName, arguments: args, result: '' });
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    /**
+     * 追加 ReAct 工具结果到指定消息
+     * 业务含义：收到 observation 事件时，将结果填入对应 iteration 最后一条工具调用记录。
+     */
+    appendObservation(messageId: string, result: string, iteration: number) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.reactSteps) {
+          const step = msg.reactSteps.find((s) => s.iteration === iteration);
+          if (step && step.toolCalls.length > 0) {
+            // 将结果填入最后一条工具调用（ReAct 模式下 action 和 observation 一一对应）
+            step.toolCalls[step.toolCalls.length - 1].result = result;
+            storage.saveSessions(this.sessions);
+          }
+          return;
+        }
+      }
+    },
+
+    /**
+     * 将指定 iteration 的 thought 移动到 message.content，并清空该轮 thought
+     * 业务含义：收到 final-answer 事件时，最终答案对应的 thought 即为正式回复，
+     * 将其移入 content 展示，同时清空 reactStep 中的 thought 避免重复展示。
+     */
+    moveThoughtToContent(messageId: string, iteration: number) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.reactSteps) {
+          const step = msg.reactSteps.find((s) => s.iteration === iteration);
+          if (step) {
+            msg.content += step.thought;
+            step.thought = '';
+            storage.saveSessions(this.sessions);
+          }
           return;
         }
       }

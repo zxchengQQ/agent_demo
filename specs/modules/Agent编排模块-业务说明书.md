@@ -43,6 +43,18 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 - **触发场景**：`agent.enable-logging=true` 时。
 - **系统行为**：记录 sessionId、消息内容、耗时、回复长度。
 
+### 3.5 思考流式对话（CR-001 新增）
+
+- **触发场景**：用户开启"深度思考"开关发送消息时。
+- **操作步骤**：AgentController 根据 `enableThinking=true` 调用 `SimpleAgent.chatThinkingStream(sessionId, message)` 替代 `chatStream`。
+- **系统行为**：
+  1. 调用 `buildMessagesWithMemory(sessionId, message)` 手动组装消息列表（系统提示词 + 历史消息 + 当前用户消息）
+  2. 委托 `ArkThinkingStreamingChatModel` 直连方舟 API（stream=true, thinking.enabled）
+  3. 通过 `ThinkingTokenStream` 回调暴露推理内容（onPartialThinking）与正式回复（onPartialResponse）
+- **业务规则**：思考模式使用专用系统提示词（`thinkingSystemPrompt`），不提及工具调用能力（BR-AGT-007）
+- **前置条件**：ARK_API_KEY 已配置，方舟 Coding Plan 地址支持 thinking 参数。
+- **后置结果**：SSE 流推送顺序为 reasoning（可选）-> token（多个）-> done。
+
 ## 4. 业务流程串联
 
 ```mermaid
@@ -82,15 +94,17 @@ flowchart TD
 
 ## 7. 核心数据实体
 
-- **BaseAgent**：Agent 抽象接口，定义 `chat(sessionId, message)` 入口，使用 `@MemoryId` + `@UserMessage` 注解。
-- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。
-- **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultSystemPrompt/enableLogging/fileAllowedDir。
+- **BaseAgent**：Agent 抽象接口，定义 `chat(sessionId, message)` 和 `chatStream(sessionId, message)` 入口，使用 `@MemoryId` + `@UserMessage` 注解。
+- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。
+- **ThinkingTokenStream**：思考流式接口（CR-001 新增），定义 `onPartialThinking`/`onPartialResponse`/`onComplete`/`onError` 四个回调 + `start()` 方法，区别于 LangChain4j TokenStream 仅回调 content。
+- **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultSystemPrompt/thinkingSystemPrompt/thinkingReactSystemPrompt/enableLogging/fileAllowedDir。thinkingReactSystemPrompt 仅含 ReAct 格式引导和约束规则，工具描述由 ToolSchemaConverter.convertToDescriptionText() 动态追加（深度思考 CR-001）。
 
 ## 8. API 接口清单
 
 | 接口路径 | HTTP方法 | 功能说明 | 权限要求 |
 |---------|---------|---------|---------|
 | `/api/agent/chat` | POST | 同步对话 | 无（学习示例） |
+| `/api/agent/chat/stream` | POST | 流式对话（SSE，含 enableThinking 分流，CR-001 扩展） | 无 |
 | `/api/agent/session` | POST | 创建会话 | 无 |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 |
@@ -105,6 +119,8 @@ flowchart TD
 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | 🔴 强制 |
 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | 🟡 尽量 |
 | BR-AGT-006 | Agent 调用日志默认开启，记录 sessionId/耗时/回复长度 | ⚪ 可覆盖 |
+| BR-AGT-007 | 思考模式必须使用专用系统提示词（thinkingSystemPrompt），不提及工具调用能力；正常模式使用 defaultSystemPrompt（含工具引导语）（CR-001 新增） | 🔴 强制 |
+| BR-THINK-002 | 深度思考 ReAct 模式系统提示词（thinkingReactSystemPrompt）必须包含 ReAct 格式引导，工具能力描述通过运行时动态生成（ToolSchemaConverter.convertToDescriptionText() 反射扫描 @Tool 方法），不硬编码在提示词配置中（深度思考 CR-001） | 🔴 强制 |
 
 ## 10. 异常处理
 

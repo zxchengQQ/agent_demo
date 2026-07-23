@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v1.1
-> **基线日期**：2026-07-21
+> **文档版本**：v1.2
+> **基线日期**：2026-07-22
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -210,6 +210,8 @@ typescript.version=5.4+
 # 核心依赖
 pinia=2.1+               # Vue 状态管理
 vue-router=4.3+          # 路由（预留）
+marked=12+               # Markdown 解析（CR-001 新增，助手消息 Markdown 渲染）
+dompurify=3+             # DOMPurify XSS 防护（CR-001 新增，与 marked 配合使用）
 
 # 构建与开发
 vitest=1.6+              # 单元测试框架
@@ -262,11 +264,12 @@ agent-demo/
     ├── tsconfig.json
     ├── index.html
     └── src/
-        ├── api/chat.ts                   # SSE 流式调用封装（fetch + ReadableStream）
-        ├── stores/session.ts             # Pinia 会话状态管理
+        ├── api/chat.ts                   # SSE 流式调用封装（fetch + ReadableStream，含 reasoning 事件处理，CR-001 扩展）
+        ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning 方法，CR-001 扩展）
+        ├── utils/markdown.ts             # Markdown 渲染封装（marked + DOMPurify，CR-001 新增）
         ├── utils/storage.ts              # localStorage 缓存工具（50 会话 FIFO 淘汰）
-        ├── types/index.ts                # TypeScript 类型定义
-        ├── components/                   # Vue 组件
+        ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks.onReasoning，CR-001 扩展）
+        ├── components/                   # Vue 组件（CR-001：MessageItem 推理折叠区块 + Markdown 渲染，MessageInput 深度思考开关）
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
         └── App.vue                       # 根组件（左右分栏布局）
 ```
@@ -294,17 +297,19 @@ agent-demo/
 
 ```
 agent-demo-agent/
-├── config/                # AgentConfig（配置属性绑定）
-├── core/                  # BaseAgent（Agent 抽象接口）
-└── single/                # SimpleAgent（单 Agent 实现）
+├── config/                # AgentConfig（配置属性绑定，含 thinkingSystemPrompt/thinkingReactSystemPrompt，后者工具描述由 convertToDescriptionText() 动态追加）
+├── core/                  # BaseAgent（Agent 抽象接口）+ ThinkingTokenStream（思考流式接口，CR-001 新增）
+└── single/                # SimpleAgent（单 Agent 实现，含 chatStream/chatThinkingStream CR-001 扩展，buildReActMessagesWithMemory 动态拼接工具描述）
 ```
 
 **agent-demo-llm**（LLM 接入）：
 
 ```
 agent-demo-llm/
-├── config/                # ArkProperties / LlmConfig
-└── factory/               # ModelFactory（模型工厂）
+├── config/                # ArkProperties / LlmConfig（含 thinking-default-enabled CR-001 新增）
+└── factory/               # ModelFactory（模型工厂，含 getThinkingStreamingChatModel CR-001 新增）
+                           # ArkThinkingStreamingChatModel（自定义思考流式模型，CR-001 新增）
+                           # ThinkingStreamHandler（思考流式回调接口，CR-001 新增）
 ```
 
 **agent-demo-tools**（工具系统）：
@@ -312,7 +317,7 @@ agent-demo-llm/
 ```
 agent-demo-tools/
 ├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
-└── registry/              # ToolRegistry（注册中心）
+└── registry/              # ToolRegistry（注册中心）+ ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
 ```
 
 **agent-demo-memory**（记忆系统）：
@@ -508,7 +513,7 @@ sequenceDiagram
 
     U->>FE: 输入消息，点击发送
     FE->>LS: 先存用户消息（乐观更新）
-    FE->>CTL: POST /chat/stream (sessionId, message)
+    FE->>CTL: POST /chat/stream (sessionId, message, enableThinking)
     CTL->>SM: exists(sessionId)?
     alt 会话不存在/超时
         SM->>CTL: 新建会话，返回新 sessionId
@@ -516,19 +521,34 @@ sequenceDiagram
         FE->>LS: 更新会话sessionId关联
     end
     CTL->>MM: addUserMessage(sessionId, message)
-    CTL->>AGT: chatStream(sessionId, message)
-    AGT->>LLM: TokenStream.start()
-    loop 逐字输出
-        LLM-->>AGT: onPartialResponse(token)
-        AGT-->>CTL: token 回调
-        CTL-->>FE: SSE event: token(text)
-        FE->>FE: 追加文本片段到对话框
-        FE->>FE: 自动滚动到底部
+    alt enableThinking=true（CR-001 思考路径）
+        CTL->>AGT: chatThinkingStream(sessionId, message)
+        AGT->>LLM: 方舟 API（thinking.enabled）
+        loop 推理+生成
+            LLM-->>AGT: onPartialThinking(reasoning)
+            AGT-->>CTL: thinking 回调
+            CTL-->>FE: SSE event: reasoning(推理片段)
+            FE->>FE: 追加到推理区块
+            LLM-->>AGT: onPartialResponse(token)
+            AGT-->>CTL: token 回调
+            CTL-->>FE: SSE event: token(文本片段)
+            FE->>FE: 追加到正式回复
+        end
+    else enableThinking=false/null（原路径）
+        CTL->>AGT: chatStream(sessionId, message)
+        AGT->>LLM: TokenStream.start()
+        loop 逐字输出
+            LLM-->>AGT: onPartialResponse(token)
+            AGT-->>CTL: token 回调
+            CTL-->>FE: SSE event: token(text)
+            FE->>FE: 追加文本片段到对话框
+        end
     end
+    FE->>FE: 自动滚动到底部
     AGT-->>CTL: onCompleteResponse(response)
     CTL->>MM: addAssistantMessage(sessionId, fullText)
     CTL-->>FE: SSE event: done(duration)
-    FE->>LS: 保存完整回复
+    FE->>LS: 保存完整回复（含推理内容）
     FE->>FE: 恢复输入框，隐藏停止按钮
     opt 用户停止
         U->>FE: 点击"停止生成"
@@ -542,6 +562,7 @@ sequenceDiagram
 | 事件名 | 数据 | 触发时机 |
 |--------|------|---------|
 | `session` | 新 sessionId 字符串 | 会话不存在/超时，新建后发送 |
+| `reasoning` | 推理文本片段（CR-001 新增） | 每收到一段推理内容（仅 enableThinking=true 时） |
 | `token` | 文本片段 | 每收到一个 LLM token |
 | `done` | 耗时毫秒数 | 流式完整结束 |
 | `error` | 错误描述 | 流式过程异常 |
@@ -549,6 +570,7 @@ sequenceDiagram
 **关键约束**：
 - 前端使用 `fetch` + `ReadableStream` 手动解析 SSE（EventSource 不支持 POST）
 - 使用 `AbortController` 实现停止生成（AC-011）
+- 开启深度思考时，推理片段与正式回复片段分别通过 `reasoning` 和 `token` 事件推送（CR-001）
 - localStorage 缓存上限 50 个会话，按最后活跃时间 FIFO 淘汰（AC-016）
 - 会话标题取首条消息前 20 字符（AC-006）
 
@@ -906,6 +928,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 4 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用 | LLM 接入 | 🔴 强制 |
 | 5 | BR-LLM-005 | 调用超时时间默认 60s | LLM 接入 | ⚪ 可覆盖 |
 | 6 | BR-LLM-006 | 最大重试次数默认 3 次 | LLM 接入 | ⚪ 可覆盖 |
+| 7 | BR-LLM-007 | 思考模式（thinking.enabled）必须通过自定义 ArkThinkingStreamingChatModel 直连方舟 API，不走 LangChain4j openai4j（因 openai4j 不透传 reasoning_content） | LLM 接入 | 🔴 强制 |
 
 ### 9.2 Agent 编排规则
 
@@ -917,6 +940,8 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 10 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | Agent 编排 | 🔴 强制 |
 | 11 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | Agent 编排 | 🟡 尽量 |
 | 12 | BR-AGT-006 | Agent 调用日志默认开启 | Agent 编排 | ⚪ 可覆盖 |
+| 13 | BR-AGT-007 | 思考模式必须使用专用系统提示词（thinkingSystemPrompt），不提及工具调用能力；正常模式使用 defaultSystemPrompt（含工具引导语） | Agent 编排 | 🔴 强制 |
+| 14 | BR-THINK-002 | 深度思考 ReAct 模式系统提示词（thinkingReactSystemPrompt）必须包含 ReAct 格式引导，工具能力描述通过运行时动态生成（ToolSchemaConverter.convertToDescriptionText() 反射扫描 @Tool 方法），不硬编码在提示词配置中（深度思考 CR-001） | Agent 编排 | 🔴 强制 |
 
 ### 9.3 工具调用规则
 
@@ -964,6 +989,10 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 41 | BR-FE-008 | 会话列表按最后活跃时间倒序排列 | 前端对话 | 🔴 强制 |
 | 42 | BR-FE-009 | 流式输出过程中禁用输入框，提供"停止生成"按钮 | 前端对话 | 🔴 强制 |
 | 43 | BR-FE-010 | 流式中断后已接收内容作为助手回复存入本地缓存 | 前端对话 | 🔴 强制 |
+| 44 | BR-FE-011 | 深度思考开关（toggle）按消息维度控制，当前会话内保持状态，切换会话互不影响（CR-001） | 前端对话 | 🔴 强制 |
+| 45 | BR-FE-012 | 推理内容通过可折叠区块展示：流式中展开（标题"思考中..."），完成后折叠（标题"已思考 X 秒"）（CR-001） | 前端对话 | 🔴 强制 |
+| 46 | BR-FE-013 | 助手正式回复按 Markdown 格式渲染（marked + DOMPurify），用户消息保持纯文本（CR-001） | 前端对话 | 🔴 强制 |
+| 47 | BR-FE-014 | 推理内容随消息持久化到 localStorage（Message.reasoning 字段），刷新页面后仍可展开回看（CR-001） | 前端对话 | 🔴 强制 |
 
 ### 9.7 错误码规则
 
@@ -1367,6 +1396,8 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 |------|------|---------|
 | v1.0 | 2026-07-20 | 初始版本，基于 specs/ 文档体系与项目源码生成 12 章完整知识库 |
 | v1.1 | 2026-07-21 | 新增前端对话模块（Vue 3 + Vite + TypeScript + Pinia），SSE 流式接口，10 条前端业务规则（BR-FE-001~010），前端设计系统（Refined Dark Tech），localStorage 持久化，更新项目结构（agent-demo-frontend 模块），更新技术栈与开发环境章节 |
+| v1.2 | 2026-07-22 | CR-001 深度思考与 Markdown 渲染：新增 4 条前端规则（BR-FE-011~014）、1 条 LLM 规则（BR-LLM-007）、1 条 Agent 规则（BR-AGT-007）、1 条 Web 规则（BR-WEB-010）；更新 5.8 节 SSE 流式对话流程（含 enableThinking 分流 + reasoning 事件）；更新 4.1/4.3 节工程结构（新增 ArkThinkingStreamingChatModel/ThinkingTokenStream 等）；更新 3.4 节前端技术栈（marked + DOMPurify） |
+| v1.3 | 2026-07-23 | 深度思考模式优化 CR-001（动态工具声明）：ToolSchemaConverter 新增 convertToDescriptionText() 方法动态生成工具描述；AgentConfig.thinkingReactSystemPrompt 移除硬编码工具描述；SimpleAgent.buildReActMessagesWithMemory() 动态拼接工具描述到系统提示词；新增 BR-THINK-002 业务规则（工具描述动态生成，不硬编码）；更新 4.3 节工程结构（tools/registry 新增 ToolSchemaConverter，agent/config 新增 thinkingReactSystemPrompt） |
 
 ---
 

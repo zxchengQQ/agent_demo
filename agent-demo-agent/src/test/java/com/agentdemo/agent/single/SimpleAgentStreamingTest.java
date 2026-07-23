@@ -3,7 +3,9 @@ package com.agentdemo.agent.single;
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
+import com.agentdemo.tools.registry.ToolSchemaConverter;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
@@ -49,7 +51,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig);
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
 
         // when: 触发 delegate 初始化（调用 chatStream）
         try {
@@ -83,7 +85,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig);
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
 
         // when: 调用 chatStream
         TokenStream tokenStream = agent.chatStream("test-session", "你好");

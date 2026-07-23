@@ -9,6 +9,32 @@ export type MessageRole = 'user' | 'assistant';
 /** 消息状态 */
 export type MessageStatus = 'complete' | 'incomplete' | 'error';
 
+/**
+ * 工具调用信息（ReAct 推理模式）
+ * 业务含义：记录 Agent 在某一轮迭代中调用的工具名称、入参和返回结果。
+ */
+export interface ToolCallInfo {
+  /** 工具名称 */
+  toolName: string;
+  /** 工具入参（JSON 字符串） */
+  arguments: string;
+  /** 工具返回结果 */
+  result: string;
+}
+
+/**
+ * ReAct 推理单步记录
+ * 业务含义：ReAct 模式下每一轮迭代包含一个 Thought（推理）和若干工具调用。
+ */
+export interface ReactStep {
+  /** 迭代轮次（从 1 开始） */
+  iteration: number;
+  /** 思考内容 */
+  thought: string;
+  /** 本轮工具调用列表 */
+  toolCalls: ToolCallInfo[];
+}
+
 /** 单条消息 */
 export interface Message {
   /** 消息唯一 ID（前端生成） */
@@ -27,6 +53,12 @@ export interface Message {
    * 可选字段，向前兼容旧数据（未开启思考的旧消息 reasoning 为 undefined）。
    */
   reasoning?: string;
+  /**
+   * ReAct 推理步骤列表
+   * 业务含义：ReAct 模式下记录每轮迭代的 Thought/Action/Observation，流式展示推理过程。
+   * 可选字段，向前兼容旧数据；不持久化到 localStorage（仅当前会话实时展示）。
+   */
+  reactSteps?: ReactStep[];
 }
 
 /** 会话纪录（localStorage 存储单元） */
@@ -55,6 +87,27 @@ export interface StreamCallbacks {
    * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
    */
   onReasoning?: (reasoning: string) => void;
+  /**
+   * 收到 thought 事件（ReAct 推理模式）
+   * 业务含义：ReAct 模式下某一轮迭代的思考内容，追加到对应 iteration 的 reactStep。
+   */
+  onThought?: (thought: string, iteration: number) => void;
+  /**
+   * 收到 action 事件（ReAct 推理模式）
+   * 业务含义：ReAct 模式下某一轮迭代触发的工具调用，记录工具名和入参。
+   * 注：参数名用 args 而非 arguments（arguments 是严格模式保留字）。
+   */
+  onAction?: (toolName: string, args: string, iteration: number) => void;
+  /**
+   * 收到 observation 事件（ReAct 推理模式）
+   * 业务含义：ReAct 模式下某一轮迭代工具调用的返回结果。
+   */
+  onObservation?: (result: string, iteration: number) => void;
+  /**
+   * 收到 final-answer 事件（ReAct 推理模式）
+   * 业务含义：ReAct 模式下某一轮迭代得出最终答案，将 thought 移入正式回复。
+   */
+  onFinalAnswer?: (iteration: number) => void;
   /** 收到 done 事件（流式完成） */
   onDone: (duration: number) => void;
   /** 收到 error 事件（错误提示，AC-012/AC-013） */
