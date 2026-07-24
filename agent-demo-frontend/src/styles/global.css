@@ -118,3 +118,130 @@ body {
 .fade-in {
   animation: fadeIn 0.3s ease-out;
 }
+
+/* ===== CR-002 任务拆解折叠区块样式（AC-015，与 thinking-block/react-block 对称）===== */
+
+.task-block {
+  margin-bottom: var(--spacing-sm);
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.task-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: background 0.2s;
+}
+
+.task-header:hover {
+  background: var(--bg-input);
+}
+
+.task-icon {
+  font-size: 10px;
+}
+
+.task-title {
+  font-weight: 500;
+}
+
+.task-content {
+  padding: var(--spacing-sm);
+  border-top: 1px solid var(--border);
+}
+
+.subtask-item {
+  padding: var(--spacing-xs) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.subtask-item:last-child {
+  border-bottom: none;
+}
+
+.subtask-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+}
+
+.subtask-status-icon {
+  font-size: 14px;
+  width: 16px;
+  text-align: center;
+  display: inline-block;
+}
+
+/* in-progress 旋转动画（AC-003） */
+.subtask-item.in-progress .subtask-status-icon {
+  color: var(--accent);
+  animation: task-spin 1.5s linear infinite;
+}
+
+@keyframes task-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* 各状态颜色（AC-016） */
+.subtask-item.completed .subtask-status-icon {
+  color: var(--success);
+}
+
+.subtask-item.failed .subtask-status-icon {
+  color: var(--danger);
+}
+
+.subtask-item.cancelled .subtask-status-icon,
+.subtask-item.pending .subtask-status-icon {
+  color: var(--text-muted);
+}
+
+.subtask-index {
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+}
+
+.subtask-title {
+  color: var(--text-secondary);
+}
+
+.subtask-detail {
+  margin-top: var(--spacing-xs);
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.subtask-reasoning {
+  margin-bottom: var(--spacing-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.subtask-result {
+  margin-top: var(--spacing-xs);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
+
+.subtask-error {
+  margin-top: var(--spacing-xs);
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--danger);
+}

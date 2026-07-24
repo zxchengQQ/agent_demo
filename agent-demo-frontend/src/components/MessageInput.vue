@@ -5,8 +5,11 @@ const props = withDefaults(defineProps<{
   isStreaming: boolean;
   /** 是否开启深度思考（CR-001，AC-021），可选，默认 false 向前兼容 */
   enableThinking?: boolean;
+  /** 是否开启复杂任务拆解（CR-002，AC-012），可选，默认 false 向前兼容 */
+  enableTaskBreakdown?: boolean;
 }>(), {
   enableThinking: false,
+  enableTaskBreakdown: false,
 });
 
 const emit = defineEmits<{
@@ -14,6 +17,8 @@ const emit = defineEmits<{
   stop: [];
   /** 切换深度思考开关（CR-001，AC-021） */
   toggleThinking: [];
+  /** 切换复杂任务拆解开关（CR-002，AC-012） */
+  toggleTaskBreakdown: [];
 }>();
 
 const inputText = ref('');
@@ -100,6 +105,14 @@ function handleKeydown(e: KeyboardEvent) {
         @click="emit('toggleThinking')"
       >
         🧠 深度思考
+      </button>
+      <!-- 任务拆解 toggle（CR-002，AC-012）：开启时高亮，与深度思考独立共存 -->
+      <button
+        class="btn-task-breakdown"
+        :class="{ active: props.enableTaskBreakdown }"
+        @click="emit('toggleTaskBreakdown')"
+      >
+        📋 任务拆解
       </button>
       <span v-if="isOverLimit" class="char-warn">
         消息长度不能超过 {{ MAX_LENGTH }} 字符
@@ -221,6 +234,31 @@ function handleKeydown(e: KeyboardEvent) {
 
 /* 开启时高亮 */
 .btn-thinking.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* 任务拆解 toggle 按钮（CR-002，AC-012）- 与 btn-thinking 样式对称 */
+.btn-task-breakdown {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-task-breakdown:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* 开启时高亮 */
+.btn-task-breakdown.active {
   border-color: var(--accent);
   background: var(--accent-dim);
   color: var(--accent);

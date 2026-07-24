@@ -16,6 +16,13 @@ const isStreaming = ref(false);
  */
 const enableThinking = ref(false);
 
+/**
+ * 复杂任务拆解开关状态（CR-002，AC-012）
+ * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，影响下一条消息的 streamChat 调用参数。
+ * 与深度思考独立共存，可同时开启。状态在当前会话内保持。
+ */
+const enableTaskBreakdown = ref(false);
+
 let abortController: AbortController | null = null;
 
 /** 当前会话的消息列表 */
@@ -73,6 +80,7 @@ async function sendMessage(message: string) {
       sessionId,
       message,
       enableThinking.value,
+      enableTaskBreakdown.value,
       {
         // AC-010: 透明续聊 - 后端返回新 sessionId 时更新关联
         onSession: (newSessionId: string) => {
@@ -118,6 +126,49 @@ async function sendMessage(message: string) {
         onError: (msg: string) => {
           store.markError(assistantMsgId, msg);
         },
+
+        // ===== CR-002 任务拆解回调（AC-001, AC-003, AC-005, AC-006）=====
+
+        // 任务规划完成，初始化子任务列表（AC-001）
+        onTaskPlan: (tasks) => {
+          store.initSubTasks(assistantMsgId, tasks);
+        },
+        // 子任务开始执行，状态变为 in-progress（AC-003）
+        onTaskStart: (index, _title) => {
+          store.updateSubTaskStatus(assistantMsgId, index, 'in-progress');
+        },
+        // 子任务执行内容片段（AC-005）
+        onTaskToken: (index, content) => {
+          store.appendSubTaskContent(assistantMsgId, index, content);
+        },
+        // 子任务推理片段（AC-011）
+        onTaskReasoning: (index, content) => {
+          store.appendSubTaskReasoning(assistantMsgId, index, content);
+        },
+        // 子任务 ReAct 思考（AC-005）
+        onTaskThought: (index, content, iteration) => {
+          store.appendSubTaskThought(assistantMsgId, index, content, iteration);
+        },
+        // 子任务工具调用（AC-005）
+        onTaskAction: (index, toolName, args, iteration) => {
+          store.appendSubTaskAction(assistantMsgId, index, toolName, args, iteration);
+        },
+        // 子任务工具结果（AC-005）
+        onTaskObservation: (index, result, iteration) => {
+          store.appendSubTaskObservation(assistantMsgId, index, result, iteration);
+        },
+        // 子任务完成，状态变为 completed（AC-003）
+        onTaskComplete: (index) => {
+          store.updateSubTaskStatus(assistantMsgId, index, 'completed');
+        },
+        // 子任务失败，状态变为 failed（AC-006）
+        onTaskFailed: (index, error) => {
+          store.updateSubTaskStatus(assistantMsgId, index, 'failed', error);
+        },
+        // 子任务取消，状态变为 cancelled（AC-006, AC-007）
+        onTaskCancelled: (index) => {
+          store.updateSubTaskStatus(assistantMsgId, index, 'cancelled');
+        },
       },
       abortController.signal,
     );
@@ -146,9 +197,11 @@ function stopGeneration() {
     <MessageInput
       :is-streaming="isStreaming"
       :enable-thinking="enableThinking"
+      :enable-task-breakdown="enableTaskBreakdown"
       @send="sendMessage"
       @stop="stopGeneration"
       @toggle-thinking="enableThinking = !enableThinking"
+      @toggle-task-breakdown="enableTaskBreakdown = !enableTaskBreakdown"
     />
   </div>
 </template>

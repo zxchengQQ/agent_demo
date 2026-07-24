@@ -1,6 +1,7 @@
 package com.agentdemo.web.controller;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
+import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
@@ -38,6 +39,8 @@ class AgentControllerSseTest {
 
     @MockBean
     SimpleAgent simpleAgent;
+    @MockBean
+    PlanAgent planAgent;
     @MockBean
     SessionManager sessionManager;
     @MockBean

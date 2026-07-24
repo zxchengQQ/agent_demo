@@ -17,6 +17,7 @@ const API_BASE = '/api/agent';
  * @param sessionId 会话 ID（首次为空字符串）
  * @param message 用户消息
  * @param enableThinking 是否开启深度思考（CR-001，AC-021），后端据此分流是否推送 reasoning 事件
+ * @param enableTaskBreakdown 是否开启复杂任务拆解（CR-002，AC-001），后端据此分流是否执行任务拆解
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
  */
@@ -24,6 +25,7 @@ export async function streamChat(
   sessionId: string,
   message: string,
   enableThinking: boolean,
+  enableTaskBreakdown: boolean,
   callbacks: StreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
@@ -32,7 +34,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message, enableThinking }),
+      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown }),
       signal,
     });
   } catch {
@@ -151,6 +153,111 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       }
       break;
     }
+
+    // ===== CR-002 新增：任务拆解事件（10 个，均用可选链 ?. 兼容未注册回调）=====
+
+    case 'task_plan': {
+      // 任务拆解规划完成，data 为 JSON（含 tasks 数组）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskPlan?.(parsed.tasks);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_start': {
+      // 子任务开始执行，data 为 JSON（含 index 和 title）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskStart?.(parsed.index, parsed.title);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_token': {
+      // 子任务执行内容片段，data 为 JSON（含 index 和 content）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskToken?.(parsed.index, parsed.content);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_reasoning': {
+      // 子任务推理片段，data 为 JSON（含 index 和 content）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskReasoning?.(parsed.index, parsed.content);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_thought': {
+      // 子任务 ReAct 思考，data 为 JSON（含 index、content 和 iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskThought?.(parsed.index, parsed.content, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_action': {
+      // 子任务工具调用，data 为 JSON（含 index、toolName、args 和 iteration）
+      // 注：字段名用 args 而非 arguments（arguments 是 JS 保留字）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskAction?.(parsed.index, parsed.toolName, parsed.args, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_observation': {
+      // 子任务工具结果，data 为 JSON（含 index、result 和 iteration）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskObservation?.(parsed.index, parsed.result, parsed.iteration);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_complete': {
+      // 子任务执行完成，data 为 JSON（含 index）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskComplete?.(parsed.index);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_failed': {
+      // 子任务执行失败，data 为 JSON（含 index 和 error）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskFailed?.(parsed.index, parsed.error);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'task_cancelled': {
+      // 子任务被取消，data 为 JSON（含 index）
+      try {
+        const parsed = JSON.parse(data);
+        callbacks.onTaskCancelled?.(parsed.index);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+
     case 'done':
       callbacks.onDone(Number(data));
       break;

@@ -1,5 +1,8 @@
 package com.agentdemo.web.controller;
 
+import com.agentdemo.agent.core.SubTask;
+import com.agentdemo.agent.core.TaskBreakdownStream;
+import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.common.result.Result;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
@@ -18,9 +21,12 @@ import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
-import java.io.IOException;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Agent 对话接口
@@ -42,11 +48,13 @@ public class AgentController {
      * chatThinkingStream（CR-001 思考路径）。注入具体类型避免 BaseAgent 类型多候选注入歧义。
      */
     private final SimpleAgent simpleAgent;
+    private final PlanAgent planAgent;
     private final SessionManager sessionManager;
     private final ChatMemoryManager memoryManager;
 
-    public AgentController(SimpleAgent simpleAgent, SessionManager sessionManager, ChatMemoryManager memoryManager) {
+    public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent, SessionManager sessionManager, ChatMemoryManager memoryManager) {
         this.simpleAgent = simpleAgent;
+        this.planAgent = planAgent;
         this.sessionManager = sessionManager;
         this.memoryManager = memoryManager;
     }
@@ -134,6 +142,71 @@ public class AgentController {
         StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
 
+        // 业务含义：任务拆解分流（CR-002 新增）
+        // - enableTaskBreakdown=true：走 PlanAgent.chatTaskBreakdownStream 路径
+        // - enableTaskBreakdown=false/null：继续检查 enableThinking 分支
+        if (Boolean.TRUE.equals(request.getEnableTaskBreakdown())) {
+            // 业务含义：异步执行任务拆解编排，确保 SSE 事件实时推送到客户端。
+            // 若在请求线程同步执行 start()，Spring SseEmitter 在 Controller 返回前无法初始化 handler，
+            // 所有 send() 数据被缓存到 earlySendAttempts，直到全部完成后才一次性发送，
+            // 导致前端无法实时看到任务拆解和执行进度。
+            CompletableFuture.runAsync(() ->
+                planAgent.chatTaskBreakdownStream(effectiveSessionId, request.getMessage(),
+                    Boolean.TRUE.equals(request.getEnableThinking()))
+                .onPlan(tasks -> {
+                    // 推送子任务列表（AC-001）
+                    List<Map<String, Object>> taskList = new ArrayList<>();
+                    for (SubTask task : tasks) {
+                        Map<String, Object> map = new LinkedHashMap<>();
+                        map.put("index", task.index());
+                        map.put("title", task.title());
+                        taskList.add(map);
+                    }
+                    sendEvent(emitter, "task_plan", Map.of("tasks", taskList));
+                })
+                .onNoBreakdown(() -> { /* 无事件，后续 token 事件自动处理 */ })
+                .onTaskStart((index, title) -> sendEvent(emitter, "task_start",
+                        Map.of("index", index, "title", title)))
+                .onTaskToken((index, content) -> sendEvent(emitter, "task_token",
+                        Map.of("index", index, "content", content)))
+                .onTaskReasoning((index, content) -> sendEvent(emitter, "task_reasoning",
+                        Map.of("index", index, "content", content)))
+                .onTaskThought((index, content, iter) -> sendEvent(emitter, "task_thought",
+                        Map.of("index", index, "content", content, "iteration", iter)))
+                .onTaskAction((index, name, args, iter) -> sendEvent(emitter, "task_action",
+                        Map.of("index", index, "toolName", name, "args", args, "iteration", iter)))
+                .onTaskObservation((index, result, iter) -> sendEvent(emitter, "task_observation",
+                        Map.of("index", index, "result", result, "iteration", iter)))
+                .onTaskComplete(index -> sendEvent(emitter, "task_complete",
+                        Map.of("index", index)))
+                .onTaskFailed((index, error) -> sendEvent(emitter, "task_failed",
+                        Map.of("index", index, "error", error)))
+                .onTaskCancelled(index -> sendEvent(emitter, "task_cancelled",
+                        Map.of("index", index)))
+                .onSummaryToken(token -> {
+                    // 业务含义：总结阶段文本片段，推送给前端 + 累积完整回复（供 onComplete 写入记忆）
+                    sendEvent(emitter, "token", token);
+                    fullResponse.append(token);
+                })
+                .onSummaryReasoning(reasoning -> sendEvent(emitter, "reasoning", reasoning))
+                .onComplete(() -> {
+                    // 业务含义：将总结回复写入记忆，保证下一轮对话有上下文（与其他路径对齐）
+                    if (fullResponse.length() > 0) {
+                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
+                    }
+                    sendEvent(emitter, "done", System.currentTimeMillis() - start);
+                    emitter.complete();
+                })
+                .onError(error -> {
+                    log.error("任务拆解异常: sessionId={}", effectiveSessionId, error);
+                    sendEvent(emitter, "error", "任务拆解执行失败，请重试");
+                    emitter.complete();
+                })
+                .start()
+            );
+            return emitter;
+        }
+
         // 业务含义：根据 enableThinking 分流（CR-001 新增，Task-09 扩展为 ReAct）
         // - true：走 ReAct 思考流式路径，推送 reasoning + thought + action + observation + final-answer 事件
         // - false/null：走原 agent.chatStream 路径，仅推送 token 事件（零回归）
@@ -190,7 +263,7 @@ public class AgentController {
     }
 
     /**
-     * 发送 SSE 事件（统一异常处理，避免 IOException 中断主流程）
+     * 发送 SSE 事件（统一异常处理，避免异常中断后续 SSE 事件推送）
      *
      * @param emitter  SSE 发射器
      * @param eventName 事件名
@@ -199,9 +272,10 @@ public class AgentController {
     private void sendEvent(SseEmitter emitter, String eventName, Object data) {
         try {
             emitter.send(SseEmitter.event().name(eventName).data(data));
-        } catch (IOException e) {
-            // 客户端可能已断开连接，降级为 WARN 日志，不抛异常
-            log.warn("SSE 发送失败（客户端可能已断开）: event={}", eventName);
+        } catch (Exception e) {
+            // 业务含义：客户端断开（IOException）或 emitter 已超时/完成（IllegalStateException），
+            // 降级为 WARN 日志，不抛异常，避免中断后续 SSE 事件推送
+            log.warn("SSE 发送失败: event={}, reason={}", eventName, e.getMessage());
         }
     }
 

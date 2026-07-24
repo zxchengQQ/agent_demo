@@ -50,4 +50,15 @@ public class ChatRequest {
      * </p>
      */
     private Boolean enableThinking;
+
+    /**
+     * 是否开启复杂任务拆解模式（CR-002 新增），默认 false
+     * <p>
+     * 业务含义：用户通过前端开关控制，开启后 Agent 先拆解为子任务再逐个执行。
+     * true 时后端走 PlanAgent.chatTaskBreakdownStream 路径（推送 task_* 系列事件），
+     * false/null 时走原有路径（零回归）。
+     * 与 enableThinking 独立共存，可同时为 true（AC-011）。
+     * </p>
+     */
+    private Boolean enableTaskBreakdown = false;
 }

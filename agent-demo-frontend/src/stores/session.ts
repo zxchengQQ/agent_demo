@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import type { SessionRecord, Message, ReactStep } from '@/types';
+import type { SessionRecord, Message, ReactStep, SubTaskStatus, SubTaskReactStep } from '@/types';
 import * as storage from '@/utils/storage';
 
 /**
@@ -301,6 +301,158 @@ export const useSessionStore = defineStore('session', {
         session.updatedAt = Date.now();
         this.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
         storage.saveSessions(this.sessions);
+      }
+    },
+
+    // ===== CR-002 新增：子任务状态管理（AC-003, AC-005, AC-014, AC-016）=====
+
+    /**
+     * 初始化子任务列表（task_plan 事件触发，AC-001/AC-016）
+     * 业务含义：Agent 将复杂任务拆解为子任务列表，前端初始化全部为 pending 状态。
+     */
+    initSubTasks(messageId: string, tasks: { index: number; title: string }[]) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          msg.subTasks = tasks.map((t) => ({
+            index: t.index,
+            title: t.title,
+            status: 'pending' as SubTaskStatus,
+          }));
+          storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
+     * 更新子任务状态（task_start/complete/failed/cancelled 事件触发，AC-003/AC-006/AC-007）
+     * 业务含义：子任务状态流转，failed 时附带错误原因。
+     */
+    updateSubTaskStatus(messageId: string, index: number, status: SubTaskStatus, error?: string) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.subTasks) {
+          const subTask = msg.subTasks.find((st) => st.index === index);
+          if (subTask) {
+            subTask.status = status;
+            if (error !== undefined) {
+              subTask.error = error;
+            }
+            storage.saveSessions(this.sessions);
+          }
+          return;
+        }
+      }
+    },
+
+    /**
+     * 追加子任务执行内容（task_token 事件触发，AC-005）
+     * 业务含义：子任务执行中内容片段逐字追加，类似 appendContent 但定位到子任务。
+     */
+    appendSubTaskContent(messageId: string, index: number, content: string) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.subTasks) {
+          const subTask = msg.subTasks.find((st) => st.index === index);
+          if (subTask) {
+            if (subTask.content === undefined) {
+              subTask.content = '';
+            }
+            subTask.content += content;
+            storage.saveSessions(this.sessions);
+          }
+          return;
+        }
+      }
+    },
+
+    /**
+     * 追加子任务推理内容（task_reasoning 事件触发，AC-011）
+     * 业务含义：子任务推理片段逐字追加，类似 appendReasoning 但定位到子任务。
+     */
+    appendSubTaskReasoning(messageId: string, index: number, content: string) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.subTasks) {
+          const subTask = msg.subTasks.find((st) => st.index === index);
+          if (subTask) {
+            if (subTask.reasoning === undefined) {
+              subTask.reasoning = '';
+            }
+            subTask.reasoning += content;
+            storage.saveSessions(this.sessions);
+          }
+          return;
+        }
+      }
+    },
+
+    /**
+     * 获取或创建子任务的指定 iteration 的 SubTaskReactStep（内部辅助方法）
+     * 业务含义：复用现有 _getOrCreateStep 的逻辑模式，但操作 subTask.reactSteps。
+     */
+    _getOrCreateSubTaskStep(messageId: string, index: number, iteration: number): SubTaskReactStep | undefined {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.subTasks) {
+          const subTask = msg.subTasks.find((st) => st.index === index);
+          if (subTask) {
+            if (subTask.reactSteps === undefined) {
+              subTask.reactSteps = [];
+            }
+            let step = subTask.reactSteps.find((s) => s.iteration === iteration);
+            if (!step) {
+              step = { iteration, thought: '', toolCalls: [] };
+              subTask.reactSteps.push(step);
+            }
+            return step;
+          }
+        }
+      }
+      return undefined;
+    },
+
+    /**
+     * 追加子任务 ReAct 思考（task_thought 事件触发，AC-005）
+     */
+    appendSubTaskThought(messageId: string, index: number, thought: string, iteration: number) {
+      const step = this._getOrCreateSubTaskStep(messageId, index, iteration);
+      if (step) {
+        step.thought += thought;
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    /**
+     * 追加子任务工具调用（task_action 事件触发，AC-005）
+     */
+    appendSubTaskAction(messageId: string, index: number, toolName: string, args: string, iteration: number) {
+      const step = this._getOrCreateSubTaskStep(messageId, index, iteration);
+      if (step) {
+        step.toolCalls.push({ toolName, arguments: args, result: '' });
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    /**
+     * 追加子任务工具结果（task_observation 事件触发，AC-005）
+     * 业务含义：将结果填入对应 iteration 最后一条工具调用记录。
+     */
+    appendSubTaskObservation(messageId: string, index: number, result: string, iteration: number) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg && msg.subTasks) {
+          const subTask = msg.subTasks.find((st) => st.index === index);
+          if (subTask && subTask.reactSteps) {
+            const step = subTask.reactSteps.find((s) => s.iteration === iteration);
+            if (step && step.toolCalls.length > 0) {
+              step.toolCalls[step.toolCalls.length - 1].result = result;
+              storage.saveSessions(this.sessions);
+            }
+            return;
+          }
+        }
       }
     },
   },
