@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { mount } from '@vue/test-utils';
+import { nextTick } from 'vue';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import MessageItem from '@/components/MessageItem.vue';
 import MessageInput from '@/components/MessageInput.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
+import MessageList from '@/components/MessageList.vue';
 import type { Message, SubTask } from '@/types';
 
 // Mock streamChat 避免 ChatWindow 测试发起真实 API 调用
@@ -321,6 +323,133 @@ describe('MessageItem', () => {
     // 验证 class 存在即可（具体 CSS 值在 global.css 中定义）
     expect(taskBlock.classes()).toContain('task-block');
   });
+
+  // ===== CR-001 变更新增：in-progress 可展开 + 自动展开（AC-005 修改, AC-017 新增）=====
+
+  it('点击 in-progress 子任务头部展开详情（AC-005 修改）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '执行中任务', status: 'in-progress', content: '部分结果' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 初始：watcher 未触发（mount 时不自动展开），详情折叠
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+    // 点击展开
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+    expect(wrapper.find('.subtask-detail').text()).toContain('部分结果');
+    // 再次点击折叠
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+  });
+
+  it('点击 pending 子任务头部不展开（AC-005 边界）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '待执行', status: 'pending' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+  });
+
+  it('pending->in-progress 状态变化时自动展开（AC-017）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '待执行', status: 'pending' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 初始不展开
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+    // 状态变为 in-progress
+    await wrapper.setProps({
+      message: { ...msg, subTasks: [{ index: 1, title: '执行中', status: 'in-progress' }] },
+    });
+    // 自动展开
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+  });
+
+  it('in-progress 子任务展开后渲染 reactSteps（AC-005 修改）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{
+        index: 1,
+        title: '执行中任务',
+        status: 'in-progress',
+        reactSteps: [{
+          iteration: 1,
+          thought: '需要查询信息',
+          toolCalls: [{ toolName: 'http', arguments: '{"url":"..."}', result: '查询结果' }],
+        }],
+      }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 手动展开（mount 时 watcher 不触发）
+    await wrapper.find('.subtask-header').trigger('click');
+    // 验证 ReAct 步骤渲染
+    expect(wrapper.find('.react-thought').text()).toContain('需要查询信息');
+    expect(wrapper.find('.tool-name').text()).toBe('http');
+    expect(wrapper.find('.tool-result-text').text()).toContain('查询结果');
+  });
+
+  it('in-progress 子任务展开后显示 content（AC-005 修改）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '执行中任务', status: 'in-progress', content: '部分执行结果' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-result').text()).toContain('部分执行结果');
+  });
+
+  it('in-progress->completed 展开状态保持不变（AC-005）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '执行中', status: 'in-progress', content: '结果' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 手动展开
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+    // 状态变为 completed
+    await wrapper.setProps({
+      message: { ...msg, subTasks: [{ index: 1, title: '已完成', status: 'completed', content: '结果' }] },
+    });
+    // 仍然展开
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+  });
+
+  it('手动折叠 in-progress 子任务后不被自动重新展开（尊重用户操作）', async () => {
+    const msg = createTaskMessage({
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '待执行', status: 'pending' }],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // pending -> in-progress：watcher 自动展开
+    await wrapper.setProps({
+      message: { ...msg, subTasks: [{ index: 1, title: '执行中', status: 'in-progress', content: '部分' }] },
+    });
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+    // 手动折叠
+    await wrapper.find('.subtask-header').trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+    // content 变化但 status 不变（watcher 不触发）
+    await wrapper.setProps({
+      message: { ...msg, subTasks: [{ index: 1, title: '执行中', status: 'in-progress', content: '更多内容' }] },
+    });
+    // 仍然折叠（用户操作被尊重）
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+  });
+
+  it('现有 completed 展开行为不受影响（回归验证）', async () => {
+    const wrapper = mount(MessageItem, { props: { message: createTaskMessage() } });
+    // 初始折叠
+    expect(wrapper.find('.subtask-detail').exists()).toBe(false);
+    // 点击第一个子任务（completed）
+    await wrapper.findAll('.subtask-header')[0].trigger('click');
+    expect(wrapper.find('.subtask-detail').exists()).toBe(true);
+    expect(wrapper.find('.subtask-detail').text()).toContain('分析结果');
+  });
 });
 
 describe('MessageInput', () => {
@@ -487,5 +616,42 @@ describe('ChatWindow', () => {
     expect(streamChat).toHaveBeenCalled();
     const callArgs = vi.mocked(streamChat).mock.calls[0];
     expect(callArgs[3]).toBe(true);
+  });
+});
+
+/**
+ * MessageList 组件测试
+ * 验证标准来源：Bug1 修复 - 任务完成后自动滚动以显示总结结果
+ */
+describe('MessageList', () => {
+  it('消息 status 变化时自动滚动到底部（Bug1：任务完成后显示总结）', async () => {
+    const msg: Message = {
+      id: '1',
+      role: 'assistant',
+      content: '总结内容',
+      createdAt: 0,
+      status: 'incomplete',
+      subTasks: [{ index: 1, title: '子任务1', status: 'completed' }],
+    };
+
+    const wrapper = mount(MessageList, {
+      props: { messages: [msg] },
+    });
+
+    // Mock scrollHeight（jsdom 默认为 0）
+    const listEl = wrapper.find('.message-list').element as HTMLDivElement;
+    Object.defineProperty(listEl, 'scrollHeight', { value: 500, configurable: true });
+
+    // 初始 scrollTop 为 0
+    expect(listEl.scrollTop).toBe(0);
+
+    // 模拟任务完成：status 从 incomplete 变为 complete（content 不变）
+    await wrapper.setProps({
+      messages: [{ ...msg, status: 'complete' }],
+    });
+    await nextTick();
+
+    // 验证 scrollToBottom 被触发（scrollTop 应被设为 scrollHeight）
+    expect(listEl.scrollTop).toBe(500);
   });
 });

@@ -23,9 +23,9 @@ watch(
   () => scrollToBottom(),
 );
 
-// 消息内容变化时滚动（流式追加）
+// 消息内容或状态变化时滚动（流式追加 + 任务完成时显示总结，Bug1 修复）
 watch(
-  () => props.messages.map((m) => m.content).join(''),
+  () => props.messages.map((m) => `${m.content}:${m.status}`).join(''),
   () => scrollToBottom(),
 );
 </script>

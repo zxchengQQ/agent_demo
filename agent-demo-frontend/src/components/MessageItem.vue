@@ -87,8 +87,25 @@ const renderedContent = computed(() => {
  */
 const isTaskExpanded = ref(props.message.status === 'incomplete');
 
-/** 已展开子任务序号集合（仅 completed 状态的子任务可展开，AC-005） */
+/** 已展开子任务序号集合（in-progress/completed 状态的子任务可展开，AC-005 CR-001 更新） */
 const expandedSubTasks = ref(new Set<number>());
+
+/**
+ * 监听子任务状态变化，pending->in-progress 时自动展开（CR-001 新增，AC-017）
+ * 业务含义：子任务开始执行时自动展开详情，用户无需手动点击即可看到实时 ReAct 过程
+ */
+watch(
+  () => props.message.subTasks?.map((st) => `${st.index}:${st.status}`).join(','),
+  () => {
+    if (!props.message.subTasks) return;
+    for (const subTask of props.message.subTasks) {
+      if (subTask.status === 'in-progress' && !expandedSubTasks.value.has(subTask.index)) {
+        expandedSubTasks.value.add(subTask.index);
+        expandedSubTasks.value = new Set(expandedSubTasks.value);
+      }
+    }
+  },
+);
 
 /** 任务列表标题：流式中"任务拆解（X/Y 已完成）"，完成后"已完成 Y 个子任务"（AC-015） */
 const taskListTitle = computed(() => {
@@ -111,12 +128,13 @@ function toggleTaskList() {
 }
 
 /**
- * 切换子任务详情展开/折叠（AC-005）
- * 业务含义：仅 completed 状态的子任务可展开查看执行详情。
+ * 切换子任务详情展开/折叠（AC-005，CR-001 更新）
+ * 业务含义：in-progress 和 completed 状态的子任务可展开查看执行详情。
  */
 function toggleSubTask(index: number) {
   const subTask = props.message.subTasks?.find((st) => st.index === index);
-  if (!subTask || subTask.status !== 'completed') return;
+  // 业务含义：in-progress 和 completed 状态的子任务可展开（CR-001 变更：原仅 completed 可展开）
+  if (!subTask || (subTask.status !== 'completed' && subTask.status !== 'in-progress')) return;
   if (expandedSubTasks.value.has(index)) {
     expandedSubTasks.value.delete(index);
   } else {
@@ -247,9 +265,9 @@ function statusIcon(status: SubTaskStatus): string {
               <span class="subtask-index">{{ subTask.index }}.</span>
               <span class="subtask-title">{{ subTask.title }}</span>
             </div>
-            <!-- 子任务详情（仅 completed 可展开，AC-005） -->
+            <!-- 子任务详情（in-progress/completed 可展开，AC-005 CR-001 更新） -->
             <div
-              v-if="expandedSubTasks.has(subTask.index) && subTask.status === 'completed'"
+              v-if="expandedSubTasks.has(subTask.index) && (subTask.status === 'completed' || subTask.status === 'in-progress')"
               class="subtask-detail"
             >
               <!-- 推理内容（如有） -->
@@ -582,6 +600,9 @@ function statusIcon(status: SubTaskStatus): string {
 .tool-result-text {
   white-space: pre-wrap;
   word-break: break-word;
+  /* Bug2 修复：限制工具结果长度，超长内容可滚动查看 */
+  max-height: 150px;
+  overflow-y: auto;
 }
 
 /* ===== CR-001 Markdown 渲染样式（AC-023）===== */
