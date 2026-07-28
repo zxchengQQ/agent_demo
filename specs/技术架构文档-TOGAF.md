@@ -170,7 +170,7 @@ graph TD
         D["agent-demo-llm<br/>ModelFactory + ArkProperties"]
         E["agent-demo-tools<br/>ToolRegistry + 内置工具"]
         F["agent-demo-memory<br/>ChatMemoryManager + SessionManager"]
-        G["agent-demo-rag（规划中）<br/>文档加载 + 检索"]
+        G["agent-demo-rag<br/>文档加载 + 分块 + 向量化 + 检索 + 对话集成"]
         H["agent-demo-mcp（规划中）<br/>MCP 客户端/服务端"]
     end
 
@@ -211,7 +211,7 @@ graph TB
         M_LLM["agent-demo-llm<br/>LLM 接入"]
         M_TOOLS["agent-demo-tools<br/>工具系统"]
         M_MEM["agent-demo-memory<br/>记忆系统"]
-        M_RAG["agent-demo-rag<br/>RAG 检索 规划中"]
+        M_RAG["agent-demo-rag<br/>RAG 检索"]
         M_MCP["agent-demo-mcp<br/>MCP 协议 规划中"]
     end
 
@@ -289,12 +289,14 @@ agent-demo-memory/
 | 层面 | 机制 |
 |------|------|
 | 通信协议 | HTTP + RESTful JSON |
-| API 前缀 | `/api/agent/` |
+| API 前缀 | `/api/agent/`（对话）、`/api/rag/`（知识库管理） |
 | 认证方式 | 无（学习示例工程，未接入认证） |
 | 响应格式 | `{ code: 200, data: T, msg: "" }` (`Result<T>`) |
 | 错误处理 | 全局异常拦截 -> 统一错误码 |
 | 接口文档 | Springdoc OpenAPI 3 + Swagger UI |
 | SSE 流式 | ✅ 已实现（SseEmitter + StreamingChatModel） |
+| 对话知识库集成 | ✅ 已实现（ChatRequest.knowledgeBases 字段 + AgentController 提示词注入） |
+| 文档异步处理 | ✅ 已实现（@Async + 状态轮询 + 批量向量化 batchEmbed） |
 
 ---
 
@@ -311,7 +313,7 @@ agent-demo-memory/
 | 工具数据域 | 无状态 | - | 工具调用即执行，不持久化 |
 | 模型缓存域 | 内存（ConcurrentHashMap） | 极小 | ChatModel/StreamingChatModel/EmbeddingModel |
 | 配置数据域 | application.yml + 环境变量 | 极小 | 启动时加载 |
-| RAG 向量域（规划中） | Milvus | 中 | 文档向量存储 |
+| RAG 向量域 | 内存（InMemoryEmbeddingStore） | 中 | 文档向量存储（可切换 Milvus） |
 | 关系数据域（规划中） | MySQL | 中 | 业务数据持久化 |
 
 ### 4.2 内存数据架构
@@ -546,14 +548,14 @@ flowchart LR
 | 内存存储 | 重启后会话/记忆丢失 | 规划接入 MySQL 持久化 |
 | 无认证机制 | 接口可被任意调用 | 学习示例可接受，生产需接入 Spring Security |
 | 无长期记忆 | Agent 无法跨会话记忆 | 规划接入 Milvus 向量记忆 |
-| 无前端可视化界面 | 过往仅通过 Swagger/curl 调用 | 前端对话模块已实现，Vue 3 对话框 + SSE 流式显示 |
-| 无 RAG 能力 | 无法基于知识库回答 | 规划 agent-demo-rag 模块 |
+| 无前端可视化界面 | 过往仅通过 Swagger/curl 调用 | 前端对话模块 + 知识库管理界面已实现，Vue 3 对话框 + SSE 流式显示 + 知识库 CRUD + 文档上传 |
+| 无 RAG 能力 | 无法基于知识库回答 | RAG 模块已完整实现（后端 + 前端），支持知识库管理/文档向量化/语义检索/对话集成 |
 
 ### 6.3 演进路线
 
 | 阶段 | 重点 | 时间范围 |
 |------|------|---------|
-| 短期 | 前端对话模块、RAG 检索模块、长期记忆（Milvus） | 2026 Q3 |
+| 短期 | ~~前端对话模块~~、~~RAG 检索模块~~、长期记忆（Milvus） | 2026 Q3（前端对话 + RAG 已实现） |
 | 中期 | MCP 客户端集成、多 Agent 协作、Spring Security 接入 | 2026 Q4 |
 | 长期 | 工作流编排、Guardrails、LangSmith 可观测性、MySQL 持久化 | 2027 Q1 |
 

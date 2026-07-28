@@ -1,0 +1,395 @@
+package com.agentdemo.rag.service;
+
+import com.agentdemo.common.exception.BusinessException;
+import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.rag.config.RagProperties;
+import com.agentdemo.rag.entity.DocumentChunk;
+import com.agentdemo.rag.entity.DocumentInfo;
+import com.agentdemo.rag.entity.DocumentStatus;
+import com.agentdemo.rag.entity.KnowledgeBase;
+import com.agentdemo.rag.loader.DocumentLoader;
+import com.agentdemo.rag.store.DocumentChunkStore;
+import com.agentdemo.rag.store.DocumentStore;
+import com.agentdemo.rag.store.EmbeddingStoreFactory;
+import com.agentdemo.rag.store.KnowledgeBaseStore;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.DocumentSplitter;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.store.embedding.EmbeddingStore;
+import dev.langchain4j.store.embedding.filter.Filter;
+import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Async;
+import org.springframework.stereotype.Service;
+import org.springframework.web.multipart.MultipartFile;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * 文档管理服务
+ * <p>
+ * 业务含义：负责文档上传、异步处理（解析->分块->向量化->入库）、状态查询和删除。
+ * 文档上传后立即返回 PENDING 状态，后台线程异步执行处理流程，
+ * 前端通过轮询 getStatus 获取处理进度。每个阶段失败都会标记文档为 FAILED 并记录原因。
+ * </p>
+ */
+@Slf4j
+@Service
+public class DocumentService {
+
+    /** 单个文档大小上限：10MB，与 DocumentLoader 保持一致 */
+    private static final long MAX_SIZE = 10 * 1024 * 1024; // 10MB
+
+    private final DocumentStore documentStore;
+    private final KnowledgeBaseStore knowledgeBaseStore;
+    private final DocumentLoader documentLoader;
+    private final EmbeddingStoreFactory embeddingStoreFactory;
+    private final ModelFactory modelFactory;
+    private final RagProperties ragProperties;
+    private final DocumentChunkStore documentChunkStore;
+
+    public DocumentService(DocumentStore documentStore,
+                           KnowledgeBaseStore knowledgeBaseStore,
+                           DocumentLoader documentLoader,
+                           EmbeddingStoreFactory embeddingStoreFactory,
+                           ModelFactory modelFactory,
+                           RagProperties ragProperties,
+                           DocumentChunkStore documentChunkStore) {
+        this.documentStore = documentStore;
+        this.knowledgeBaseStore = knowledgeBaseStore;
+        this.documentLoader = documentLoader;
+        this.embeddingStoreFactory = embeddingStoreFactory;
+        this.modelFactory = modelFactory;
+        this.ragProperties = ragProperties;
+        this.documentChunkStore = documentChunkStore;
+    }
+
+    /**
+     * 上传文档
+     * <p>
+     * 业务含义：校验知识库存在性和文件合法性后，创建文档记录（PENDING），
+     * 保存临时文件并触发异步处理。立即返回文档信息供前端轮询状态。
+     * 知识库文档计数 +1 在此处完成，避免异步处理完成后才计数导致前端列表显示不同步。
+     * </p>
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @param file            上传的文件
+     * @return 文档信息（状态为 PENDING）
+     * @throws BusinessException 知识库不存在/格式不支持/大小超限
+     */
+    public DocumentInfo upload(String knowledgeBaseId, MultipartFile file) {
+        // 校验知识库存在性：文档必须归属于有效知识库
+        KnowledgeBase knowledgeBase = knowledgeBaseStore.findById(knowledgeBaseId);
+        if (knowledgeBase == null) {
+            throw new BusinessException(ErrorCode.RAG_KNOWLEDGE_BASE_NOT_FOUND,
+                    "知识库不存在: " + knowledgeBaseId);
+        }
+
+        // 从文件名提取格式扩展名：取最后一个 "." 后的部分并转小写
+        String fileName = file.getOriginalFilename();
+        String[] parts = fileName.split("\\.");
+        String format = parts[parts.length - 1].toLowerCase();
+
+        // 校验格式：不在配置的支持列表内直接拒绝
+        if (!ragProperties.getDocument().getSupportedFormats().contains(format)) {
+            throw new BusinessException(ErrorCode.RAG_DOCUMENT_FORMAT_UNSUPPORTED,
+                    "不支持的文档格式: " + format);
+        }
+
+        // 校验大小：超过 10MB 拒绝上传，防止内存溢出
+        if (file.getSize() > MAX_SIZE) {
+            throw new BusinessException(ErrorCode.RAG_DOCUMENT_SIZE_EXCEEDED,
+                    "文档大小超过限制: " + file.getSize() + " bytes");
+        }
+
+        // 生成文档 ID（UUID 去横线，保证分布式唯一且 URL 友好）
+        String documentId = UUID.randomUUID().toString().replace("-", "");
+
+        DocumentInfo docInfo = new DocumentInfo();
+        docInfo.setId(documentId);
+        docInfo.setKnowledgeBaseId(knowledgeBaseId);
+        docInfo.setFileName(fileName);
+        docInfo.setFileSize(file.getSize());
+        docInfo.setFormat(format);
+        docInfo.setStatus(DocumentStatus.PENDING);
+        docInfo.setChunkCount(0);
+        docInfo.setFailReason(null);
+        docInfo.setUploadTime(LocalDateTime.now());
+
+        documentStore.save(docInfo);
+
+        // 保存临时文件：异步处理线程需要读取文件内容进行解析
+        byte[] fileBytes;
+        try {
+            fileBytes = file.getBytes();
+        } catch (IOException e) {
+            log.error("读取文件内容失败, fileName={}", fileName, e);
+            throw new BusinessException(ErrorCode.RAG_DOCUMENT_PARSE_FAILED, "读取文件内容失败", e);
+        }
+        saveTempFile(documentId, fileBytes);
+
+        // 触发异步处理：解析->分块->向量化->入库
+        processDocument(documentId, fileBytes, format, knowledgeBaseId);
+
+        // 知识库文档计数 +1
+        knowledgeBaseStore.updateDocumentCount(knowledgeBaseId, knowledgeBase.getDocumentCount() + 1);
+
+        return docInfo;
+    }
+
+    /**
+     * 异步处理文档
+     * <p>
+     * 业务含义：文档处理流水线，依次执行解析->分块->向量化->入库，
+     * 每个阶段失败都会标记文档为 FAILED 并记录失败原因，便于前端展示和用户重试。
+     * 处理完成后删除临时文件，避免磁盘空间泄漏。
+     * </p>
+     *
+     * @param documentId      文档 ID
+     * @param fileBytes       文件字节数组
+     * @param format          文件格式
+     * @param knowledgeBaseId 知识库 ID
+     */
+    @Async("ragTaskExecutor")
+    public void processDocument(String documentId, byte[] fileBytes, String format, String knowledgeBaseId) {
+        // 阶段 1：标记为处理中，通知前端文档开始处理
+        documentStore.updateStatus(documentId, DocumentStatus.PROCESSING, null, null);
+
+        // 阶段 2：解析文档为纯文本
+        String text;
+        try {
+            text = documentLoader.load(fileBytes, format);
+        } catch (Exception e) {
+            log.error("文档解析失败, documentId={}", documentId, e);
+            documentStore.updateStatus(documentId, DocumentStatus.FAILED, null, "文档解析失败");
+            deleteTempFile(documentId);
+            return;
+        }
+
+        // 阶段 3：文本分块，按配置的 size 和 overlap 切分为 TextSegment
+        DocumentSplitter splitter = DocumentSplitters.recursive(
+                ragProperties.getChunk().getSize(),
+                ragProperties.getChunk().getOverlap());
+        Document doc = Document.from(text);
+        List<TextSegment> segments = splitter.split(doc);
+
+        // 为每个分块添加 metadata：knowledgeBaseId 和 documentId，
+        // 用于检索时定位来源和级联删除时按文档过滤向量
+        List<TextSegment> enrichedSegments = new ArrayList<>();
+        for (TextSegment segment : segments) {
+            Metadata metadata = segment.metadata()
+                    .put("knowledgeBaseId", knowledgeBaseId)
+                    .put("documentId", documentId);
+            enrichedSegments.add(TextSegment.from(segment.text(), metadata));
+        }
+        segments = enrichedSegments;
+
+        // 阶段 4：向量化，将文本分块批量转为 Embedding 向量
+        // 业务含义：Embedding API 限制每次最多 10 个输入，需分批处理避免超限
+        List<Embedding> embeddings;
+        try {
+            EmbeddingModel embeddingModel = modelFactory.getEmbeddingModel();
+            embeddings = batchEmbed(embeddingModel, segments);
+        } catch (Exception e) {
+            log.error("文本向量化失败, documentId={}", documentId, e);
+            documentStore.updateStatus(documentId, DocumentStatus.FAILED, null, "向量化失败");
+            deleteTempFile(documentId);
+            return;
+        }
+
+        // 阶段 5：向量入库，将 Embedding 和对应 TextSegment 存入向量存储
+        try {
+            EmbeddingStore<TextSegment> embeddingStore = embeddingStoreFactory.getEmbeddingStore();
+            embeddingStore.addAll(embeddings, segments);
+        } catch (Exception e) {
+            log.error("向量存储失败, documentId={}", documentId, e);
+            documentStore.updateStatus(documentId, DocumentStatus.FAILED, null, "向量存储失败");
+            deleteTempFile(documentId);
+            return;
+        }
+
+        // 阶段 5.5：保存分块信息到 DocumentChunkStore（CR-001 新增）
+        // 业务含义：将分块文本内容独立存储，供前端查询展示。
+        // 与 EmbeddingStore 中的 TextSegment 不同，此处保留分块索引和原始文本。
+        List<DocumentChunk> chunks = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i++) {
+            DocumentChunk chunk = new DocumentChunk();
+            chunk.setId(UUID.randomUUID().toString().replace("-", ""));
+            chunk.setDocumentId(documentId);
+            chunk.setChunkIndex(i);
+            chunk.setContent(segments.get(i).text());
+            chunk.setCharCount(segments.get(i).text().length());
+            chunks.add(chunk);
+        }
+        documentChunkStore.saveChunks(documentId, chunks);
+
+        // 阶段 6：标记为已完成，记录分块数量
+        documentStore.updateStatus(documentId, DocumentStatus.COMPLETED, segments.size(), null);
+        deleteTempFile(documentId);
+        log.info("文档处理完成, documentId={}, chunkCount={}", documentId, segments.size());
+    }
+
+    /**
+     * 查询文档状态
+     *
+     * @param documentId 文档 ID
+     * @return 文档信息
+     * @throws BusinessException 文档不存在时抛出 RAG_DOCUMENT_NOT_FOUND
+     */
+    public DocumentInfo getStatus(String documentId) {
+        DocumentInfo doc = documentStore.findById(documentId);
+        if (doc == null) {
+            throw new BusinessException(ErrorCode.RAG_DOCUMENT_NOT_FOUND,
+                    "文档不存在: " + documentId);
+        }
+        return doc;
+    }
+
+    /**
+     * 查询知识库下文档列表
+     *
+     * @param knowledgeBaseId 知识库 ID
+     * @return 文档列表
+     */
+    public List<DocumentInfo> listByKnowledgeBase(String knowledgeBaseId) {
+        return documentStore.findByKnowledgeBaseId(knowledgeBaseId);
+    }
+
+    /**
+     * 查询文档的分块列表
+     * <p>
+     * 业务含义：返回文档处理完成时保存的分块信息，供前端展示分块详情。
+     * 文档不存在或未处理完成时返回空列表。
+     * </p>
+     *
+     * @param documentId 文档 ID
+     * @return 分块列表，无数据返回空列表
+     */
+    public List<DocumentChunk> getChunks(String documentId) {
+        return documentChunkStore.getChunks(documentId);
+    }
+
+    /**
+     * 删除文档
+     * <p>
+     * 业务含义：删除文档需同时清理向量存储中的 Embedding 数据，
+     * 避免检索到指向已删除文档的孤儿向量。同时递减知识库文档计数。
+     * </p>
+     *
+     * @param documentId 文档 ID
+     * @throws BusinessException 文档不存在时抛出 RAG_DOCUMENT_NOT_FOUND
+     */
+    public void delete(String documentId) {
+        // 校验存在性
+        DocumentInfo doc = documentStore.findById(documentId);
+        if (doc == null) {
+            throw new BusinessException(ErrorCode.RAG_DOCUMENT_NOT_FOUND,
+                    "文档不存在: " + documentId);
+        }
+
+        // 删除向量数据：按 metadata 中的 documentId 过滤删除
+        removeEmbeddingByDocumentId(documentId);
+
+        // 删除分块记录（CR-001 新增）
+        documentChunkStore.deleteChunks(documentId);
+
+        // 删除文档元数据记录
+        documentStore.delete(documentId);
+
+        // 递减知识库文档计数
+        KnowledgeBase kb = knowledgeBaseStore.findById(doc.getKnowledgeBaseId());
+        if (kb != null) {
+            knowledgeBaseStore.updateDocumentCount(kb.getId(), Math.max(0, kb.getDocumentCount() - 1));
+        }
+
+        log.info("删除文档完成, documentId={}", documentId);
+    }
+
+    /**
+     * 保存临时文件
+     * <p>
+     * 业务含义：异步处理线程通过文件 ID 定位临时文件读取内容，
+     * 临时目录不存在时自动创建。
+     * </p>
+     *
+     * @param documentId 文档 ID（作为临时文件名）
+     * @param fileBytes  文件字节数组
+     */
+    private void saveTempFile(String documentId, byte[] fileBytes) {
+        try {
+            Path tempDir = Paths.get(ragProperties.getDocument().getTempDir());
+            Files.createDirectories(tempDir);
+            Path tempFile = tempDir.resolve(documentId);
+            Files.write(tempFile, fileBytes);
+        } catch (IOException e) {
+            log.error("保存临时文件失败, documentId={}", documentId, e);
+        }
+    }
+
+    /**
+     * 删除临时文件
+     *
+     * @param documentId 文档 ID（作为临时文件名）
+     */
+    private void deleteTempFile(String documentId) {
+        try {
+            Path tempFile = Paths.get(ragProperties.getDocument().getTempDir()).resolve(documentId);
+            Files.deleteIfExists(tempFile);
+        } catch (IOException e) {
+            log.warn("删除临时文件失败, documentId={}", documentId, e);
+        }
+    }
+
+    /**
+     * 按 documentId 删除向量存储中的 Embedding 数据
+     * <p>
+     * 业务含义：文档上传时为每个 TextSegment 添加了 metadata("documentId", documentId)，
+     * 删除时通过 metadata 过滤器定位并删除该文档的所有向量。
+     * </p>
+     *
+     * @param documentId 文档 ID
+     */
+    private void removeEmbeddingByDocumentId(String documentId) {
+        try {
+            EmbeddingStore<TextSegment> embeddingStore = embeddingStoreFactory.getEmbeddingStore();
+            Filter filter = MetadataFilterBuilder.metadataKey("documentId").isEqualTo(documentId);
+            embeddingStore.removeAll(filter);
+        } catch (Exception e) {
+            log.warn("删除文档向量数据失败, documentId={}", documentId, e);
+        }
+    }
+
+    /**
+     * 分批向量化文本分块
+     * <p>
+     * 业务含义：Embedding API 限制每次请求最多 10 个输入文本，
+     * 当文档分块数量超过 10 时需分批调用，否则会触发 InvalidParameter 错误。
+     * </p>
+     *
+     * @param embeddingModel 向量模型
+     * @param segments       文本分块列表
+     * @return 所有分块的 Embedding 向量列表（顺序与输入一致）
+     */
+    private List<Embedding> batchEmbed(EmbeddingModel embeddingModel, List<TextSegment> segments) {
+        int batchSize = 10;
+        List<Embedding> allEmbeddings = new ArrayList<>();
+        for (int i = 0; i < segments.size(); i += batchSize) {
+            int end = Math.min(i + batchSize, segments.size());
+            List<TextSegment> batch = segments.subList(i, end);
+            allEmbeddings.addAll(embeddingModel.embedAll(batch).content());
+        }
+        return allEmbeddings;
+    }
+}

@@ -50,7 +50,7 @@ public final class ModelConstants {
     /**
      * 豆包 Embedding 模型（用于 RAG 与长期记忆向量化）
      */
-    public static final String MODEL_DOUBAO_EMBEDDING = "doubao-embedding-large-text-240915";
+    public static final String MODEL_DOUBAO_EMBEDDING = "doubao-embedding-vision";
 
     /**
      * 默认对话模型

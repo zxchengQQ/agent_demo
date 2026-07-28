@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useSessionStore } from '@/stores/session';
+import { useRagStore } from '@/stores/rag';
 import { streamChat } from '@/api/chat';
 import type { Message } from '@/types';
 import MessageList from './MessageList.vue';
 import MessageInput from './MessageInput.vue';
 
 const store = useSessionStore();
+const ragStore = useRagStore();
 const isStreaming = ref(false);
 
 /**
@@ -22,6 +24,22 @@ const enableThinking = ref(false);
  * 与深度思考独立共存，可同时开启。状态在当前会话内保持。
  */
 const enableTaskBreakdown = ref(false);
+
+/**
+ * 当前会话的知识库选择（Task-09，AC-012/AC-014）
+ * 业务含义：从 session store 读取，按会话隔离。空数组表示"自动"模式（Agent 自主检索）。
+ */
+const selectedKnowledgeBases = computed(() =>
+  store.getKnowledgeBases(store.currentSessionId),
+);
+
+/**
+ * 知识库选择变更处理（Task-09，AC-014）
+ * 业务含义：用户通过 KnowledgeBaseSelector 切换选择时，更新 session store 中的会话级状态。
+ */
+function handleKnowledgeBasesChange(bases: string[]) {
+  store.setKnowledgeBases(store.currentSessionId, bases);
+}
 
 let abortController: AbortController | null = null;
 
@@ -81,6 +99,7 @@ async function sendMessage(message: string) {
       message,
       enableThinking.value,
       enableTaskBreakdown.value,
+      selectedKnowledgeBases.value,
       {
         // AC-010: 透明续聊 - 后端返回新 sessionId 时更新关联
         onSession: (newSessionId: string) => {
@@ -198,10 +217,13 @@ function stopGeneration() {
       :is-streaming="isStreaming"
       :enable-thinking="enableThinking"
       :enable-task-breakdown="enableTaskBreakdown"
+      :knowledge-bases="ragStore.knowledgeBases"
+      :selected-knowledge-bases="selectedKnowledgeBases"
       @send="sendMessage"
       @stop="stopGeneration"
       @toggle-thinking="enableThinking = !enableThinking"
       @toggle-task-breakdown="enableTaskBreakdown = !enableTaskBreakdown"
+      @update:selected-knowledge-bases="handleKnowledgeBasesChange"
     />
   </div>
 </template>

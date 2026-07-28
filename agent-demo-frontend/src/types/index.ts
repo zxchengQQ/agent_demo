@@ -189,3 +189,79 @@ export interface StreamCallbacks {
   /** 收到 task_cancelled 事件（子任务被取消，AC-006/AC-007） */
   onTaskCancelled?: (index: number) => void;
 }
+
+// ===== RAG 知识库类型定义（Task-01，关联 AC-003/AC-005/AC-009）=====
+
+/**
+ * 文档处理状态
+ * 业务含义：文档异步处理的状态流转：待处理 -> 处理中 -> 已完成/失败
+ */
+export type DocumentStatus = 'PENDING' | 'PROCESSING' | 'COMPLETED' | 'FAILED';
+
+/**
+ * 知识库信息
+ * 业务含义：对应后端 KnowledgeBaseResponse，知识库列表展示数据。
+ */
+export interface KnowledgeBase {
+  /** 知识库 ID */
+  id: string;
+  /** 知识库名称（1-50 字符，全局唯一） */
+  name: string;
+  /** 知识库描述（最长 200 字符） */
+  description: string;
+  /** 文档数量 */
+  documentCount: number;
+  /** 创建时间（ISO 字符串） */
+  createTime: string;
+}
+
+/**
+ * 文档信息
+ * 业务含义：对应后端 DocumentResponse，文档列表展示数据。
+ */
+export interface DocumentInfo {
+  /** 文档 ID */
+  documentId: string;
+  /** 文件名 */
+  fileName: string;
+  /** 文件大小（字节） */
+  fileSize: number;
+  /** 文档格式（txt/md/pdf） */
+  format: string;
+  /** 处理状态 */
+  status: DocumentStatus;
+  /** 分块数量 */
+  chunkCount: number;
+  /** 失败原因（FAILED 时填充，否则 null） */
+  failReason: string | null;
+  /** 上传时间（ISO 字符串） */
+  uploadTime: string;
+}
+
+/**
+ * 文档状态查询响应
+ * 业务含义：对应后端 DocumentStatusResponse，供前端轮询文档处理进度。
+ */
+export interface DocumentStatusResponse {
+  /** 文档 ID */
+  documentId: string;
+  /** 处理状态 */
+  status: DocumentStatus;
+  /** 分块数量 */
+  chunkCount: number;
+  /** 失败原因（FAILED 时填充，否则 null） */
+  failReason: string | null;
+}
+
+/**
+ * 文档分块信息（CR-001 新增，AC-038）
+ * 业务含义：对应后端 DocumentChunkResponse，文档分块详情展示数据。
+ */
+export interface DocumentChunk {
+  /** 分块索引（从 0 开始，按原文档顺序） */
+  chunkIndex: number;
+  /** 分块文本内容 */
+  content: string;
+  /** 分块字符数 */
+  charCount: number;
+}

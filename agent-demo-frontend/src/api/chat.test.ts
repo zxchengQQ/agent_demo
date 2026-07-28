@@ -68,7 +68,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '你好', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '你好', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.session).toEqual(['session-123']);
     expect(callbacks.calls.token).toEqual(['你', '好']);
@@ -80,7 +80,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '你好', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '你好', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.error).toEqual(['生成回复时发生错误']);
   });
@@ -89,7 +89,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse([], 500));
 
     const callbacks = createCallbacks();
-    await streamChat('', '你好', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '你好', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.error).toEqual(['服务暂时不可用，请稍后重试']);
   });
@@ -98,7 +98,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockRejectedValue(new Error('network error'));
 
     const callbacks = createCallbacks();
-    await streamChat('', '你好', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '你好', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.error).toEqual(['服务暂时不可用，请稍后重试']);
   });
@@ -114,7 +114,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '测试', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '测试', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.session).toEqual(['session-456']);
     expect(callbacks.calls.token).toEqual(['测试']);
@@ -132,7 +132,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '你好', true, false, callbacks, new AbortController().signal);
+    await streamChat('', '你好', true, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.reasoning).toEqual(['用户', '问的是']);
     expect(callbacks.calls.token).toEqual(['正式回复']);
@@ -141,7 +141,7 @@ describe('SSE 流式调用', () => {
   it('请求体包含 enableThinking 字段（CR-001）', async () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse([]));
 
-    await streamChat('session-1', '你好', true, false, createCallbacks(), new AbortController().signal);
+    await streamChat('session-1', '你好', true, false, [], createCallbacks(), new AbortController().signal);
 
     const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(fetchCall[1].body);
@@ -153,7 +153,7 @@ describe('SSE 流式调用', () => {
   it('enableThinking=false 时请求体对应字段为 false', async () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse([]));
 
-    await streamChat('', '你好', false, false, createCallbacks(), new AbortController().signal);
+    await streamChat('', '你好', false, false, [], createCallbacks(), new AbortController().signal);
 
     const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(fetchCall[1].body);
@@ -172,7 +172,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '测试', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '测试', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.token).toEqual(['# ', 'Python']);
   });
@@ -186,7 +186,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '测试', false, false, callbacks, new AbortController().signal);
+    await streamChat('', '测试', false, false, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.token).toEqual(['line1\nline2']);
   });
@@ -196,7 +196,7 @@ describe('SSE 流式调用', () => {
   it('请求体包含 enableTaskBreakdown 字段（CR-002, AC-001）', async () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse([]));
 
-    await streamChat('session-1', '你好', false, true, createCallbacks(), new AbortController().signal);
+    await streamChat('session-1', '你好', false, true, [], createCallbacks(), new AbortController().signal);
 
     const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(fetchCall[1].body);
@@ -206,7 +206,7 @@ describe('SSE 流式调用', () => {
   it('enableTaskBreakdown=false 时请求体对应字段为 false', async () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse([]));
 
-    await streamChat('', '你好', false, false, createCallbacks(), new AbortController().signal);
+    await streamChat('', '你好', false, false, [], createCallbacks(), new AbortController().signal);
 
     const fetchCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(fetchCall[1].body);
@@ -221,7 +221,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '复杂任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '复杂任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskPlan).toHaveLength(1);
     expect(callbacks.calls.taskPlan[0]).toEqual([
@@ -238,7 +238,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskStart).toEqual([[1, '分析需求']]);
   });
@@ -252,7 +252,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskToken).toEqual([[1, '首先'], [1, '分析']]);
   });
@@ -265,7 +265,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', true, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', true, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskReasoning).toEqual([[1, '让我思考']]);
   });
@@ -278,7 +278,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskThought).toEqual([[1, '需要查询', 1]]);
   });
@@ -291,7 +291,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskAction).toEqual([[1, 'http', '{"url":"..."}', 1]]);
   });
@@ -304,7 +304,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskObservation).toEqual([[1, '查询结果', 1]]);
   });
@@ -317,7 +317,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskComplete).toEqual([1]);
   });
@@ -330,7 +330,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskFailed).toEqual([[2, '超时']]);
   });
@@ -343,7 +343,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     expect(callbacks.calls.taskCancelled).toEqual([3]);
   });
@@ -357,7 +357,7 @@ describe('SSE 流式调用', () => {
     global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
 
     const callbacks = createCallbacks();
-    await streamChat('', '任务', false, true, callbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], callbacks, new AbortController().signal);
 
     // 解析失败不触发回调，也不抛异常
     expect(callbacks.calls.taskPlan).toHaveLength(0);
@@ -381,7 +381,27 @@ describe('SSE 流式调用', () => {
       onError: () => {},
     };
 
-    await streamChat('', '任务', false, true, minimalCallbacks, new AbortController().signal);
+    await streamChat('', '任务', false, true, [], minimalCallbacks, new AbortController().signal);
     // 不抛异常即为通过
+  });
+
+  it('knowledgeBases 空数组出现在请求体中（AC-012 自动模式）', async () => {
+    const chunks = ['event:done\ndata:100\n\n'];
+    global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
+    const callbacks = createCallbacks();
+    await streamChat('', '你好', false, false, [], callbacks, new AbortController().signal);
+    const callArgs = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.knowledgeBases).toEqual([]);
+  });
+
+  it('knowledgeBases 非空数组出现在请求体中（AC-013 手动指定）', async () => {
+    const chunks = ['event:done\ndata:100\n\n'];
+    global.fetch = vi.fn().mockResolvedValue(createSseResponse(chunks));
+    const callbacks = createCallbacks();
+    await streamChat('', '你好', false, false, ['产品手册'], callbacks, new AbortController().signal);
+    const callArgs = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    const body = JSON.parse(callArgs[1].body);
+    expect(body.knowledgeBases).toEqual(['产品手册']);
   });
 });

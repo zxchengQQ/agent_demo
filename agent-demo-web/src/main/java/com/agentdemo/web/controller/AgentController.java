@@ -138,6 +138,19 @@ public class AgentController {
         // 记录用户消息到记忆
         memoryManager.addUserMessage(effectiveSessionId, request.getMessage());
 
+        // 业务含义：用户指定知识库时，将知识库名称注入用户消息末尾，
+        // 引导 LLM 在 ReAct 循环中调用 searchKnowledge 工具时使用指定知识库。
+        // 不指定时走原有路径（Agent 自主决策），零回归。
+        final String effectiveMessage;
+        List<String> knowledgeBases = request.getKnowledgeBases();
+        if (knowledgeBases != null && !knowledgeBases.isEmpty()) {
+            effectiveMessage = request.getMessage()
+                + "\n\n[系统提示：请优先使用以下知识库检索相关信息："
+                + String.join("、", knowledgeBases) + "]";
+        } else {
+            effectiveMessage = request.getMessage();
+        }
+
         // 累积完整回复，流式完成后写入记忆（供后续多轮上下文使用）
         StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
@@ -151,7 +164,7 @@ public class AgentController {
             // 所有 send() 数据被缓存到 earlySendAttempts，直到全部完成后才一次性发送，
             // 导致前端无法实时看到任务拆解和执行进度。
             CompletableFuture.runAsync(() ->
-                planAgent.chatTaskBreakdownStream(effectiveSessionId, request.getMessage(),
+                planAgent.chatTaskBreakdownStream(effectiveSessionId, effectiveMessage,
                     Boolean.TRUE.equals(request.getEnableThinking()))
                 .onPlan(tasks -> {
                     // 推送子任务列表（AC-001）
@@ -214,7 +227,7 @@ public class AgentController {
             // ReAct 思考流式路径（Task-09 新增）
             // 业务含义：ReAct 模式中 content 通过 onPartialThought 推送为 thought 事件，
             // 不再使用 onPartialResponse（ReActThinkingStream 中为空实现）
-            simpleAgent.chatThinkingReActStream(effectiveSessionId, request.getMessage())
+            simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage)
                     .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
                     .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
                     .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
@@ -237,7 +250,7 @@ public class AgentController {
                     .start();
         } else {
             // 原路径（零回归）
-            simpleAgent.chatStream(effectiveSessionId, request.getMessage())
+            simpleAgent.chatStream(effectiveSessionId, effectiveMessage)
                     .onPartialResponse(token -> {
                         sendEvent(emitter, "token", token);
                         fullResponse.append(token);

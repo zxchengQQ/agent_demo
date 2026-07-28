@@ -7,11 +7,29 @@ import MessageItem from '@/components/MessageItem.vue';
 import MessageInput from '@/components/MessageInput.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
 import MessageList from '@/components/MessageList.vue';
-import type { Message, SubTask } from '@/types';
+import KnowledgeBaseSelector from '@/components/KnowledgeBaseSelector.vue';
+import NavBar from '@/components/NavBar.vue';
+import KnowledgeBasePage from '@/components/KnowledgeBasePage.vue';
+import SessionList from '@/components/SessionList.vue';
+import App from '@/App.vue';
+import { useSessionStore } from '@/stores/session';
+import { useRagStore } from '@/stores/rag';
+import type { Message, SubTask, KnowledgeBase } from '@/types';
 
 // Mock streamChat 避免 ChatWindow 测试发起真实 API 调用
 vi.mock('@/api/chat', () => ({
   streamChat: vi.fn().mockResolvedValue(undefined),
+}));
+
+// Mock RAG API 避免 KnowledgeBasePage 测试发起真实 API 调用
+vi.mock('@/api/rag', () => ({
+  listKnowledgeBases: vi.fn().mockResolvedValue([]),
+  createKnowledgeBase: vi.fn(),
+  deleteKnowledgeBase: vi.fn(),
+  uploadDocument: vi.fn(),
+  listDocuments: vi.fn().mockResolvedValue([]),
+  deleteDocument: vi.fn(),
+  getDocumentStatus: vi.fn(),
 }));
 
 /**
@@ -534,6 +552,52 @@ describe('MessageInput', () => {
     expect(footer.find('.btn-thinking').exists()).toBe(true);
     expect(footer.find('.btn-task-breakdown').exists()).toBe(true);
   });
+
+  // ===== Task-08 新增：知识库选择器集成（AC-011, AC-029）=====
+
+  it('渲染包含 KnowledgeBaseSelector 组件（AC-029）', () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false } });
+    expect(wrapper.findComponent(KnowledgeBaseSelector).exists()).toBe(true);
+  });
+
+  it('selectedKnowledgeBases prop 透传给 KnowledgeBaseSelector 的 modelValue（AC-029）', () => {
+    const wrapper = mount(MessageInput, {
+      props: { isStreaming: false, selectedKnowledgeBases: ['产品手册'] },
+    });
+    const selector = wrapper.findComponent(KnowledgeBaseSelector);
+    expect(selector.props('modelValue')).toEqual(['产品手册']);
+  });
+
+  it('knowledgeBases prop 透传给 KnowledgeBaseSelector（AC-029）', () => {
+    const kbs: KnowledgeBase[] = [
+      { id: '1', name: '产品手册', description: '', documentCount: 0, createTime: '' },
+    ];
+    const wrapper = mount(MessageInput, {
+      props: { isStreaming: false, knowledgeBases: kbs },
+    });
+    const selector = wrapper.findComponent(KnowledgeBaseSelector);
+    expect(selector.props('knowledgeBases')).toEqual(kbs);
+  });
+
+  it('isStreaming 为 true 时 KnowledgeBaseSelector 的 disabled 为 true（AC-011）', () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: true } });
+    const selector = wrapper.findComponent(KnowledgeBaseSelector);
+    expect(selector.props('disabled')).toBe(true);
+  });
+
+  it('isStreaming 为 false 时 KnowledgeBaseSelector 的 disabled 为 false（AC-011）', () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false } });
+    const selector = wrapper.findComponent(KnowledgeBaseSelector);
+    expect(selector.props('disabled')).toBe(false);
+  });
+
+  it('KnowledgeBaseSelector 变更时 MessageInput emit update:selectedKnowledgeBases（AC-029）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false } });
+    const selector = wrapper.findComponent(KnowledgeBaseSelector);
+    await selector.vm.$emit('update:modelValue', ['产品手册']);
+    expect(wrapper.emitted('update:selectedKnowledgeBases')).toBeTruthy();
+    expect(wrapper.emitted('update:selectedKnowledgeBases')![0][0]).toEqual(['产品手册']);
+  });
 });
 
 /**
@@ -617,6 +681,86 @@ describe('ChatWindow', () => {
     const callArgs = vi.mocked(streamChat).mock.calls[0];
     expect(callArgs[3]).toBe(true);
   });
+
+  // ===== Task-09 新增：知识库选择状态管理（AC-012, AC-013, AC-014, AC-015, AC-037）=====
+
+  it('从 session store 读取当前会话的知识库选择（AC-012）', () => {
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+    const store = useSessionStore();
+    const input = wrapper.findComponent(MessageInput);
+    // 初始为空数组（自动模式）
+    expect(input.props('selectedKnowledgeBases')).toEqual([]);
+    expect(input.props('selectedKnowledgeBases')).toEqual(
+      store.getKnowledgeBases(store.currentSessionId),
+    );
+  });
+
+  it('KnowledgeBaseSelector 变更时调用 store.setKnowledgeBases（AC-014）', async () => {
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+    const store = useSessionStore();
+    const sessionId = store.currentSessionId;
+
+    // 通过 MessageInput 触发 update:selectedKnowledgeBases
+    await wrapper.findComponent(MessageInput).vm.$emit('update:selectedKnowledgeBases', ['产品手册']);
+
+    // 验证 store 已更新
+    expect(store.getKnowledgeBases(sessionId)).toEqual(['产品手册']);
+  });
+
+  it('发送消息时 streamChat 接收的知识库参数为当前会话的选择值（AC-013）', async () => {
+    const { streamChat } = await import('@/api/chat');
+    vi.mocked(streamChat).mockClear();
+
+    const store = useSessionStore();
+    // 先创建会话，确保 currentSessionId 不为空（避免 sendMessage 创建新会话导致 sessionId 不一致）
+    store.createNewSession();
+
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+
+    // 设置知识库选择
+    store.setKnowledgeBases(store.currentSessionId, ['产品手册', '常见问题']);
+
+    // 输入消息并发送
+    await wrapper.find('textarea').setValue('测试消息');
+    await wrapper.find('.btn-send').trigger('click');
+
+    // 等待异步操作完成
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 验证 streamChat 第5个参数为知识库选择值
+    expect(streamChat).toHaveBeenCalled();
+    const callArgs = vi.mocked(streamChat).mock.calls[0];
+    expect(callArgs[4]).toEqual(['产品手册', '常见问题']);
+  });
+
+  it('知识库选择为空数组时 streamChat 传空数组（自动模式，AC-014）', async () => {
+    const { streamChat } = await import('@/api/chat');
+    vi.mocked(streamChat).mockClear();
+
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+
+    // 不设置知识库选择（默认空数组）
+
+    // 输入消息并发送
+    await wrapper.find('textarea').setValue('测试消息');
+    await wrapper.find('.btn-send').trigger('click');
+
+    // 等待异步操作完成
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 验证 streamChat 第5个参数为空数组
+    expect(streamChat).toHaveBeenCalled();
+    const callArgs = vi.mocked(streamChat).mock.calls[0];
+    expect(callArgs[4]).toEqual([]);
+  });
 });
 
 /**
@@ -653,5 +797,94 @@ describe('MessageList', () => {
 
     // 验证 scrollToBottom 被触发（scrollTop 应被设为 scrollHeight）
     expect(listEl.scrollTop).toBe(500);
+  });
+});
+
+/**
+ * NavBar 组件测试（Task-10）
+ * 验证标准来源：Task-10 验证标准
+ * 关联 AC：AC-001
+ */
+describe('NavBar', () => {
+  it('渲染"对话"和"知识库"两个导航项', () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
+    const items = wrapper.findAll('.nav-item');
+    expect(items).toHaveLength(2);
+    expect(items[0].text()).toContain('对话');
+    expect(items[1].text()).toContain('知识库');
+  });
+
+  it('currentView 为 chat 时"对话"项高亮（AC-001）', () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
+    const items = wrapper.findAll('.nav-item');
+    expect(items[0].classes()).toContain('active');
+    expect(items[1].classes()).not.toContain('active');
+  });
+
+  it('currentView 为 knowledge 时"知识库"项高亮（AC-001）', () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'knowledge' } });
+    const items = wrapper.findAll('.nav-item');
+    expect(items[0].classes()).not.toContain('active');
+    expect(items[1].classes()).toContain('active');
+  });
+
+  it('点击"知识库"时 emit update:currentView 为 "knowledge"', async () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
+    await wrapper.findAll('.nav-item')[1].trigger('click');
+    expect(wrapper.emitted('update:currentView')).toBeTruthy();
+    expect(wrapper.emitted('update:currentView')![0]).toEqual(['knowledge']);
+  });
+
+  it('点击"对话"时 emit update:currentView 为 "chat"', async () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'knowledge' } });
+    await wrapper.findAll('.nav-item')[0].trigger('click');
+    expect(wrapper.emitted('update:currentView')![0]).toEqual(['chat']);
+  });
+});
+
+/**
+ * App 条件渲染测试（Task-10）
+ * 验证标准来源：Task-10 验证标准
+ * 关联 AC：AC-001
+ */
+describe('App 条件渲染', () => {
+  let pinia: Pinia;
+
+  beforeEach(() => {
+    pinia = createPinia();
+    setActivePinia(pinia);
+    localStorage.clear();
+  });
+
+  it('currentView 为 chat 时渲染对话页面（SessionList + ChatWindow）', () => {
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    expect(wrapper.findComponent(SessionList).exists()).toBe(true);
+    expect(wrapper.findComponent(ChatWindow).exists()).toBe(true);
+  });
+
+  it('点击知识库导航后渲染 KnowledgeBasePage，对话页面隐藏', async () => {
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    // 初始为对话页面
+    expect(wrapper.findComponent(KnowledgeBasePage).exists()).toBe(false);
+    // 点击知识库导航
+    await wrapper.findAll('.nav-item')[1].trigger('click');
+    // 渲染知识库页面
+    expect(wrapper.findComponent(KnowledgeBasePage).exists()).toBe(true);
+    // 对话页面隐藏
+    expect(wrapper.findComponent(SessionList).exists()).toBe(false);
+  });
+
+  it('切换到知识库再切回对话后，会话选择状态保持不变', async () => {
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    const store = useSessionStore();
+    // 创建新会话并选中
+    store.createNewSession();
+    const sessionId = store.currentSessionId;
+    // 切换到知识库页面
+    await wrapper.findAll('.nav-item')[1].trigger('click');
+    // 切换回对话页面
+    await wrapper.findAll('.nav-item')[0].trigger('click');
+    // 会话选择状态保持不变
+    expect(store.currentSessionId).toBe(sessionId);
   });
 });

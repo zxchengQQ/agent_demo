@@ -49,6 +49,24 @@ agent:
 session:
   timeout-minutes: 30
 
+# RAG 知识库配置
+rag:
+  store-type: memory  # 向量存储类型：memory | milvus
+  document:
+    max-size: 10MB
+    supported-formats: txt,md,pdf
+    temp-dir: ./data/rag/temp
+  chunk:
+    size: 1000
+    overlap: 200
+  retrieval:
+    max-results: 5
+    min-score: 0.0
+  milvus:
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+    collection-name: agent_demo_rag
+
 # Springdoc Swagger
 springdoc:
   api-docs:

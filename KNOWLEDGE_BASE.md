@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v1.2
-> **基线日期**：2026-07-22
+> **文档版本**：v1.5
+> **基线日期**：2026-07-28
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -67,7 +67,8 @@ LLM 提供商为**火山引擎方舟 Coding Plan**（按次计费，OpenAI 兼�
 | Agent 编排 | ✅ 已实现（单 Agent） | AiServices 代理、ReAct 循环、懒加载 |
 | Web 接口 | ✅ 已实现 | REST 同步对话、SSE 流式对话、会话管理、Swagger 文档 |
 | 前端对话 | ✅ 已实现（v1） | Vue 3 对话框、SSE 流式逐字显示、localStorage 持久化、会话管理 UI |
-| RAG 检索 | 🚧 规划中 | 文档分块、向量化、检索策略 |
+| 前端知识库管理 | ✅ 已实现 | 知识库 CRUD、文档上传/轮询/删除、对话知识库选择器、左右分栏管理页面 |
+| RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成 |
 | MCP 协议 | 🚧 规划中 | MCP 工具集成、A2A 通信 |
 | 多 Agent 协作 | 🚧 规划中 | Sequential/Hierarchical 模式 |
 | 工作流编排 | 🚧 规划中 | 状态机、分支重试、Human-in-the-loop |
@@ -98,17 +99,18 @@ LLM 提供商为**火山引擎方舟 Coding Plan**（按次计费，OpenAI 兼�
 | 记忆管理模块 | `specs/modules/记忆管理模块-业务说明书.md` |
 | Web 接口模块 | `specs/modules/Web接口模块-业务说明书.md` |
 | 公共组件模块 | `specs/modules/公共组件模块-业务说明书.md` |
+| RAG 知识库模块 | `specs/modules/RAG模块-业务说明书.md` |
 
 ### 2.3 前端模块目录
 
 | 路径 | 说明 |
 |------|------|
 | `agent-demo-frontend/` | Vue 3 前端项目根目录 |
-| `agent-demo-frontend/src/api/` | SSE 流式调用封装（`chat.ts`） |
-| `agent-demo-frontend/src/stores/` | Pinia 状态管理（`session.ts`） |
-| `agent-demo-frontend/src/utils/` | localStorage 缓存工具（`storage.ts`） |
-| `agent-demo-frontend/src/types/` | TypeScript 类型定义（`index.ts`） |
-| `agent-demo-frontend/src/components/` | Vue 组件（MessageItem / MessageList / MessageInput / ChatWindow / SessionList / App） |
+| `agent-demo-frontend/src/api/` | SSE 流式调用封装（`chat.ts`）、RAG API 封装（`rag.ts`，7 个 REST 接口） |
+| `agent-demo-frontend/src/stores/` | Pinia 状态管理（`session.ts` 含知识库选择器会话级状态、`rag.ts` 知识库/文档状态管理） |
+| `agent-demo-frontend/src/utils/` | localStorage 缓存工具（`storage.ts`）、Markdown 渲染封装（`markdown.ts`） |
+| `agent-demo-frontend/src/types/` | TypeScript 类型定义（`index.ts`，含 KnowledgeBase/DocumentInfo/DocumentStatus 等 RAG 类型） |
+| `agent-demo-frontend/src/components/` | Vue 组件（对话：MessageItem/MessageList/MessageInput/ChatWindow/SessionList/NavBar；知识库：KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList/DocumentUploader/KnowledgeBaseSelector） |
 | `agent-demo-frontend/src/styles/` | 全局样式系统（`global.css`，Refined Dark Tech） |
 
 ### 2.4 工程参考文档
@@ -165,6 +167,7 @@ milvus.version=2.4.3               # 向量数据库 SDK（规划中）
 # 工具库
 hutool.version=5.8.27              # 通用工具
 springdoc.version=2.5.0            # OpenAPI 文档
+pdfbox.version=3.0.3               # PDF 文档解析（RAG 模块）
 
 # 构建
 maven.version=3.9+
@@ -232,7 +235,7 @@ vite.proxy=/api -> http://localhost:8080  # 开发期代理规避 CORS
 | 字体 | 英文 `JetBrains Mono`，中文 `Noto Sans SC` |
 | 布局 | 左右分栏（280px 侧边栏 + 自适应对话框） |
 | 交互 | hover 高亮、fadeIn 动画、流式光标 blink 动画 |
-| 组件 | 6 个 Vue 组件：MessageItem/MessageList/MessageInput/ChatWindow/SessionList/App |
+| 组件 | 13 个 Vue 组件：对话（MessageItem/MessageList/MessageInput/ChatWindow/SessionList/NavBar）+ 知识库（KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList/DocumentUploader/KnowledgeBaseSelector）+ App |
 
 > **数据来源**：`agent-demo-bom/pom.xml`、`agent-demo-common/.../ModelConstants.java`
 
@@ -252,7 +255,7 @@ agent-demo/
 ├── agent-demo-llm/                      # LLM 接入层（火山引擎适配 + 模型工厂）
 ├── agent-demo-tools/                    # 工具集（内置工具 + 注册中心）
 ├── agent-demo-memory/                   # 记忆模块（短期记忆 + 会话管理）
-├── agent-demo-rag/                      # RAG 模块（规划中，空模块）
+├── agent-demo-rag/                      # RAG 模块（知识库问答：文档解析、分块、向量化、检索、Agent 工具集成）
 ├── agent-demo-mcp/                      # MCP 协议模块（规划中，空模块）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
 ├── agent-demo-app/                      # 应用编排层（规划中，空模块）
@@ -264,14 +267,18 @@ agent-demo/
     ├── tsconfig.json
     ├── index.html
     └── src/
-        ├── api/chat.ts                   # SSE 流式调用封装（fetch + ReadableStream，含 reasoning 事件处理，CR-001 扩展）
-        ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning 方法，CR-001 扩展）
-        ├── utils/markdown.ts             # Markdown 渲染封装（marked + DOMPurify，CR-001 新增）
+        ├── api/chat.ts                   # SSE 流式调用封装（fetch + ReadableStream，含 reasoning 事件处理，含 knowledgeBases 参数）
+        ├── api/rag.ts                    # RAG API 封装（7 个 REST 接口 + 统一 request 函数）
+        ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning + knowledgeBasesBySession 会话级知识库选择状态）
+        ├── stores/rag.ts                 # Pinia RAG 状态管理（知识库列表/文档列表/CRUD/状态轮询）
+        ├── utils/markdown.ts             # Markdown 渲染封装（marked + DOMPurify）
         ├── utils/storage.ts              # localStorage 缓存工具（50 会话 FIFO 淘汰）
-        ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks.onReasoning，CR-001 扩展）
-        ├── components/                   # Vue 组件（CR-001：MessageItem 推理折叠区块 + Markdown 渲染，MessageInput 深度思考开关）
+        ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks + KnowledgeBase/DocumentInfo/DocumentStatus 等）
+        ├── components/                   # Vue 组件
+        │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector 集成）/ChatWindow（含知识库选择状态管理）/SessionList/NavBar
+        │   └── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
-        └── App.vue                       # 根组件（左右分栏布局）
+        └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库页面）
 ```
 
 ### 4.2 模块依赖方向
@@ -283,11 +290,11 @@ agent-demo/
 | `agent-demo-llm` | common |
 | `agent-demo-tools` | common |
 | `agent-demo-memory` | common, llm |
-| `agent-demo-rag` | common, llm（规划中） |
+| `agent-demo-rag` | common, llm |
 | `agent-demo-mcp` | common, tools（规划中） |
 | `agent-demo-agent` | common, llm, tools, memory |
 | `agent-demo-app` | agent, rag, mcp（规划中） |
-| `agent-demo-web` | app, agent, memory |
+| `agent-demo-web` | app, agent, memory, rag |
 | `agent-demo-bootstrap` | web（聚合全部） |
 | `agent-demo-frontend` | 独立运行，通过 HTTP 调用后端 API（无 Maven 依赖） |
 
@@ -328,6 +335,20 @@ agent-demo-memory/
 ├── session/               # 会话管理（SessionManager/Metadata）
 ├── shortterm/             # 短期记忆（ChatMemoryManager）
 └── store/                 # 记忆存储（MemoryRepository + InMemory 实现）
+```
+
+**agent-demo-rag**（RAG 知识库）：
+
+```
+agent-demo-rag/
+├── config/                # RagProperties（配置属性绑定）+ RagAsyncConfig（异步线程池 @EnableAsync）
+├── entity/                # DocumentStatus / KnowledgeBase / DocumentInfo
+├── store/                 # KnowledgeBaseStore + InMemoryKnowledgeBaseStore（知识库元数据）
+│                          # DocumentStore + InMemoryDocumentStore（文档元数据）
+│                          # EmbeddingStoreFactory（向量存储工厂，可切换 InMemory/Milvus）
+├── loader/                # DocumentLoader（文档解析：txt/md/pdf，PDFBox 3.x）
+├── service/               # KnowledgeBaseService（创建/列表/级联删除）+ DocumentService（上传/@Async处理/状态/删除）
+└── retriever/             # KnowledgeRetrieverTool（@Tool 知识库检索工具，Agent 自主调用）
 ```
 
 **agent-demo-web**（Web 接口）：
@@ -513,7 +534,7 @@ sequenceDiagram
 
     U->>FE: 输入消息，点击发送
     FE->>LS: 先存用户消息（乐观更新）
-    FE->>CTL: POST /chat/stream (sessionId, message, enableThinking)
+    FE->>CTL: POST /chat/stream (sessionId, message, enableThinking, knowledgeBases)
     CTL->>SM: exists(sessionId)?
     alt 会话不存在/超时
         SM->>CTL: 新建会话，返回新 sessionId
@@ -573,6 +594,7 @@ sequenceDiagram
 - 开启深度思考时，推理片段与正式回复片段分别通过 `reasoning` 和 `token` 事件推送（CR-001）
 - localStorage 缓存上限 50 个会话，按最后活跃时间 FIFO 淘汰（AC-016）
 - 会话标题取首条消息前 20 字符（AC-006）
+- 知识库选择器（knowledgeBases 参数）按会话维度保持状态，空数组表示"自动"模式由 Agent 自主决策，非空时提示词注入引导 LLM 检索指定知识库
 
 ### 5.9 特殊业务机制
 
@@ -975,7 +997,26 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 28 | BR-SEC-004 | 生产环境应关闭 Swagger UI 访问 | 安全合规 | 🟡 尽量 |
 | 29 | BR-SEC-005 | 日志中不应打印用户消息完整明文（可截断或脱敏） | 安全合规 | 🟢 建议 |
 
-### 9.6 前端对话模块规则
+### 9.6 RAG 知识库规则
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 30 | BR-RAG-001 | 知识库名称长度 1-50 个字符，仅允许中英文、数字、下划线和连字符 | RAG 知识库 | 🔴 强制 |
+| 31 | BR-RAG-002 | 知识库名称不允许重复（全局唯一） | RAG 知识库 | 🔴 强制 |
+| 32 | BR-RAG-003 | 知识库描述长度不超过 200 个字符 | RAG 知识库 | 🔴 强制 |
+| 33 | BR-RAG-004 | 单个文档大小不超过 10MB | RAG 知识库 | 🔴 强制 |
+| 34 | BR-RAG-005 | 支持的文档格式：txt、md、pdf（第一期） | RAG 知识库 | ⚪ 可覆盖 |
+| 35 | BR-RAG-006 | 同一知识库下允许同名文档，以文档 ID 区分 | RAG 知识库 | 🔴 强制 |
+| 36 | BR-RAG-007 | 文档处理采用异步模式，状态流转：待处理 -> 处理中 -> 已完成/失败 | RAG 知识库 | 🔴 强制 |
+| 37 | BR-RAG-008 | 检索结果最多返回 5 个最相关文档片段，按相似度降序排列 | RAG 知识库 | ⚪ 可覆盖 |
+| 38 | BR-RAG-009 | 删除知识库时级联删除其下所有文档记录和向量数据 | RAG 知识库 | 🔴 强制 |
+| 39 | BR-RAG-010 | 删除文档时同步删除该文档对应的所有向量数据 | RAG 知识库 | 🔴 强制 |
+| 40 | BR-RAG-011 | Agent 通过工具集成方式检索知识库，Agent 自主选择目标知识库 | RAG 知识库 | 🔴 强制 |
+| 41 | BR-RAG-012 | 向量数据库不可用时检索工具返回错误提示，不导致 Agent 对话中断 | RAG 知识库 | 🔴 强制 |
+| 42 | BR-RAG-013 | 文档向量化时 Embeddings API 单次输入上限为 10 个文本片段，超出时必须分批调用（batchEmbed，每批 10 条），避免 InvalidParameter 错误 | RAG 知识库 | 🔴 强制 |
+| 43 | BR-RAG-014 | 对话知识库集成采用提示词注入方案：用户指定知识库时，将知识库名称注入用户消息末尾引导 LLM 检索；不指定时 Agent 自主决策（零回归） | RAG 知识库 | 🔴 强制 |
+
+### 9.7 前端对话模块规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -994,7 +1035,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 46 | BR-FE-013 | 助手正式回复按 Markdown 格式渲染（marked + DOMPurify），用户消息保持纯文本（CR-001） | 前端对话 | 🔴 强制 |
 | 47 | BR-FE-014 | 推理内容随消息持久化到 localStorage（Message.reasoning 字段），刷新页面后仍可展开回看（CR-001） | 前端对话 | 🔴 强制 |
 
-### 9.7 错误码规则
+### 9.8 错误码规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1003,7 +1044,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 32 | BR-ERR-003 | 错误码编号区间按业务域划分，不可重叠 | 公共组件 | 🔴 强制 |
 | 33 | BR-ERR-004 | 新增错误码必须在 `ErrorCode` 枚举中分配编号并补充注释 | 公共组件 | 🔴 强制 |
 
-### 9.8 错误码区间速查
+### 9.9 错误码区间速查
 
 | 区间 | 业务域 | 示例 |
 |------|--------|------|
@@ -1013,10 +1054,10 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5001-5099 | LLM 相关 | LLM_CALL_FAILED(5001)、LLM_TIMEOUT(5002)、LLM_RATE_LIMITED(5003)、LLM_API_KEY_INVALID(5004) |
 | 5100-5199 | 工具相关 | TOOL_EXECUTION_FAILED(5100)、TOOL_NOT_FOUND(5101)、TOOL_PARAM_INVALID(5102) |
 | 5200-5299 | 记忆/会话 | MEMORY_NOT_FOUND(5200)、SESSION_NOT_FOUND(5201)、SESSION_EXPIRED(5202) |
-| 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302) |
+| 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
 | 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401) |
 
-### 9.9 约束分级标准
+### 9.10 约束分级标准
 
 | 级别 | 标签 | 含义 | 违反后果 |
 |------|------|------|---------|
@@ -1025,7 +1066,22 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 🟢 建议 | `RECOMMENDED` | 推荐遵守，提升业务质量 | 体验下降、效率降低 |
 | ⚪ 可覆盖 | `CONFIGURABLE` | 可由管理员配置 | 依赖管理员决策 |
 
-> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节（33 条规则）、`ErrorCode.java`
+### 9.11 前端知识库管理规则
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 48 | BR-RAG-FE-001 | 知识库名称长度 1-50 个字符，仅允许中英文、数字、下划线和连字符（前端实时校验，提交前拦截） | 前端知识库 | 🔴 强制 |
+| 49 | BR-RAG-FE-002 | 知识库名称全局唯一（前端提交后接收后端唯一性校验结果并提示） | 前端知识库 | 🔴 强制 |
+| 50 | BR-RAG-FE-003 | 知识库描述长度不超过 200 个字符（前端实时字数计数与拦截） | 前端知识库 | 🔴 强制 |
+| 51 | BR-RAG-FE-004 | 单个文档大小不超过 10MB（前端上传前校验，超限直接拦截不发起请求） | 前端知识库 | 🔴 强制 |
+| 52 | BR-RAG-FE-005 | 支持的文档格式：txt、md、pdf（前端按扩展名校验，不支持格式直接拦截） | 前端知识库 | 🔴 强制 |
+| 53 | BR-RAG-FE-006 | 文档处理状态流转：待处理 -> 处理中 -> 已完成/失败（前端轮询展示，状态终态后停止轮询） | 前端知识库 | 🔴 强制 |
+| 54 | BR-RAG-FE-007 | 删除知识库时级联删除其下所有文档和向量数据（前端确认框需明示连带删除数量） | 前端知识库 | 🔴 强制 |
+| 55 | BR-RAG-FE-008 | 知识库选择器状态按会话维度保持，切换会话互不影响，同一会话内保持状态（与深度思考开关行为一致） | 前端知识库 | 🔴 强制 |
+| 56 | BR-RAG-FE-009 | 知识库选择按消息维度控制（发送消息时使用当前选择器的知识库配置，不影响历史消息） | 前端知识库 | 🔴 强制 |
+| 57 | BR-RAG-FE-010 | 文档状态轮询使用 setInterval 每 3 秒一次，仅对 PENDING/PROCESSING 文档发起请求，全部终态后自动停止，组件卸载时清理定时器 | 前端知识库 | 🔴 强制 |
+
+> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节、`ErrorCode.java`、`specs/features/2026-07-27/RAG知识库前端/RAG知识库前端.md`（BR-RAG-FE-001~010）、`specs/features/2026-07-24/RAG知识库问答/RAG知识库问答.md`（BR-RAG-013~014）
 
 ---
 
@@ -1078,6 +1134,24 @@ agent:
 # 会话配置
 session:
   timeout-minutes: 30                   # 会话超时时间
+
+# RAG 知识库配置
+rag:
+  store-type: memory                    # 向量存储类型：memory | milvus
+  document:
+    max-size: 10MB                      # 单个文档大小上限
+    supported-formats: txt,md,pdf       # 支持的文档格式
+    temp-dir: ./data/rag/temp           # 临时文件目录
+  chunk:
+    size: 1000                          # 分块大小（token 数）
+    overlap: 200                        # 分块重叠（token 数）
+  retrieval:
+    max-results: 5                      # 检索返回最大片段数
+    min-score: 0.0                      # 最小相似度阈值
+  milvus:                               # Milvus 配置（store-type=milvus 时生效）
+    host: ${MILVUS_HOST:localhost}
+    port: ${MILVUS_PORT:19530}
+    collection-name: agent_demo_rag
 
 # 火山引擎配置
 ark:
@@ -1398,6 +1472,8 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v1.1 | 2026-07-21 | 新增前端对话模块（Vue 3 + Vite + TypeScript + Pinia），SSE 流式接口，10 条前端业务规则（BR-FE-001~010），前端设计系统（Refined Dark Tech），localStorage 持久化，更新项目结构（agent-demo-frontend 模块），更新技术栈与开发环境章节 |
 | v1.2 | 2026-07-22 | CR-001 深度思考与 Markdown 渲染：新增 4 条前端规则（BR-FE-011~014）、1 条 LLM 规则（BR-LLM-007）、1 条 Agent 规则（BR-AGT-007）、1 条 Web 规则（BR-WEB-010）；更新 5.8 节 SSE 流式对话流程（含 enableThinking 分流 + reasoning 事件）；更新 4.1/4.3 节工程结构（新增 ArkThinkingStreamingChatModel/ThinkingTokenStream 等）；更新 3.4 节前端技术栈（marked + DOMPurify） |
 | v1.3 | 2026-07-23 | 深度思考模式优化 CR-001（动态工具声明）：ToolSchemaConverter 新增 convertToDescriptionText() 方法动态生成工具描述；AgentConfig.thinkingReactSystemPrompt 移除硬编码工具描述；SimpleAgent.buildReActMessagesWithMemory() 动态拼接工具描述到系统提示词；新增 BR-THINK-002 业务规则（工具描述动态生成，不硬编码）；更新 4.3 节工程结构（tools/registry 新增 ToolSchemaConverter，agent/config 新增 thinkingReactSystemPrompt） |
+| v1.4 | 2026-07-24 | RAG 知识库问答模块完整实现：agent-demo-rag 从空模块变为完整实现（20 个源文件）；新增知识库管理（创建/列表/级联删除）、文档管理（上传/异步处理/状态查询/删除）、文档解析（txt/md/pdf，PDFBox 3.x）、向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore）、Agent 工具集成（KnowledgeRetrieverTool @Tool）；新增 12 条 RAG 业务规则（BR-RAG-001~012）；新增 7 个错误码（5303-5309）；新增 7 个 REST API（/api/rag/*）；新增 pdfbox 3.0.3 依赖；新增 rag.* 配置段；更新能力矩阵 RAG 状态为已实现；更新工程结构/模块依赖/模块分层；web 模块新增 rag 依赖 |
+| v1.5 | 2026-07-28 | RAG 知识库前端管理界面完整实现：新增 9 个前端组件（NavBar/KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList/DocumentUploader/KnowledgeBaseSelector）+ 1 个 API 封装（rag.ts）+ 1 个 Pinia Store（rag.ts）；修改 App.vue（条件渲染切换对话/知识库页面）、ChatWindow/MessageInput（知识库选择器集成）、session.ts（会话级知识库选择状态）、chat.ts（streamChat 新增 knowledgeBases 参数）；后端 ChatRequest 新增 knowledgeBases 字段、AgentController 提示词注入（3 处调用点）；新增 10 条前端知识库管理规则（BR-RAG-FE-001~010）；新增 2 条 RAG 规则（BR-RAG-013 批量向量化约束、BR-RAG-014 提示词注入方案）；修复向量化 API input limit 问题（batchEmbed 每批 10 条）；更新能力矩阵新增前端知识库管理能力；更新工程结构/前端模块目录 |
 
 ---
 

@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -61,4 +62,13 @@ public class ChatRequest {
      * </p>
      */
     private Boolean enableTaskBreakdown = false;
+
+    /**
+     * 用户指定的知识库名称列表（可选）
+     * <p>
+     * 业务含义：前端知识库选择器选中的知识库名称。为空或 null 时 Agent 自主决策；
+     * 非空时 AgentController 将其注入用户消息，引导 LLM 调用 searchKnowledge 时使用指定知识库。
+     * </p>
+     */
+    private List<String> knowledgeBases;
 }

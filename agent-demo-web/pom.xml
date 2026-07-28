@@ -29,6 +29,10 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-memory</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-rag</artifactId>
+        </dependency>
 
         <!-- Spring Boot Web（含 Tomcat、Spring MVC） -->
         <dependency>

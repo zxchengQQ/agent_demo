@@ -23,6 +23,8 @@
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <springdoc.version>2.5.0</springdoc.version>
         <hutool.version>5.8.27</hutool.version>
+        <pdfbox.version>3.0.3</pdfbox.version>
+        <tabula.version>1.0.5</tabula.version>
     </properties>
 
     <!-- 集中管理所有依赖版本 -->
@@ -125,6 +127,20 @@
                 <groupId>cn.hutool</groupId>
                 <artifactId>hutool-all</artifactId>
                 <version>${hutool.version}</version>
+            </dependency>
+
+            <!-- Apache PDFBox - PDF 文档解析 -->
+            <dependency>
+                <groupId>org.apache.pdfbox</groupId>
+                <artifactId>pdfbox</artifactId>
+                <version>${pdfbox.version}</version>
+            </dependency>
+
+            <!-- Tabula-Java - PDF 表格提取（CR-001 新增） -->
+            <dependency>
+                <groupId>technology.tabula</groupId>
+                <artifactId>tabula</artifactId>
+                <version>${tabula.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

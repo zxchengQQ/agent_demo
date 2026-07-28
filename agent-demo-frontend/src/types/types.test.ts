@@ -8,6 +8,10 @@ import type {
   SubTaskStatus,
   SubTask,
   SubTaskReactStep,
+  KnowledgeBase,
+  DocumentInfo,
+  DocumentStatus,
+  DocumentStatusResponse,
 } from './index';
 
 /**
@@ -243,5 +247,63 @@ describe('类型定义', () => {
     expect(callbacks.onTaskPlan).toBeUndefined();
     expect(callbacks.onTaskStart).toBeUndefined();
     expect(callbacks.onTaskComplete).toBeUndefined();
+  });
+});
+
+/**
+ * RAG 知识库类型定义测试
+ * 验证标准来源：Task-01 验证标准
+ * 关联 AC：AC-003, AC-005, AC-009
+ */
+describe('RAG 类型定义', () => {
+  it('KnowledgeBase 类型包含所有必需字段', () => {
+    const kb: KnowledgeBase = {
+      id: 'kb-001',
+      name: '产品手册',
+      description: '产品使用说明',
+      documentCount: 3,
+      createTime: '2026-07-27T10:00:00',
+    };
+    expect(kb.id).toBe('kb-001');
+    expect(kb.name).toBe('产品手册');
+    expect(kb.documentCount).toBe(3);
+  });
+
+  it('DocumentInfo 类型包含所有必需字段', () => {
+    const doc: DocumentInfo = {
+      documentId: 'doc-001',
+      fileName: 'guide.pdf',
+      fileSize: 1024,
+      format: 'pdf',
+      status: 'COMPLETED',
+      chunkCount: 5,
+      failReason: null,
+      uploadTime: '2026-07-27T10:00:00',
+    };
+    expect(doc.documentId).toBe('doc-001');
+    expect(doc.status).toBe('COMPLETED');
+    expect(doc.chunkCount).toBe(5);
+  });
+
+  it('DocumentStatus 类型为四种状态联合类型', () => {
+    const pending: DocumentStatus = 'PENDING';
+    const processing: DocumentStatus = 'PROCESSING';
+    const completed: DocumentStatus = 'COMPLETED';
+    const failed: DocumentStatus = 'FAILED';
+    expect(pending).toBe('PENDING');
+    expect(processing).toBe('PROCESSING');
+    expect(completed).toBe('COMPLETED');
+    expect(failed).toBe('FAILED');
+  });
+
+  it('DocumentStatusResponse 类型包含所有必需字段', () => {
+    const status: DocumentStatusResponse = {
+      documentId: 'doc-001',
+      status: 'PROCESSING',
+      chunkCount: 0,
+      failReason: null,
+    };
+    expect(status.documentId).toBe('doc-001');
+    expect(status.status).toBe('PROCESSING');
   });
 });

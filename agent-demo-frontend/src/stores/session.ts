@@ -26,6 +26,13 @@ export const useSessionStore = defineStore('session', {
     sessions: [] as SessionRecord[],
     /** 当前激活的会话 ID */
     currentSessionId: '' as string,
+    /**
+     * 知识库选择器状态（按会话隔离，AC-015/AC-037）
+     * 业务含义：key 为 sessionId，value 为用户选中的知识库名称列表。
+     * 空数组或无记录表示"自动"模式（Agent 自主检索）。
+     * 不持久化到 localStorage（与深度思考开关行为一致，刷新后重置）。
+     */
+    knowledgeBasesBySession: {} as Record<string, string[]>,
   }),
 
   actions: {
@@ -454,6 +461,24 @@ export const useSessionStore = defineStore('session', {
           }
         }
       }
+    },
+
+    // ===== 知识库选择器会话级状态（Task-05，AC-015/AC-037）=====
+
+    /**
+     * 获取指定会话的知识库选择
+     * 业务含义：无记录时返回空数组（自动模式），有记录时返回选中的知识库名称列表。
+     */
+    getKnowledgeBases(sessionId: string): string[] {
+      return this.knowledgeBasesBySession[sessionId] ?? [];
+    },
+
+    /**
+     * 设置指定会话的知识库选择
+     * 业务含义：用户通过知识库选择器切换选择时调用，按会话隔离保存。
+     */
+    setKnowledgeBases(sessionId: string, bases: string[]) {
+      this.knowledgeBasesBySession[sessionId] = bases;
     },
   },
 });

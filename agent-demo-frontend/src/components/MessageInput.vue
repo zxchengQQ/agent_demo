@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
+import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
+import type { KnowledgeBase } from '@/types';
 
 const props = withDefaults(defineProps<{
   isStreaming: boolean;
@@ -7,9 +9,15 @@ const props = withDefaults(defineProps<{
   enableThinking?: boolean;
   /** 是否开启复杂任务拆解（CR-002，AC-012），可选，默认 false 向前兼容 */
   enableTaskBreakdown?: boolean;
+  /** 可选知识库列表（Task-08，AC-029），默认空数组 */
+  knowledgeBases?: KnowledgeBase[];
+  /** 选中的知识库名称列表（Task-08，AC-029），默认空数组 */
+  selectedKnowledgeBases?: string[];
 }>(), {
   enableThinking: false,
   enableTaskBreakdown: false,
+  knowledgeBases: () => [],
+  selectedKnowledgeBases: () => [],
 });
 
 const emit = defineEmits<{
@@ -19,6 +27,8 @@ const emit = defineEmits<{
   toggleThinking: [];
   /** 切换复杂任务拆解开关（CR-002，AC-012） */
   toggleTaskBreakdown: [];
+  /** 知识库选择变更（Task-08，AC-029） */
+  'update:selectedKnowledgeBases': [value: string[]];
 }>();
 
 const inputText = ref('');
@@ -98,6 +108,13 @@ function handleKeydown(e: KeyboardEvent) {
 
     <!-- 字符计数 + 超长提示 -->
     <div class="input-footer">
+      <!-- 知识库选择器（Task-08，AC-029）：流式时禁用 -->
+      <KnowledgeBaseSelector
+        :model-value="props.selectedKnowledgeBases"
+        :knowledge-bases="props.knowledgeBases"
+        :disabled="props.isStreaming"
+        @update:model-value="emit('update:selectedKnowledgeBases', $event)"
+      />
       <!-- 深度思考 toggle（CR-001，AC-021）：开启时高亮，点击切换状态 -->
       <button
         class="btn-thinking"

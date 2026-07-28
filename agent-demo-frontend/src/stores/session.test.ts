@@ -367,4 +367,34 @@ describe('Session Store', () => {
       expect(found?.subTasks?.[0].reactSteps?.[1].toolCalls[0].toolName).toBe('calc');
     });
   });
+
+  /**
+   * 知识库选择器会话级状态测试（Task-05）
+   * 关联 AC：AC-015, AC-037
+   */
+  describe('知识库选择器会话级状态', () => {
+    it('getKnowledgeBases 无记录时返回空数组（自动模式）', () => {
+      const store = useSessionStore();
+      expect(store.getKnowledgeBases('session-X')).toEqual([]);
+    });
+
+    it('setKnowledgeBases 后 getKnowledgeBases 返回设置的值', () => {
+      const store = useSessionStore();
+      store.setKnowledgeBases('session-A', ['产品手册']);
+      expect(store.getKnowledgeBases('session-A')).toEqual(['产品手册']);
+    });
+
+    it('不同会话的知识库选择互不影响（AC-015 会话隔离）', () => {
+      const store = useSessionStore();
+      store.setKnowledgeBases('session-A', ['产品手册']);
+      expect(store.getKnowledgeBases('session-B')).toEqual([]);
+    });
+
+    it('setKnowledgeBases 传空数组可重置为自动模式', () => {
+      const store = useSessionStore();
+      store.setKnowledgeBases('session-A', ['产品手册']);
+      store.setKnowledgeBases('session-A', []);
+      expect(store.getKnowledgeBases('session-A')).toEqual([]);
+    });
+  });
 });
