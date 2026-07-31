@@ -129,6 +129,10 @@ async function sendMessage(message: string) {
         onFinalAnswer: (iteration: number) => {
           store.moveThoughtToContent(assistantMsgId, iteration);
         },
+        // Task-17: Token 消耗统计，累加到当前会话
+        onUsage: (usage) => {
+          store.addTokenUsage(store.currentSessionId, usage);
+        },
         // 流式完成
         onDone: () => {
           store.markComplete(assistantMsgId);
@@ -187,6 +191,11 @@ async function sendMessage(message: string) {
         // 子任务取消，状态变为 cancelled（AC-006, AC-007）
         onTaskCancelled: (index) => {
           store.updateSubTaskStatus(assistantMsgId, index, 'cancelled');
+        },
+
+        // CR-002: 知识库来源信息累积写入消息（AC-043）
+        onSources: (sources) => {
+          store.addKnowledgeSources(assistantMsgId, sources);
         },
       },
       abortController.signal,

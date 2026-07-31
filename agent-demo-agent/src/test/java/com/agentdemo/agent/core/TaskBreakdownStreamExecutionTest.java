@@ -1,7 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
 import com.agentdemo.llm.factory.ToolCall;
@@ -41,7 +41,7 @@ class TaskBreakdownStreamExecutionTest {
 
     private ModelFactory modelFactory;
     private ChatModel chatModel;
-    private ArkThinkingStreamingChatModel thinkingModel;
+    private ThinkingStreamingChatModel thinkingModel;
     private ChatMemoryManager memoryManager;
     private AgentConfig agentConfig;
     private ToolSchemaConverter toolSchemaConverter;
@@ -52,7 +52,7 @@ class TaskBreakdownStreamExecutionTest {
     void setUp() {
         modelFactory = mock(ModelFactory.class);
         chatModel = mock(ChatModel.class);
-        thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        thinkingModel = mock(ThinkingStreamingChatModel.class);
         memoryManager = mock(ChatMemoryManager.class);
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
@@ -85,7 +85,7 @@ class TaskBreakdownStreamExecutionTest {
     private Object mockSingleRoundStop(InvocationOnMock invocation) {
         ThinkingStreamHandler handler = invocation.getArgument(2);
         handler.onPartialResponse("执行结果");
-        handler.onComplete("执行结果", "stop");
+        handler.onComplete("执行结果", "stop", null);
         return null;
     }
 
@@ -99,7 +99,7 @@ class TaskBreakdownStreamExecutionTest {
         tc.setFunctionName(toolName);
         tc.setArguments(args);
         handler.onToolCalls(Collections.singletonList(tc));
-        handler.onComplete("需要调用工具", "tool_calls");
+        handler.onComplete("需要调用工具", "tool_calls", null);
         return null;
     }
 
@@ -243,7 +243,7 @@ class TaskBreakdownStreamExecutionTest {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialThinking("正在思考");
             handler.onPartialResponse("结果");
-            handler.onComplete("结果", "stop");
+            handler.onComplete("结果", "stop", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 

@@ -2,7 +2,7 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
@@ -49,7 +49,7 @@ class SimpleAgentThinkingStreamTest {
     void chatThinkingStreamShouldReturnNonNullThinkingTokenStream() {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
-        ArkThinkingStreamingChatModel thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
         when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
@@ -81,7 +81,7 @@ class SimpleAgentThinkingStreamTest {
     void chatThinkingStreamShouldAssembleMessagesWithSystemPromptHistoryAndUserMessage() {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
-        ArkThinkingStreamingChatModel thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
         when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
@@ -143,7 +143,7 @@ class SimpleAgentThinkingStreamTest {
         ModelFactory modelFactory = mock(ModelFactory.class);
         when(modelFactory.getDefaultChatModel()).thenReturn(mock(dev.langchain4j.model.chat.ChatModel.class));
         when(modelFactory.getDefaultStreamingChatModel()).thenReturn(mock(dev.langchain4j.model.chat.StreamingChatModel.class));
-        ArkThinkingStreamingChatModel thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
         when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
@@ -182,7 +182,7 @@ class SimpleAgentThinkingStreamTest {
     void thinkingModeShouldUsePromptWithoutToolMention() {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
-        ArkThinkingStreamingChatModel thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
         when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
@@ -252,7 +252,7 @@ class SimpleAgentThinkingStreamTest {
     void reactStreamShouldContainDynamicToolDescription() {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
-        ArkThinkingStreamingChatModel thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
         when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);

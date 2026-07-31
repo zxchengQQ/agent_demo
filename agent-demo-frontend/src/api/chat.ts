@@ -1,4 +1,4 @@
-import type { StreamCallbacks } from '@/types';
+import type { KnowledgeSource, StreamCallbacks, TokenUsage } from '@/types';
 
 /**
  * SSE 流式调用封装
@@ -140,6 +140,13 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       try {
         const parsed = JSON.parse(data);
         callbacks.onObservation?.(parsed.result, parsed.iteration);
+
+        // CR-002: 从 observation 结果中解析知识库来源信息
+        // 格式：来源: {知识库名}/{文件名}，可能包含多行来源
+        const sources = parseKnowledgeSources(parsed.result);
+        if (sources.length > 0) {
+          callbacks.onSources?.(sources);
+        }
       } catch {
         // JSON 解析失败时静默跳过（容错）
       }
@@ -224,6 +231,12 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       try {
         const parsed = JSON.parse(data);
         callbacks.onTaskObservation?.(parsed.index, parsed.result, parsed.iteration);
+
+        // CR-002: 子任务中使用知识库检索时，同样解析来源信息
+        const sources = parseKnowledgeSources(parsed.result);
+        if (sources.length > 0) {
+          callbacks.onSources?.(sources);
+        }
       } catch {
         // JSON 解析失败时静默跳过（容错）
       }
@@ -260,6 +273,16 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       break;
     }
 
+    case 'usage': {
+      // Task-17: Token 消耗统计，data 为 JSON（含 inputTokens/outputTokens/totalTokens/estimated）
+      try {
+        const usageData = JSON.parse(data) as TokenUsage;
+        callbacks.onUsage?.(usageData);
+      } catch (e) {
+        console.warn('Failed to parse usage event:', e);
+      }
+      break;
+    }
     case 'done':
       callbacks.onDone(Number(data));
       break;
@@ -268,4 +291,29 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       callbacks.onError(data);
       break;
   }
+}
+
+/**
+ * 从工具结果文本中解析知识库来源信息（CR-002 新增）
+ *
+ * 业务含义：后端 KnowledgeRetrieverTool.buildSourcePrefix 生成来源前缀，
+ * 格式为"来源: {知识库名}/{文件名} ({format}) {位置信息}"。
+ * 此函数用正则提取所有匹配的来源信息，供前端"引用来源"条展示。
+ *
+ * @param text observation 事件中的工具结果文本
+ * @return 解析到的来源列表，无匹配时返回空数组
+ */
+function parseKnowledgeSources(text: string): KnowledgeSource[] {
+  // 正则：匹配 "来源: {知识库名}/{文件名}" 格式
+  // 知识库名：不含 / 和换行；文件名：不含空白、（ 和 ( （后接格式或位置信息时终止）
+  const sourceRegex = /来源: ([^\/\n]+)\/([^\s（(]+)/g;
+  const sources: KnowledgeSource[] = [];
+  let match;
+  while ((match = sourceRegex.exec(text)) !== null) {
+    sources.push({
+      knowledgeBaseName: match[1].trim(),
+      fileName: match[2].trim(),
+    });
+  }
+  return sources;
 }

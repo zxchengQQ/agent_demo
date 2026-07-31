@@ -1,7 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
@@ -32,7 +32,7 @@ class TaskBreakdownStreamSummaryTest {
 
     private ModelFactory modelFactory;
     private ChatModel chatModel;
-    private ArkThinkingStreamingChatModel thinkingModel;
+    private ThinkingStreamingChatModel thinkingModel;
     private ChatMemoryManager memoryManager;
     private AgentConfig agentConfig;
     private ToolSchemaConverter toolSchemaConverter;
@@ -43,7 +43,7 @@ class TaskBreakdownStreamSummaryTest {
     void setUp() {
         modelFactory = mock(ModelFactory.class);
         chatModel = mock(ChatModel.class);
-        thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        thinkingModel = mock(ThinkingStreamingChatModel.class);
         memoryManager = mock(ChatMemoryManager.class);
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
@@ -86,11 +86,11 @@ class TaskBreakdownStreamSummaryTest {
             if (callCount[0] == 1) {
                 // Phase 2: 子任务执行
                 handler.onPartialResponse("子任务结果");
-                handler.onComplete("子任务结果", "stop");
+                handler.onComplete("子任务结果", "stop", null);
             } else {
                 // Phase 3: 总结
                 handler.onPartialResponse("总结内容");
-                handler.onComplete("总结内容", "stop");
+                handler.onComplete("总结内容", "stop", null);
             }
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
@@ -116,10 +116,10 @@ class TaskBreakdownStreamSummaryTest {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             if (callCount[0] == 1) {
                 handler.onPartialResponse("结果");
-                handler.onComplete("结果", "stop");
+                handler.onComplete("结果", "stop", null);
             } else {
                 handler.onPartialResponse("总结");
-                handler.onComplete("总结", "stop");
+                handler.onComplete("总结", "stop", null);
             }
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
@@ -142,7 +142,7 @@ class TaskBreakdownStreamSummaryTest {
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialResponse("直接回答");
-            handler.onComplete("直接回答", "stop");
+            handler.onComplete("直接回答", "stop", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 
@@ -168,7 +168,7 @@ class TaskBreakdownStreamSummaryTest {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialThinking("推理内容");
             handler.onPartialResponse("回答");
-            handler.onComplete("回答", "stop");
+            handler.onComplete("回答", "stop", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 
@@ -191,7 +191,7 @@ class TaskBreakdownStreamSummaryTest {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialThinking("推理内容");
             handler.onPartialResponse("回答");
-            handler.onComplete("回答", "stop");
+            handler.onComplete("回答", "stop", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 

@@ -4,8 +4,8 @@ import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.BaseAgent;
 import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.common.enums.AgentType;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
@@ -57,6 +57,13 @@ public class SimpleAgent implements BaseAgent {
      */
     private volatile BaseAgent delegate;
 
+    /**
+     * 上次创建 delegate 时 ToolRegistry 中的工具数量
+     * 业务含义：CR-003 动态知识库 Tool 注册后，下次对话前若工具数量变化则重建 delegate，
+     * 使新注册/注销的知识库 Tool 对 Agent 生效，无需重启应用。
+     */
+    private volatile int lastToolCount = -1;
+
     public SimpleAgent(ModelFactory modelFactory,
                        ToolRegistry toolRegistry,
                        ChatMemoryManager memoryManager,
@@ -78,15 +85,18 @@ public class SimpleAgent implements BaseAgent {
      * 双重检查锁保证线程安全
      */
     private BaseAgent getDelegate() {
-        if (delegate == null) {
+        // CR-003: 若 Tool 数量变化，需要重建 delegate 以绑定新注册/注销的知识库 Tool
+        int currentToolCount = toolRegistry.getToolCount();
+        if (delegate == null || currentToolCount != lastToolCount) {
             synchronized (this) {
-                if (delegate == null) {
+                currentToolCount = toolRegistry.getToolCount();
+                if (delegate == null || currentToolCount != lastToolCount) {
                     // 业务含义：通过 AiServices 代理构建 Agent
                     // - chatModel：提供 LLM 推理能力（大脑）
                     // - chatMemoryProvider：按 sessionId 提供会话记忆（上下文保持）
                     // - tools：绑定工具集（手脚），Agent 自主决定何时调用
                     // - systemMessageProvider：动态提供系统提示词（角色设定）
-                    log.info("初始化 Agent delegate，绑定工具数: {}", toolRegistry.size());
+                    log.info("初始化 Agent delegate，绑定工具数: {}", currentToolCount);
                     delegate = AiServices.builder(BaseAgent.class)
                             .chatModel(modelFactory.getDefaultChatModel())
                             // 业务含义：绑定流式模型，使 chatStream 方法能逐字输出（TC-LC4J-007）
@@ -95,6 +105,7 @@ public class SimpleAgent implements BaseAgent {
                             .tools(toolRegistry.listTools().toArray())
                             .systemMessageProvider(memoryId -> agentConfig.getDefaultSystemPrompt())
                             .build();
+                    lastToolCount = currentToolCount;
                     log.info("Agent delegate 初始化完成");
                 }
             }
@@ -155,7 +166,7 @@ public class SimpleAgent implements BaseAgent {
 
         // 业务含义：手动组装消息列表（系统提示词 + 历史消息 + 当前用户消息）
         // 区别于 AiServices 自动注入记忆，此处需显式拼接以保证多轮上下文完整传递给方舟 API
-        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
         List<ChatMessage> messages = buildMessagesWithMemory(sessionId, message);
 
         return new ArkThinkingTokenStream(thinkingModel, messages);
@@ -185,7 +196,7 @@ public class SimpleAgent implements BaseAgent {
         }
 
         // 业务含义：使用 ReAct 专用系统提示词（含 Thought/Action/Observation 引导 + 工具描述）
-        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
         List<ChatMessage> messages = buildReActMessagesWithMemory(sessionId, message);
 
         // 业务含义：将 @Tool 注解方法转换为 OpenAI 兼容的 tools JSON Schema，传给方舟 API

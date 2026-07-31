@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import type { SessionRecord, Message, ReactStep, SubTaskStatus, SubTaskReactStep } from '@/types';
+import type { SessionRecord, Message, ReactStep, SubTaskStatus, SubTaskReactStep, TokenUsage, KnowledgeSource } from '@/types';
 import * as storage from '@/utils/storage';
 
 /**
@@ -300,6 +300,33 @@ export const useSessionStore = defineStore('session', {
     },
 
     /**
+     * 追加知识库来源信息到指定消息（CR-002 新增，AC-043）
+     * 业务含义：observation/task_observation 事件中解析到来源信息时累积写入消息。
+     * 多次事件来源信息累积（不覆盖），同一知识库+文件名组合去重。
+     */
+    addKnowledgeSources(messageId: string, sources: KnowledgeSource[]) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          if (!msg.knowledgeSources) {
+            msg.knowledgeSources = [];
+          }
+          for (const source of sources) {
+            // 去重：同一知识库名+文件名不重复添加
+            const exists = msg.knowledgeSources.some(
+              (s) => s.knowledgeBaseName === source.knowledgeBaseName && s.fileName === source.fileName,
+            );
+            if (!exists) {
+              msg.knowledgeSources.push(source);
+            }
+          }
+          storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
      * 更新会话最后活跃时间（AC-018 排序依据）
      */
     touchSession(sessionId: string) {
@@ -461,6 +488,29 @@ export const useSessionStore = defineStore('session', {
           }
         }
       }
+    },
+
+    // ===== Token 消耗统计（Task-18 新增）=====
+
+    /**
+     * 累加会话 Token 用量（usage 事件触发）
+     * 业务含义：后端在流式结束时推送本轮 Token 用量，前端累加到会话维度并持久化。
+     * 旧会话可能无 tokenUsage 字段，首次累加时初始化为 0。
+     * estimated 标记：任一轮为估算值则整体标记为估算（保守展示）。
+     */
+    addTokenUsage(sessionId: string, usage: TokenUsage) {
+      const session = this.sessions.find((s) => s.sessionId === sessionId);
+      if (!session) return;
+      if (!session.tokenUsage) {
+        session.tokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, estimated: false };
+      }
+      session.tokenUsage.inputTokens += usage.inputTokens;
+      session.tokenUsage.outputTokens += usage.outputTokens;
+      session.tokenUsage.totalTokens += usage.totalTokens;
+      if (usage.estimated) {
+        session.tokenUsage.estimated = true;
+      }
+      storage.saveSessions(this.sessions);
     },
 
     // ===== 知识库选择器会话级状态（Task-05，AC-015/AC-037）=====

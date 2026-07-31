@@ -34,6 +34,27 @@ ark:
     max-retries: 3
     temperature: 0.7
 
+# LLM 提供商选择
+# 业务含义：通过 provider 切换当前使用的 LLM 提供商，支持 ark（火山引擎方舟）和 bailian（阿里百炼）
+# 默认值为 ark，确保不配置时不影响现有功能
+llm:
+  provider: ark  # ark | bailian（默认 ark，向后兼容）
+
+# 阿里百炼 OpenAI 兼容协议配置
+# 业务含义：使用阿里百炼 /compatible-mode/v1 路径，兼容 OpenAI 协议格式
+bailian:
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api-key: ${BAILIAN_API_KEY}  # 从环境变量注入，禁止硬编码
+  default-model: deepseek-v4-flash
+  models:
+    chat: deepseek-v4-flash
+    code: deepseek-v4-flash
+    lite: deepseek-v4-flash
+  timeout: 60s
+  max-retries: 3
+  temperature: 0.7
+  embedding-model: text-embedding-v4
+
 # Agent 配置
 agent:
   max-iterations: 10
@@ -66,6 +87,24 @@ rag:
     host: ${MILVUS_HOST:localhost}
     port: ${MILVUS_PORT:19530}
     collection-name: agent_demo_rag
+  # 文档分割配置（按文件类型独立配置 size/overlap/minSize，单位为 Token 数）
+  splitter:
+    default-config:
+      size: 1000
+      overlap: 200
+      min-size: 500
+    md:
+      size: 800
+      overlap: 150
+      min-size: 400
+    pdf:
+      size: 1200
+      overlap: 200
+      min-size: 600
+    txt:
+      size: 1000
+      overlap: 200
+      min-size: 500
 
 # Springdoc Swagger
 springdoc:

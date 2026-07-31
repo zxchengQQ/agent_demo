@@ -2,7 +2,7 @@
 
 ## 1. 模块概述
 
-RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问答能力模块，负责文档管理、文档解析、向量化和语义检索。模块基于 LangChain4j EmbeddingStore 实现，支持多知识库分组管理、文档异步处理（解析-分块-向量化-入库）、纯向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore），并通过 @Tool 注解将检索能力集成为 Agent 工具，Agent 在 ReAct 循环中自主选择知识库进行检索。
+RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问答能力模块，负责文档管理、向量化、语义检索和 Agent 工具集成。文档解析与分割功能已抽取为独立的 agent-demo-splitter 模块，RAG 模块通过 DocumentSplitterRegistry 调用专属分割策略。模块基于 LangChain4j EmbeddingStore 实现，支持多知识库分组管理、文档异步处理（解析-分割-合并-向量化-入库）、纯向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore），并通过 @Tool 注解将检索能力集成为 Agent 工具，Agent 在 ReAct 循环中自主选择知识库进行检索。
 
 ## 2. 用户角色与权限
 
@@ -48,7 +48,7 @@ RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问�
 - **触发场景**：文档上传后自动触发。
 - **操作步骤**：`@Async processDocument(documentId)`。
 - **系统行为**：状态流转 PENDING -> PROCESSING -> COMPLETED/FAILED。
-- **处理流水线**：解析文档 -> 递归分块 -> 向量化（Embedding）-> 存入 EmbeddingStore（带 metadata）。
+- **处理流水线**：解析文档（DocumentLoader）-> 专属分割（DocumentSplitterRegistry 路由 MD/PDF/TXT 专属分割器，CR-002 注入 fileName 元数据）-> 合并过短块（ChunkMerger，低于 minSize 的分块与同组相邻分块合并）-> 保存 DocumentChunk 到 DocumentChunkStore（CR-002 新增：从 TextSegment.metadata 提取来源元数据 fileName/format/pageNumber/headerText 存入 DocumentChunk.metadata）-> 向量化（Embedding）-> 存入 EmbeddingStore（带 metadata）。
 - **向量化批处理机制**：Embeddings API 单次输入上限为 10 个文本片段，当文档分块数超过 10 时，通过 `batchEmbed` 方法分批调用（每批 10 条），避免 `InvalidParameter: Embeddings API input limit exceeded` 错误。
 - **异常处理**：解析失败标记 "文档解析失败"，向量化失败标记 "向量化失败"。
 
@@ -74,7 +74,8 @@ RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问�
 
 - **触发场景**：Agent 在 ReAct 循环中判断需要检索知识库。
 - **操作步骤**：Agent 调用 `KnowledgeRetrieverTool.searchKnowledge(knowledgeBaseName, query)`。
-- **系统行为**：查找知识库 -> 向量化查询 -> metadata 过滤检索 Top-5 -> 返回文档片段文本。
+- **系统行为**：查找知识库 -> 向量化查询 -> metadata 过滤检索 Top-5 -> 返回文档片段文本（CR-002 新增：每个片段标注来源前缀，如"来源: 产品手册.pdf (pdf) 第3页"）。
+- **来源元数据格式**：来源: {fileName} ({format}) {位置信息}，其中位置信息为 PDF 显示"第N页"，MD 显示章节"标题"，无位置信息时仅显示文件名和格式。
 - **异常降级**：知识库不存在/为空/无结果/服务不可用时返回提示文本，不中断对话。
 
 ### 3.10 对话知识库集成（提示词注入）
@@ -141,8 +142,8 @@ flowchart TD
 
 | 安全场景 | 机制 | 实现类 |
 |----------|------|--------|
-| 文档格式白名单 | 仅允许 txt/md/pdf | DocumentLoader |
-| 文档大小限制 | 10MB 上限 | DocumentLoader |
+| 文档格式白名单 | 仅允许 txt/md/pdf | agent-demo-splitter DocumentLoader |
+| 文档大小限制 | 10MB 上限 | agent-demo-splitter DocumentLoader |
 | 临时文件清理 | 处理完成后删除临时文件 | DocumentService |
 | 异常降级 | 检索工具异常返回文本提示，不泄露堆栈 | KnowledgeRetrieverTool |
 | 文档内容脱敏 | 文档内容不打印到日志 | DocumentService |
@@ -155,7 +156,8 @@ flowchart TD
 |---------|------|---------|------|
 | KnowledgeBase | 实体 | ConcurrentHashMap | 知识库元数据（ID/名称/描述/文档数/创建时间） |
 | DocumentInfo | 实体 | ConcurrentHashMap | 文档元数据（ID/知识库ID/文件名/大小/格式/状态/分块数/失败原因/上传时间） |
-| TextSegment | 向量数据 | EmbeddingStore | 文档分块向量（含 metadata: knowledgeBaseId, documentId） |
+| DocumentChunk | 实体 | ConcurrentHashMap | 文档分块信息（ID/文档ID/分块索引/内容/字符数/Token数/metadata，CR-002 新增 metadata 字段存储来源元数据） |
+| TextSegment | 向量数据 | EmbeddingStore | 文档分块向量（含 metadata: knowledgeBaseId, documentId, fileName, format, pageNumber/headerText，CR-002 新增 fileName） |
 
 ### 6.2 向量存储
 
@@ -172,15 +174,15 @@ flowchart TD
 |---------|------|
 | agent-demo-common | ErrorCode 错误码、Result 返回结构、BusinessException |
 | agent-demo-llm | ModelFactory.getEmbeddingModel() 向量化模型 |
+| agent-demo-splitter | DocumentLoader 文档解析、DocumentSplitterRegistry 分割路由、ChunkMerger 过短块合并 |
 
 ### 7.2 外部依赖
 
 | 依赖 | 版本 | 用途 |
 |------|------|------|
-| langchain4j | 1.17.2 | EmbeddingStore/TextSegment/DocumentSplitter |
+| langchain4j | 1.17.2 | EmbeddingStore/TextSegment |
 | langchain4j-milvus | 1.17.2-beta27 | MilvusEmbeddingStore（可切换） |
 | milvus-sdk-java | 2.4.3 | Milvus 向量数据库 SDK |
-| pdfbox | 3.0.3 | PDF 文档解析 |
 
 ### 7.3 被依赖模块
 
@@ -209,8 +211,18 @@ flowchart TD
 | rag.store-type | memory | 向量存储类型 |
 | rag.document.max-size | 10MB | 文档大小上限 |
 | rag.document.supported-formats | txt,md,pdf | 支持的格式 |
-| rag.chunk.size | 1000 | 分块大小（token） |
-| rag.chunk.overlap | 200 | 分块重叠（token） |
+| rag.splitter.default-config.size | 1000 | 默认分块大小（token） |
+| rag.splitter.default-config.overlap | 200 | 默认分块重叠（token） |
+| rag.splitter.default-config.min-size | 500 | 默认最小分块大小，低于此值触发合并（CR-001） |
+| rag.splitter.md.size | 800 | Markdown 分块大小（token） |
+| rag.splitter.md.overlap | 150 | Markdown 分块重叠（token） |
+| rag.splitter.md.min-size | 400 | Markdown 最小分块大小（CR-001） |
+| rag.splitter.pdf.size | 1200 | PDF 分块大小（token） |
+| rag.splitter.pdf.overlap | 200 | PDF 分块重叠（token） |
+| rag.splitter.pdf.min-size | 600 | PDF 最小分块大小（CR-001） |
+| rag.splitter.txt.size | 1000 | TXT 分块大小（token） |
+| rag.splitter.txt.overlap | 200 | TXT 分块重叠（token） |
+| rag.splitter.txt.min-size | 500 | TXT 最小分块大小（CR-001） |
 | rag.retrieval.max-results | 5 | 检索返回最大数 |
 | rag.retrieval.min-score | 0.0 | 最小相似度 |
 | rag.milvus.host | localhost | Milvus 地址 |

@@ -175,7 +175,7 @@ class ArkThinkingStreamingReActTest {
 
         model.parseSseLine(line, handler, fullResponse, accumulator);
 
-        verify(handler).onComplete("最终回答", "stop");
+        verify(handler).onComplete("最终回答", "stop", null);
     }
 
     /**
@@ -192,7 +192,7 @@ class ArkThinkingStreamingReActTest {
 
         // finish_reason 时先触发 onToolCalls（累积器非空），再触发 onComplete
         verify(handler).onToolCalls(org.mockito.ArgumentMatchers.anyList());
-        verify(handler).onComplete("Thought文本", "tool_calls");
+        verify(handler).onComplete("Thought文本", "tool_calls", null);
     }
 
     /**
@@ -367,7 +367,7 @@ class ArkThinkingStreamingReActTest {
 
         verify(handler).onPartialThinking("思考中");
         verify(handler).onPartialResponse("回复");
-        verify(handler).onComplete("回复", "stop");
+        verify(handler).onComplete("回复", "stop", null);
     }
 
     /**
@@ -408,6 +408,6 @@ class ArkThinkingStreamingReActTest {
 
         verify(handler).onPartialThinking("思考");
         verify(handler).onPartialResponse("回复");
-        verify(handler).onComplete("回复", "stop");
+        verify(handler).onComplete("回复", "stop", null);
     }
 }

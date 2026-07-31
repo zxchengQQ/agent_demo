@@ -1,7 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
@@ -37,7 +37,7 @@ class TaskBreakdownStreamPlanningTest {
 
     private ModelFactory modelFactory;
     private ChatModel chatModel;
-    private ArkThinkingStreamingChatModel thinkingModel;
+    private ThinkingStreamingChatModel thinkingModel;
     private ChatMemoryManager memoryManager;
     private AgentConfig agentConfig;
     private ToolSchemaConverter toolSchemaConverter;
@@ -48,7 +48,7 @@ class TaskBreakdownStreamPlanningTest {
     void setUp() {
         modelFactory = mock(ModelFactory.class);
         chatModel = mock(ChatModel.class);
-        thinkingModel = mock(ArkThinkingStreamingChatModel.class);
+        thinkingModel = mock(ThinkingStreamingChatModel.class);
         memoryManager = mock(ChatMemoryManager.class);
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
@@ -66,7 +66,7 @@ class TaskBreakdownStreamPlanningTest {
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialResponse("直接回答");
-            handler.onComplete("直接回答", "stop");
+            handler.onComplete("直接回答", "stop", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
     }

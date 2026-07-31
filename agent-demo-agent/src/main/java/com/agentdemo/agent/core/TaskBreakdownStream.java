@@ -1,7 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
 import com.agentdemo.llm.factory.ToolCall;
@@ -18,6 +18,7 @@ import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -416,7 +417,7 @@ public class TaskBreakdownStream {
      * @return 子任务执行结果文本
      */
     private String executeSubTaskWithReAct(SubTask task, List<String> previousResults) {
-        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
 
         // 构造系统提示词：执行提示词 + 动态工具描述
         String systemPrompt = agentConfig.getTaskExecutionSystemPrompt()
@@ -516,7 +517,7 @@ public class TaskBreakdownStream {
             }
 
             @Override
-            public void onComplete(String response, String finishReason) {
+            public void onComplete(String response, String finishReason, TokenUsage tokenUsage) {
                 result.finishReason = finishReason;
             }
 
@@ -628,7 +629,7 @@ public class TaskBreakdownStream {
      * @param messages 消息列表
      */
     private void streamResponse(List<ChatMessage> messages) {
-        ArkThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
         final Throwable[] errorHolder = {null};
 
         ThinkingStreamHandler handler = new ThinkingStreamHandler() {
@@ -654,7 +655,7 @@ public class TaskBreakdownStream {
             }
 
             @Override
-            public void onComplete(String fullResponse, String finishReason) {
+            public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
                 log.info("流式输出完成: sessionId={}, finishReason={}", sessionId, finishReason);
             }
 

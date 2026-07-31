@@ -1,5 +1,6 @@
 package com.agentdemo.llm.factory;
 
+import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Method;
@@ -69,14 +70,14 @@ class ThinkingStreamHandlerTest {
     }
 
     /**
-     * 验证 onComplete 方法签名包含 finishReason 参数（两个 String 参数）
+     * 验证 onComplete 方法签名包含 finishReason 和 tokenUsage 参数（Task-15 扩展）
      */
     @Test
-    void onCompleteShouldHaveFinishReasonParameter() throws NoSuchMethodException {
+    void onCompleteShouldHaveFinishReasonAndTokenUsageParameter() throws NoSuchMethodException {
         Method method = ThinkingStreamHandler.class.getDeclaredMethod(
-                "onComplete", String.class, String.class);
+                "onComplete", String.class, String.class, TokenUsage.class);
 
-        assertNotNull(method, "onComplete 应有两个 String 参数：fullResponse 和 finishReason");
+        assertNotNull(method, "onComplete 应有三个参数：fullResponse、finishReason 和 tokenUsage");
         assertEquals(void.class, method.getReturnType(),
                 "onComplete 返回类型应为 void");
     }
@@ -109,7 +110,7 @@ class ThinkingStreamHandlerTest {
             }
 
             @Override
-            public void onComplete(String fullResponse, String finishReason) {
+            public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
                 responseBuffer.append(fullResponse);
                 finishReasonBuffer.append(finishReason);
             }
@@ -128,7 +129,7 @@ class ThinkingStreamHandlerTest {
         // 调用各方法验证不报错
         handler.onPartialThinking("思考中");
         handler.onPartialResponse("你好");
-        handler.onComplete("完整回复", "stop");
+        handler.onComplete("完整回复", "stop", null);
         handler.onToolCalls(Collections.singletonList(toolCall));
         handler.onError(new RuntimeException("测试异常"));
 

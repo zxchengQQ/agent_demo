@@ -6,6 +6,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationContext;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -80,12 +81,20 @@ public class ToolRegistry {
      * 检查类中是否有 @Tool 注解的方法
      */
     private boolean hasToolAnnotation(Class<?> clazz) {
-        for (java.lang.reflect.Method method : clazz.getDeclaredMethods()) {
+        return !findToolMethods(clazz).isEmpty();
+    }
+
+    /**
+     * 获取类中所有标注了 @Tool 的方法
+     */
+    private List<Method> findToolMethods(Class<?> clazz) {
+        List<Method> toolMethods = new ArrayList<>();
+        for (Method method : clazz.getDeclaredMethods()) {
             if (method.isAnnotationPresent(Tool.class)) {
-                return true;
+                toolMethods.add(method);
             }
         }
-        return false;
+        return toolMethods;
     }
 
     /**
@@ -127,6 +136,29 @@ public class ToolRegistry {
     }
 
     /**
+     * 动态注销工具
+     * 业务含义：运行时移除工具（如 CR-003 知识库删除时注销对应 Tool），
+     * 按工具方法名匹配并移除所有匹配的工具实例。
+     *
+     * @param toolName 工具方法名
+     */
+    public void unregisterTool(String toolName) {
+        if (toolName == null || toolName.isBlank()) {
+            return;
+        }
+        tools.removeIf(tool -> hasToolMethod(tool, toolName));
+        log.info("动态注销工具: {}", toolName);
+    }
+
+    /**
+     * 检查工具是否包含指定名称的 @Tool 方法
+     */
+    private boolean hasToolMethod(Object tool, String toolName) {
+        return findToolMethods(tool.getClass()).stream()
+                .anyMatch(method -> toolName.equals(method.getName()));
+    }
+
+    /**
      * 获取已注册工具数量
      *
      * @return 工具数量
@@ -134,5 +166,14 @@ public class ToolRegistry {
     public int size() {
         ensureScanned();
         return tools.size();
+    }
+
+    /**
+     * 获取已注册工具数量（别名）
+     *
+     * @return 工具数量
+     */
+    public int getToolCount() {
+        return size();
     }
 }

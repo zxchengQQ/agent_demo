@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import type { Message, SubTaskStatus } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
+import KnowledgeSourceBar from './KnowledgeSourceBar.vue';
 
 const props = defineProps<{ message: Message }>();
 
@@ -347,6 +348,12 @@ function statusIcon(status: SubTaskStatus): string {
       <div v-if="props.message.status === 'error'" class="status-hint error">
         发生错误
       </div>
+
+      <!-- 知识库引用来源条（CR-002，AC-043）：助手消息底部，使用知识库检索时显示 -->
+      <KnowledgeSourceBar
+        v-if="props.message.role === 'assistant' && props.message.knowledgeSources && props.message.knowledgeSources.length > 0"
+        :sources="props.message.knowledgeSources"
+      />
     </div>
   </div>
 </template>

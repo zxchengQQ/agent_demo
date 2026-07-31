@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, nextTick } from 'vue';
+import { useSessionStore } from '@/stores/session';
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
-import type { KnowledgeBase } from '@/types';
+import type { KnowledgeBase, TokenUsage } from '@/types';
 
 const props = withDefaults(defineProps<{
   isStreaming: boolean;
@@ -47,6 +48,21 @@ const isOverLimit = computed(() => inputText.value.length > MAX_LENGTH);
 
 /** 字符计数 */
 const charCount = computed(() => inputText.value.length);
+
+/**
+ * 当前会话的累计 Token 用量（Task-19 新增）
+ * 业务含义：从 session store 读取当前会话的 tokenUsage，用于输入区底部展示。
+ */
+const sessionStore = useSessionStore();
+const sessionTokenUsage = computed<TokenUsage | undefined>(() => {
+  const session = sessionStore.sessions.find((s) => s.sessionId === sessionStore.currentSessionId);
+  return session?.tokenUsage;
+});
+
+/** Token 数千分位格式化（Task-19） */
+function formatTokens(n: number): string {
+  return n.toLocaleString('en-US');
+}
 
 /** 自适应高度 */
 function autoResize() {
@@ -134,6 +150,11 @@ function handleKeydown(e: KeyboardEvent) {
       <span v-if="isOverLimit" class="char-warn">
         消息长度不能超过 {{ MAX_LENGTH }} 字符
       </span>
+      <!-- Token 消耗展示（Task-19）：有用量时显示累计 Token 数，估算值标记"估算" -->
+      <div class="token-usage" v-if="sessionTokenUsage">
+        <span class="token-count">{{ formatTokens(sessionTokenUsage.totalTokens) }} Tokens</span>
+        <span class="token-badge" v-if="sessionTokenUsage.estimated">估算</span>
+      </div>
       <span class="char-count" :class="{ over: isOverLimit }">
         {{ charCount }} / {{ MAX_LENGTH }}
       </span>
@@ -294,5 +315,23 @@ function handleKeydown(e: KeyboardEvent) {
 
 .char-count.over {
   color: var(--danger);
+}
+
+/* Token 消耗展示（Task-19）：暗色底 + 青色 accent */
+.token-usage {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
+}
+
+.token-badge {
+  padding: 1px 4px;
+  font-size: 10px;
+  background: rgba(255, 165, 0, 0.2);
+  color: rgba(255, 165, 0, 0.8);
+  border-radius: 3px;
 }
 </style>

@@ -4,6 +4,7 @@ import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.KnowledgeBase;
+import com.agentdemo.rag.retriever.KnowledgeBaseToolRegistrar;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
@@ -33,13 +34,16 @@ public class KnowledgeBaseService {
     private final KnowledgeBaseStore knowledgeBaseStore;
     private final DocumentStore documentStore;
     private final EmbeddingStoreFactory embeddingStoreFactory;
+    private final KnowledgeBaseToolRegistrar toolRegistrar;
 
     public KnowledgeBaseService(KnowledgeBaseStore knowledgeBaseStore,
                                 DocumentStore documentStore,
-                                EmbeddingStoreFactory embeddingStoreFactory) {
+                                EmbeddingStoreFactory embeddingStoreFactory,
+                                KnowledgeBaseToolRegistrar toolRegistrar) {
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.documentStore = documentStore;
         this.embeddingStoreFactory = embeddingStoreFactory;
+        this.toolRegistrar = toolRegistrar;
     }
 
     /**
@@ -68,7 +72,12 @@ public class KnowledgeBaseService {
         knowledgeBase.setDocumentCount(0);
         knowledgeBase.setCreateTime(LocalDateTime.now());
 
-        return knowledgeBaseStore.save(knowledgeBase);
+        KnowledgeBase saved = knowledgeBaseStore.save(knowledgeBase);
+
+        // CR-003: 创建知识库后自动注册独立 Tool，使 LLM 可通过 Function Calling 选择该知识库
+        toolRegistrar.registerToolForKb(saved);
+
+        return saved;
     }
 
     /**
@@ -99,6 +108,9 @@ public class KnowledgeBaseService {
             throw new BusinessException(ErrorCode.RAG_KNOWLEDGE_BASE_NOT_FOUND,
                     "知识库不存在: " + id);
         }
+
+        // CR-003: 删除知识库前先注销对应 Tool，避免 LLM 继续选择已删除知识库
+        toolRegistrar.unregisterToolForKb(id);
 
         // 获取知识库下所有文档，用于级联清理向量数据
         List<DocumentInfo> documents = documentStore.findByKnowledgeBaseId(id);

@@ -8,11 +8,14 @@ import com.agentdemo.rag.entity.DocumentChunk;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.DocumentStatus;
 import com.agentdemo.rag.entity.KnowledgeBase;
-import com.agentdemo.rag.loader.DocumentLoader;
+import com.agentdemo.splitter.loader.DocumentLoader;
+import com.agentdemo.splitter.loader.ParsedDocument;
+import com.agentdemo.splitter.splitter.DocumentSplitterRegistry;
 import com.agentdemo.rag.store.DocumentChunkStore;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -43,9 +46,7 @@ import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
-import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.lenient;
-import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -55,11 +56,6 @@ import static org.mockito.Mockito.when;
  * <p>
  * 验证文档上传（校验、PENDING 状态返回）、异步处理（解析->分块->向量化->入库的状态流转）、
  * 状态查询、列表查询和删除逻辑。所有外部依赖通过 Mock 隔离。
- * </p>
- * <p>
- * 使用 @MockitoSettings(strictness = LENIENT) 宽松模式：
- * upload 测试中 stub 的 processDocument 在 processDocument 测试中不需要，
- * 反之亦然，宽松模式避免 UnnecessaryStubbingException。
  * </p>
  */
 @DisplayName("文档管理服务测试")
@@ -75,6 +71,9 @@ class DocumentServiceTest {
 
     @Mock
     private DocumentLoader documentLoader;
+
+    @Mock
+    private DocumentSplitterRegistry splitterRegistry;
 
     @Mock
     private EmbeddingStoreFactory embeddingStoreFactory;
@@ -98,10 +97,10 @@ class DocumentServiceTest {
 
     @BeforeEach
     void setUp() {
-        // 使用 spy 包装真实对象，使 upload 测试可以 stub processDocument
         documentService = spy(new DocumentService(
                 documentStore, knowledgeBaseStore, documentLoader,
-                embeddingStoreFactory, modelFactory, ragProperties, documentChunkStore));
+                splitterRegistry, embeddingStoreFactory, modelFactory,
+                ragProperties, documentChunkStore));
     }
 
     // ==================== upload 测试 ====================
@@ -113,7 +112,6 @@ class DocumentServiceTest {
         when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(ragProperties.getDocument()).thenReturn(createDocumentConfig());
 
-        // stub processDocument 避免异步处理影响 upload 测试
         doNothing().when(documentService)
                 .processDocument(anyString(), any(byte[].class), anyString(), anyString());
 
@@ -127,7 +125,6 @@ class DocumentServiceTest {
         assertEquals(DocumentStatus.PENDING, result.getStatus(), "上传后状态应为 PENDING");
         assertEquals(0, result.getChunkCount(), "初始分块数应为 0");
         verify(documentStore).save(any(DocumentInfo.class));
-        // 验证知识库文档计数 +1
         verify(knowledgeBaseStore).updateDocumentCount("kb001", 1);
     }
 
@@ -151,7 +148,6 @@ class DocumentServiceTest {
         when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(ragProperties.getDocument()).thenReturn(createDocumentConfig());
 
-        // 11MB 文件，超过 10MB 上限
         byte[] largeContent = new byte[11 * 1024 * 1024];
         MultipartFile file = new MockMultipartFile("file", "large.txt", "text/plain", largeContent);
 
@@ -183,11 +179,10 @@ class DocumentServiceTest {
     void processDocumentNormalFlowShouldComplete() {
         setupProcessDocumentMocks();
 
-        // documentLoader 返回测试文本
-        when(documentLoader.load(any(byte[].class), eq("txt")))
-                .thenReturn("这是一段测试文本内容，用于验证分块和向量化流程");
+        ParsedDocument parsedDoc = ParsedDocument.builder()
+                .text("这是一段测试文本内容，用于验证分块和向量化流程").format("txt").build();
+        when(documentLoader.load(any(byte[].class), eq("txt"))).thenReturn(parsedDoc);
 
-        // embeddingModel.embedAll 返回与分块数匹配的 Embedding 列表
         when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
             @SuppressWarnings("unchecked")
             List<TextSegment> segments = invocation.getArgument(0);
@@ -201,7 +196,6 @@ class DocumentServiceTest {
         byte[] fileBytes = "test".getBytes();
         documentService.processDocument("doc001", fileBytes, "txt", "kb001");
 
-        // 验证状态流转：PROCESSING -> COMPLETED
         verify(documentStore).updateStatus("doc001", DocumentStatus.PROCESSING, null, null);
 
         ArgumentCaptor<Integer> chunkCountCaptor = ArgumentCaptor.forClass(Integer.class);
@@ -214,14 +208,12 @@ class DocumentServiceTest {
     void processDocumentParseFailureShouldFail() {
         setupProcessDocumentMocks();
 
-        // documentLoader 抛出异常模拟解析失败
         when(documentLoader.load(any(byte[].class), eq("pdf")))
                 .thenThrow(new BusinessException(ErrorCode.RAG_DOCUMENT_PARSE_FAILED, "解析失败"));
 
         byte[] fileBytes = "corrupted".getBytes();
         documentService.processDocument("doc002", fileBytes, "pdf", "kb001");
 
-        // 验证：先 PROCESSING，后 FAILED with "文档解析失败"
         verify(documentStore).updateStatus("doc002", DocumentStatus.PROCESSING, null, null);
         verify(documentStore).updateStatus("doc002", DocumentStatus.FAILED, null, "文档解析失败");
     }
@@ -231,11 +223,9 @@ class DocumentServiceTest {
     void processDocumentEmbeddingFailureShouldFail() {
         setupProcessDocumentMocks();
 
-        // documentLoader 正常返回
-        when(documentLoader.load(any(byte[].class), eq("txt")))
-                .thenReturn("测试文本内容");
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("测试文本内容").format("txt").build();
+        when(documentLoader.load(any(byte[].class), eq("txt"))).thenReturn(parsedDoc);
 
-        // embeddingModel.embedAll 抛出异常模拟向量化失败
         when(modelFactory.getEmbeddingModel()).thenReturn(embeddingModel);
         when(embeddingModel.embedAll(anyList()))
                 .thenThrow(new RuntimeException("Embedding API 调用失败"));
@@ -243,7 +233,6 @@ class DocumentServiceTest {
         byte[] fileBytes = "test".getBytes();
         documentService.processDocument("doc003", fileBytes, "txt", "kb001");
 
-        // 验证：先 PROCESSING，后 FAILED with "向量化失败"
         verify(documentStore).updateStatus("doc003", DocumentStatus.PROCESSING, null, null);
         verify(documentStore).updateStatus("doc003", DocumentStatus.FAILED, null, "向量化失败");
     }
@@ -253,8 +242,9 @@ class DocumentServiceTest {
     void processDocumentShouldSaveChunksOnCompletion() {
         setupProcessDocumentMocks();
 
-        when(documentLoader.load(any(byte[].class), eq("txt")))
-                .thenReturn("这是一段测试文本内容，用于验证分块和向量化流程");
+        ParsedDocument parsedDoc = ParsedDocument.builder()
+                .text("这是一段测试文本内容，用于验证分块和向量化流程").format("txt").build();
+        when(documentLoader.load(any(byte[].class), eq("txt"))).thenReturn(parsedDoc);
 
         when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
             @SuppressWarnings("unchecked")
@@ -269,19 +259,71 @@ class DocumentServiceTest {
         byte[] fileBytes = "test".getBytes();
         documentService.processDocument("doc001", fileBytes, "txt", "kb001");
 
-        // 验证：saveChunks 被调用，documentId 为 doc001，分块列表非空
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<DocumentChunk>> chunksCaptor = ArgumentCaptor.forClass(List.class);
         verify(documentChunkStore).saveChunks(eq("doc001"), chunksCaptor.capture());
         List<DocumentChunk> savedChunks = chunksCaptor.getValue();
         assertTrue(savedChunks.size() > 0, "保存的分块列表不应为空");
-        // 验证分块索引从 0 开始递增
         for (int i = 0; i < savedChunks.size(); i++) {
             assertEquals(i, savedChunks.get(i).getChunkIndex(), "分块索引应从 0 开始递增");
             assertEquals("doc001", savedChunks.get(i).getDocumentId(), "分块应关联正确的文档 ID");
             assertNotNull(savedChunks.get(i).getContent(), "分块内容不应为 null");
             assertTrue(savedChunks.get(i).getCharCount() > 0, "分块字符数应大于 0");
         }
+    }
+
+    @Test
+    @DisplayName("CR-002: DocumentChunk 保存时包含来源元数据（fileName、format、pageNumber）")
+    void processDocumentShouldSaveChunksWithMetadata() {
+        setupProcessDocumentMocks();
+
+        // Mock DocumentInfo with fileName
+        DocumentInfo docInfo = new DocumentInfo();
+        docInfo.setId("doc001");
+        docInfo.setFileName("测试文档.pdf");
+        docInfo.setFormat("pdf");
+        when(documentStore.findById("doc001")).thenReturn(docInfo);
+
+        // Mock splitterRegistry.split to return segments WITH metadata
+        List<TextSegment> testSegments = List.of(
+                TextSegment.from("第一个分块内容", new Metadata()
+                        .put("fileName", "测试文档.pdf").put("format", "pdf").put("pageNumber", "1")),
+                TextSegment.from("第二个分块内容", new Metadata()
+                        .put("fileName", "测试文档.pdf").put("format", "pdf").put("pageNumber", "2")));
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(testSegments);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder()
+                .text("这是一段测试文本内容").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f, 2.0f, 3.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        byte[] fileBytes = "test".getBytes();
+        documentService.processDocument("doc001", fileBytes, "pdf", "kb001");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DocumentChunk>> chunksCaptor = ArgumentCaptor.forClass(List.class);
+        verify(documentChunkStore).saveChunks(eq("doc001"), chunksCaptor.capture());
+        List<DocumentChunk> savedChunks = chunksCaptor.getValue();
+
+        assertTrue(savedChunks.size() > 0, "保存的分块列表不应为空");
+        for (DocumentChunk chunk : savedChunks) {
+            assertNotNull(chunk.getMetadata(), "分块 metadata 不应为 null");
+            assertEquals("测试文档.pdf", chunk.getMetadata().get("fileName"), "metadata 应包含 fileName");
+            assertEquals("pdf", chunk.getMetadata().get("format"), "metadata 应包含 format");
+        }
+        // 验证第一个分块包含 pageNumber
+        assertEquals("1", savedChunks.get(0).getMetadata().get("pageNumber"), "PDF 分块应包含 pageNumber");
+        assertEquals("2", savedChunks.get(1).getMetadata().get("pageNumber"), "第二个分块 pageNumber 应为 2");
     }
 
     @Test
@@ -295,7 +337,6 @@ class DocumentServiceTest {
         byte[] fileBytes = "corrupted".getBytes();
         documentService.processDocument("doc002", fileBytes, "pdf", "kb001");
 
-        // 验证：解析失败时 saveChunks 不应被调用
         verify(documentChunkStore, org.mockito.Mockito.never()).saveChunks(anyString(), anyList());
     }
 
@@ -353,13 +394,9 @@ class DocumentServiceTest {
 
         documentService.delete("doc001");
 
-        // 验证：删除向量数据
         verify(embeddingStore).removeAll(any(Filter.class));
-        // 验证：删除分块记录
         verify(documentChunkStore).deleteChunks("doc001");
-        // 验证：删除文档记录
         verify(documentStore).delete("doc001");
-        // 验证：知识库文档计数递减为 0
         verify(knowledgeBaseStore).updateDocumentCount("kb001", 0);
     }
 
@@ -380,10 +417,12 @@ class DocumentServiceTest {
      * 设置 processDocument 测试所需的公共 Mock
      */
     private void setupProcessDocumentMocks() {
-        RagProperties.Chunk chunk = new RagProperties.Chunk();
-        chunk.setSize(100);
-        chunk.setOverlap(20);
-        lenient().when(ragProperties.getChunk()).thenReturn(chunk);
+        // splitterRegistry.split 返回测试分块
+        List<TextSegment> testSegments = List.of(
+                TextSegment.from("这是第一个分块内容"),
+                TextSegment.from("这是第二个分块内容"));
+        lenient().when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(testSegments);
 
         RagProperties.Document document = new RagProperties.Document();
         document.setTempDir(System.getProperty("java.io.tmpdir") + "/rag-test");

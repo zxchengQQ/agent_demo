@@ -6,6 +6,7 @@ import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
 import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -28,7 +29,9 @@ import java.lang.reflect.Method;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -110,6 +113,7 @@ class KnowledgeRetrieverToolTest {
     void searchKnowledgeWhenKbIsEmptyShouldReturnHint() {
         KnowledgeBase kb = createKnowledgeBase("kb001", "空知识库", 0);
         when(knowledgeBaseStore.findByName("空知识库")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
 
         String result = knowledgeRetrieverTool.searchKnowledge("空知识库", "query");
 
@@ -121,11 +125,16 @@ class KnowledgeRetrieverToolTest {
     void searchKnowledgeNormalShouldReturnFragments() {
         KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
         when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
 
-        // 构造检索匹配结果
+        // 构造检索匹配结果（含来源元数据）
         List<EmbeddingMatch<TextSegment>> matches = List.of(
-                new EmbeddingMatch<>(0.9, "id1", queryEmbedding, TextSegment.from("产品价格为 100 元")),
-                new EmbeddingMatch<>(0.8, "id2", queryEmbedding, TextSegment.from("支持月付和年付")));
+                new EmbeddingMatch<>(0.9, "id1", queryEmbedding,
+                        TextSegment.from("产品价格为 100 元", new Metadata()
+                                .put("fileName", "产品手册.pdf").put("format", "pdf").put("pageNumber", "3"))),
+                new EmbeddingMatch<>(0.8, "id2", queryEmbedding,
+                        TextSegment.from("支持月付和年付", new Metadata()
+                                .put("fileName", "产品手册.pdf").put("format", "pdf").put("pageNumber", "5"))));
         when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
                 .thenReturn(new EmbeddingSearchResult<>(matches));
 
@@ -134,6 +143,72 @@ class KnowledgeRetrieverToolTest {
         assertTrue(result.contains("【片段1】"), "结果应包含【片段1】前缀");
         assertTrue(result.contains("产品价格为 100 元"), "结果应包含第一个片段内容");
         assertTrue(result.contains("【片段2】"), "结果应包含【片段2】前缀");
+        assertTrue(result.contains("来源:"), "结果应包含来源前缀");
+        assertTrue(result.contains("产品手册.pdf"), "结果应包含文件名");
+    }
+
+    @Test
+    @DisplayName("CR-002: PDF 文档检索结果包含来源元数据（fileName、format、pageNumber）")
+    void searchKnowledgeWithPdfMetadataShouldIncludePageNumber() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+
+        List<EmbeddingMatch<TextSegment>> matches = List.of(
+                new EmbeddingMatch<>(0.9, "id1", queryEmbedding,
+                        TextSegment.from("PDF表格内容", new Metadata()
+                                .put("fileName", "报告.pdf").put("format", "pdf").put("pageNumber", "7"))));
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(matches));
+
+        String result = knowledgeRetrieverTool.searchKnowledge("产品文档", "表格");
+
+        assertTrue(result.contains("来源:"), "结果应包含来源前缀");
+        assertTrue(result.contains("报告.pdf"), "结果应包含文件名");
+        assertTrue(result.contains("pdf"), "结果应包含格式");
+        assertTrue(result.contains("第7页"), "PDF 结果应包含页码");
+    }
+
+    @Test
+    @DisplayName("CR-002: MD 文档检索结果包含来源元数据（fileName、format、headerText）")
+    void searchKnowledgeWithMdMetadataShouldIncludeHeader() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+
+        List<EmbeddingMatch<TextSegment>> matches = List.of(
+                new EmbeddingMatch<>(0.9, "id1", queryEmbedding,
+                        TextSegment.from("部署步骤", new Metadata()
+                                .put("fileName", "架构.md").put("format", "md").put("headerText", "系统部署"))));
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(matches));
+
+        String result = knowledgeRetrieverTool.searchKnowledge("产品文档", "部署");
+
+        assertTrue(result.contains("来源:"), "结果应包含来源前缀");
+        assertTrue(result.contains("架构.md"), "结果应包含文件名");
+        assertTrue(result.contains("md"), "结果应包含格式");
+        assertTrue(result.contains("系统部署"), "MD 结果应包含章节标题");
+    }
+
+    @Test
+    @DisplayName("CR-002: 无元数据的检索结果不包含来源前缀")
+    void searchKnowledgeWithoutMetadataShouldNotIncludeSource() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+
+        // TextSegment.from("text") 没有 metadata
+        List<EmbeddingMatch<TextSegment>> matches = List.of(
+                new EmbeddingMatch<>(0.9, "id1", queryEmbedding, TextSegment.from("无来源信息的内容")));
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(matches));
+
+        String result = knowledgeRetrieverTool.searchKnowledge("产品文档", "查询");
+
+        assertTrue(result.contains("【片段1】"), "结果应包含片段前缀");
+        assertTrue(result.contains("无来源信息的内容"), "结果应包含内容");
+        assertFalse(result.contains("来源:"), "无元数据时不应包含来源前缀");
     }
 
     @Test
@@ -141,6 +216,7 @@ class KnowledgeRetrieverToolTest {
     void searchKnowledgeNoMatchShouldReturnHint() {
         KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
         when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
                 .thenReturn(new EmbeddingSearchResult<>(List.of()));
 
@@ -154,6 +230,7 @@ class KnowledgeRetrieverToolTest {
     void searchKnowledgeWhenStoreThrowsShouldReturnServiceUnavailable() {
         KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
         when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
                 .thenThrow(new RuntimeException("向量数据库连接失败"));
 
@@ -167,6 +244,7 @@ class KnowledgeRetrieverToolTest {
     void searchKnowledgeShouldPassMaxResultsFromConfig() {
         KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
         when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
                 .thenReturn(new EmbeddingSearchResult<>(List.of()));
 
@@ -182,16 +260,98 @@ class KnowledgeRetrieverToolTest {
     }
 
     @Test
-    @DisplayName("@Tool 注解存在且描述包含工具用途")
-    void searchKnowledgeShouldHaveToolAnnotationWithDescription() throws NoSuchMethodException {
+    @DisplayName("CR-003: searchKnowledge 不再标注 @Tool 注解")
+    void searchKnowledgeShouldNotHaveToolAnnotation() throws NoSuchMethodException {
         Method method = KnowledgeRetrieverTool.class.getMethod("searchKnowledge", String.class, String.class);
-        Tool toolAnnotation = method.getAnnotation(Tool.class);
 
-        assertNotNull(toolAnnotation, "searchKnowledge 方法应标注 @Tool 注解");
-        // @Tool.value() 返回 String[]，合并后验证描述包含工具用途关键词
-        String description = String.join(" ", toolAnnotation.value());
-        assertTrue(description.contains("知识库"), "工具描述应包含'知识库'");
-        assertTrue(description.contains("检索"), "工具描述应包含'检索'");
+        assertNull(method.getAnnotation(Tool.class), "searchKnowledge 不应再标注 @Tool 注解");
+    }
+
+    @Test
+    @DisplayName("CR-003: searchByKbId 正常检索返回包含【片段1】的结果文本")
+    void searchByKbIdNormalShouldReturnFragments() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+
+        List<EmbeddingMatch<TextSegment>> matches = List.of(
+                new EmbeddingMatch<>(0.9, "id1", queryEmbedding,
+                        TextSegment.from("产品价格为 100 元", new Metadata()
+                                .put("fileName", "产品手册.pdf").put("format", "pdf").put("pageNumber", "3"))),
+                new EmbeddingMatch<>(0.8, "id2", queryEmbedding,
+                        TextSegment.from("支持月付和年付", new Metadata()
+                                .put("fileName", "产品手册.pdf").put("format", "pdf").put("pageNumber", "5"))));
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(matches));
+
+        String result = knowledgeRetrieverTool.searchByKbId("kb001", "价格");
+
+        assertTrue(result.contains("【片段1】"), "结果应包含【片段1】前缀");
+        assertTrue(result.contains("产品价格为 100 元"), "结果应包含第一个片段内容");
+        assertTrue(result.contains("【片段2】"), "结果应包含【片段2】前缀");
+        assertTrue(result.contains("来源:"), "结果应包含来源前缀");
+        assertTrue(result.contains("产品文档/产品手册.pdf"), "CR-003 来源格式应为 知识库名/文件名");
+    }
+
+    @Test
+    @DisplayName("CR-003: searchByKbId 知识库不存在时返回提示文本")
+    void searchByKbIdWhenKbNotExistsShouldReturnHint() {
+        when(knowledgeBaseStore.findById("不存在")).thenReturn(null);
+
+        String result = knowledgeRetrieverTool.searchByKbId("不存在", "query");
+
+        assertEquals("知识库 '不存在' 不存在", result);
+    }
+
+    @Test
+    @DisplayName("CR-003: searchByKbId 空知识库返回空提示文本")
+    void searchByKbIdWhenKbIsEmptyShouldReturnHint() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "空知识库", 0);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+
+        String result = knowledgeRetrieverTool.searchByKbId("kb001", "query");
+
+        assertEquals("知识库 '空知识库' 为空，暂无文档内容", result);
+    }
+
+    @Test
+    @DisplayName("CR-003: searchByKbId matches 为空时返回未找到提示")
+    void searchByKbIdNoMatchShouldReturnHint() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(List.of()));
+
+        String result = knowledgeRetrieverTool.searchByKbId("kb001", "无关问题");
+
+        assertEquals("未找到与问题相关的文档", result);
+    }
+
+    @Test
+    @DisplayName("CR-003: searchByKbId EmbeddingStore 异常时返回服务不可用提示")
+    void searchByKbIdWhenStoreThrowsShouldReturnServiceUnavailable() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenThrow(new RuntimeException("向量数据库连接失败"));
+
+        String result = knowledgeRetrieverTool.searchByKbId("kb001", "query");
+
+        assertEquals("知识库服务暂时不可用，请稍后重试", result);
+    }
+
+    @Test
+    @DisplayName("CR-003: searchKnowledge 委托给 searchByKbId 仍可用")
+    void searchKnowledgeShouldDelegateToSearchByKbId() {
+        KnowledgeBase kb = createKnowledgeBase("kb001", "产品文档", 2);
+        when(knowledgeBaseStore.findByName("产品文档")).thenReturn(kb);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+        when(embeddingStore.search(any(EmbeddingSearchRequest.class)))
+                .thenReturn(new EmbeddingSearchResult<>(List.of()));
+
+        String result = knowledgeRetrieverTool.searchKnowledge("产品文档", "query");
+
+        assertEquals("未找到与问题相关的文档", result);
+        verify(knowledgeBaseStore).findById("kb001");
     }
 
     // ==================== 辅助方法 ====================

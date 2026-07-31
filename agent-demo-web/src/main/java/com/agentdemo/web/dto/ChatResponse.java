@@ -1,5 +1,6 @@
 package com.agentdemo.web.dto;
 
+import dev.langchain4j.model.output.TokenUsage;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -41,6 +42,15 @@ public class ChatResponse {
      * 工具调用记录
      */
     private List<ToolCallInfo> toolCalls;
+
+    /**
+     * Token 用量（Task-16 新增）
+     * <p>
+     * 业务含义：携带大模型 API 返回的 Token 消耗数据，供前端展示用量统计。
+     * 流式路径通过 SSE usage 事件单独推送，同步路径通过此字段返回。
+     * </p>
+     */
+    private TokenUsage tokenUsage;
 
     /**
      * 工具调用信息

@@ -12,6 +12,7 @@ import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,7 +30,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 火山方舟思考流式模型（CR-001 新增）
+ * 火山方舟思考流式模型（CR-001 Task-10 改造为实现接口）
  * <p>
  * 业务含义：直连方舟 Chat Completions API（stream=true, thinking.enabled），
  * 解析 SSE 流中的 delta.reasoning_content 和 delta.content，分别通过 ThinkingStreamHandler 回调暴露。
@@ -40,8 +41,12 @@ import java.util.Map;
  * - 遵循 BR-LLM-001：API Key 从 ArkProperties 注入，禁止硬编码
  * - 遵循 BR-LLM-004：模型实例缓存复用（由 ModelFactory 管理）
  * </p>
+ * <p>
+ * CR-001 Task-10：实现 {@link ThinkingStreamingChatModel} 接口，
+ * 解除 ModelFactory.getThinkingStreamingChatModel() 返回类型对方舟具体类的硬编码依赖。
+ * </p>
  */
-public class ArkThinkingStreamingChatModel {
+public class ArkThinkingStreamingChatModel implements ThinkingStreamingChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(ArkThinkingStreamingChatModel.class);
 
@@ -50,6 +55,10 @@ public class ArkThinkingStreamingChatModel {
     private final String modelName;
     private final Duration timeout;
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    // 业务含义：缓存本轮流式调用中方舟返回的 Token 用量（Task-15 新增）
+    // 每次流式开始时重置为 null，parseSseLine 解析到 usage 字段时更新，onComplete 时透传给 handler
+    private TokenUsage capturedUsage;
 
     public ArkThinkingStreamingChatModel(String baseUrl, String apiKey, String modelName, Duration timeout) {
         this.baseUrl = baseUrl;
@@ -87,6 +96,12 @@ public class ArkThinkingStreamingChatModel {
         ObjectNode root = objectMapper.createObjectNode();
         root.put("model", modelName);
         root.put("stream", true);
+
+        // 业务含义：开启 stream_options.include_usage，让方舟在流式响应中返回 usage 字段（Task-15 新增）
+        // 方舟在最后一个 chunk 携带 prompt_tokens / completion_tokens / total_tokens，供 Token 用量统计
+        ObjectNode streamOptions = objectMapper.createObjectNode();
+        streamOptions.put("include_usage", true);
+        root.set("stream_options", streamOptions);
 
         // 业务含义：开启深度思考，让方舟返回 reasoning_content（CR-001 核心）
         ObjectNode thinking = objectMapper.createObjectNode();
@@ -169,6 +184,9 @@ public class ArkThinkingStreamingChatModel {
             return;
         }
 
+        // 业务含义：每次流式解析开始时重置 capturedUsage，避免上一轮残留（Task-15 新增）
+        capturedUsage = null;
+
         StringBuilder fullResponse = new StringBuilder();
         Map<Integer, ToolCall> toolCallAccumulator = new LinkedHashMap<>();
 
@@ -205,6 +223,18 @@ public class ArkThinkingStreamingChatModel {
 
         try {
             JsonNode root = objectMapper.readTree(data);
+
+            // 业务含义：解析 usage 字段（Task-15 新增）
+            // 开启 stream_options.include_usage 后，方舟在流式响应中携带 usage 字段，
+            // 含 prompt_tokens / completion_tokens / total_tokens，缓存到 capturedUsage 供 onComplete 透传
+            JsonNode usageNode = root.path("usage");
+            if (!usageNode.isMissingNode() && !usageNode.isNull()) {
+                int promptTokens = usageNode.path("prompt_tokens").asInt(0);
+                int completionTokens = usageNode.path("completion_tokens").asInt(0);
+                int totalTokens = usageNode.path("total_tokens").asInt(0);
+                capturedUsage = new TokenUsage(promptTokens, completionTokens, totalTokens);
+            }
+
             JsonNode choices = root.path("choices");
             if (!choices.isArray() || choices.isEmpty()) {
                 return;
@@ -263,7 +293,8 @@ public class ArkThinkingStreamingChatModel {
                 if (!toolCallAccumulator.isEmpty()) {
                     handler.onToolCalls(new ArrayList<>(toolCallAccumulator.values()));
                 }
-                handler.onComplete(fullResponse.toString(), finishReason.asText());
+                // 业务含义：透传 capturedUsage（Task-15 新增），API 返回时非 null，未返回时为 null
+                handler.onComplete(fullResponse.toString(), finishReason.asText(), capturedUsage);
             }
         } catch (Exception e) {
             log.warn("解析 SSE 数据行失败: data={}", data, e);
@@ -280,6 +311,7 @@ public class ArkThinkingStreamingChatModel {
      * @param messages 消息列表
      * @param handler  回调处理器
      */
+    @Override
     public void stream(List<ChatMessage> messages, ThinkingStreamHandler handler) {
         try {
             String requestBody = buildRequestBody(messages);
@@ -303,6 +335,7 @@ public class ArkThinkingStreamingChatModel {
      * @param toolsJson 工具 JSON Schema 字符串，null 表示不传 tools
      * @param handler   回调处理器
      */
+    @Override
     public void stream(List<ChatMessage> messages, String toolsJson, ThinkingStreamHandler handler) {
         try {
             String requestBody = buildRequestBody(messages, toolsJson);
@@ -348,6 +381,8 @@ public class ArkThinkingStreamingChatModel {
             }
 
             // 业务含义：逐行实时读取 SSE 流，每行立即解析并回调（核心改造点）
+            // 每次流式开始时重置 capturedUsage，避免上一轮残留（Task-15 新增）
+            capturedUsage = null;
             StringBuilder fullResponse = new StringBuilder();
             Map<Integer, ToolCall> toolCallAccumulator = new LinkedHashMap<>();
             try (BufferedReader reader = new BufferedReader(

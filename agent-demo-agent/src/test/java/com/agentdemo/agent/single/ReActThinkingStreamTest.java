@@ -1,8 +1,8 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ToolCall;
 import com.agentdemo.tools.registry.ToolExecutor;
 import dev.langchain4j.data.message.ChatMessage;
@@ -37,12 +37,12 @@ import static org.mockito.Mockito.when;
  */
 class ReActThinkingStreamTest {
 
-    private ArkThinkingStreamingChatModel model;
+    private ThinkingStreamingChatModel model;
     private ToolExecutor toolExecutor;
 
     @BeforeEach
     void setUp() {
-        model = mock(ArkThinkingStreamingChatModel.class);
+        model = mock(ThinkingStreamingChatModel.class);
         toolExecutor = mock(ToolExecutor.class);
     }
 
@@ -54,7 +54,7 @@ class ReActThinkingStreamTest {
         ThinkingStreamHandler handler = invocation.getArgument(2);
         handler.onPartialThinking("正在分析");
         handler.onPartialResponse("你好");
-        handler.onComplete("你好", "stop");
+        handler.onComplete("你好", "stop", null);
         return null;
     }
 
@@ -72,7 +72,7 @@ class ReActThinkingStreamTest {
         tc.setArguments(args);
 
         handler.onToolCalls(Collections.singletonList(tc));
-        handler.onComplete("Thought: 用户问时间", "tool_calls");
+        handler.onComplete("Thought: 用户问时间", "tool_calls", null);
         return null;
     }
 
@@ -177,7 +177,7 @@ class ReActThinkingStreamTest {
             tc2.setArguments("{}");
 
             handler.onToolCalls(List.of(tc1, tc2));
-            handler.onComplete("Thought: 需要两个工具", "tool_calls");
+            handler.onComplete("Thought: 需要两个工具", "tool_calls", null);
             return null;
         }).when(model).stream(any(), anyString(), any());
 
@@ -333,10 +333,10 @@ class ReActThinkingStreamTest {
                 tc.setFunctionName("calculate");
                 tc.setArguments("{}");
                 handler.onToolCalls(Collections.singletonList(tc));
-                handler.onComplete("第" + callCount[0] + "轮思考", "tool_calls");
+                handler.onComplete("第" + callCount[0] + "轮思考", "tool_calls", null);
             } else {
                 handler.onPartialResponse("最终回答");
-                handler.onComplete("最终回答", "stop");
+                handler.onComplete("最终回答", "stop", null);
             }
             return null;
         }).when(model).stream(any(), any(), any());

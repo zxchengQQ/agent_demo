@@ -25,6 +25,8 @@
         <hutool.version>5.8.27</hutool.version>
         <pdfbox.version>3.0.3</pdfbox.version>
         <tabula.version>1.0.5</tabula.version>
+        <commonmark.version>0.22.0</commonmark.version>
+        <bytebuddy.version>1.14.19</bytebuddy.version>
     </properties>
 
     <!-- 集中管理所有依赖版本 -->
@@ -141,6 +143,32 @@
                 <groupId>technology.tabula</groupId>
                 <artifactId>tabula</artifactId>
                 <version>${tabula.version}</version>
+            </dependency>
+
+            <!-- CommonMark-Java - Markdown AST 解析（文档分割模块化新增） -->
+            <dependency>
+                <groupId>org.commonmark</groupId>
+                <artifactId>commonmark</artifactId>
+                <version>${commonmark.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.commonmark</groupId>
+                <artifactId>commonmark-ext-gfm-tables</artifactId>
+                <version>${commonmark.version}</version>
+            </dependency>
+
+            <!-- ByteBuddy - 运行时动态生成类（CR-003 知识库动态 Tool 注册使用） -->
+            <dependency>
+                <groupId>net.bytebuddy</groupId>
+                <artifactId>byte-buddy</artifactId>
+                <version>${bytebuddy.version}</version>
+            </dependency>
+
+            <!-- 新增内部模块：文档分割模块 -->
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-splitter</artifactId>
+                <version>${project.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

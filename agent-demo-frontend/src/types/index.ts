@@ -55,6 +55,18 @@ export interface SubTaskReactStep {
 }
 
 /**
+ * 知识库来源信息（CR-002 新增，AC-043）
+ * 业务含义：对话中使用知识库检索时，记录来源的知识库名和文件名，
+ * 用于助手消息底部"引用来源"条展示。
+ */
+export interface KnowledgeSource {
+  /** 知识库名称 */
+  knowledgeBaseName: string;
+  /** 文档文件名 */
+  fileName: string;
+}
+
+/**
  * 单个子任务（CR-002 新增，AC-016）
  * 业务含义：任务拆解规划阶段产出的单个子任务及其执行状态和详情。
  */
@@ -106,6 +118,28 @@ export interface Message {
    * 可选字段，向前兼容旧数据（未开启拆解的旧消息 subTasks 为 undefined）。
    */
   subTasks?: SubTask[];
+  /**
+   * 知识库来源信息（CR-002 新增，AC-043）
+   * 业务含义：对话中使用知识库检索时，记录来源知识库名和文件名，
+   * 随消息持久化到 localStorage，助手消息底部展示"引用来源"条。
+   * 可选字段，向前兼容旧数据（未使用知识库的旧消息 knowledgeSources 为 undefined）。
+   */
+  knowledgeSources?: KnowledgeSource[];
+}
+
+/**
+ * Token 消耗数据（Task-17 新增）
+ * 业务含义：记录单次对话的 Token 用量，支持估算标记（后端无法精确计量时标记 estimated=true）。
+ */
+export interface TokenUsage {
+  /** 输入 Token 数 */
+  inputTokens: number;
+  /** 输出 Token 数 */
+  outputTokens: number;
+  /** 总 Token 数 */
+  totalTokens: number;
+  /** 是否为估算值（后端无法精确计量时为 true） */
+  estimated: boolean;
 }
 
 /** 会话纪录（localStorage 存储单元） */
@@ -120,6 +154,12 @@ export interface SessionRecord {
   updatedAt: number;
   /** 消息列表 */
   messages: Message[];
+  /**
+   * 会话累计 Token 用量（Task-17 新增）
+   * 业务含义：随每次对话 usage 事件累加，持久化到 localStorage，刷新页面可回看。
+   * 可选字段，向前兼容旧数据（旧会话 tokenUsage 为 undefined）。
+   */
+  tokenUsage?: TokenUsage;
 }
 
 /** SSE 事件回调 */
@@ -155,6 +195,12 @@ export interface StreamCallbacks {
    * 业务含义：ReAct 模式下某一轮迭代得出最终答案，将 thought 移入正式回复。
    */
   onFinalAnswer?: (iteration: number) => void;
+  /**
+   * 收到 usage 事件（Token 消耗统计，Task-17 新增）
+   * 业务含义：后端在流式结束时推送本轮对话的 Token 用量，前端累加到会话维度展示。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onUsage?: (usage: TokenUsage) => void;
   /** 收到 done 事件（流式完成） */
   onDone: (duration: number) => void;
   /** 收到 error 事件（错误提示，AC-012/AC-013） */
@@ -188,6 +234,16 @@ export interface StreamCallbacks {
   onTaskFailed?: (index: number, error: string) => void;
   /** 收到 task_cancelled 事件（子任务被取消，AC-006/AC-007） */
   onTaskCancelled?: (index: number) => void;
+
+  // ===== CR-002 新增：知识库来源回调 =====
+
+  /**
+   * 从 observation/task_observation 事件中解析到知识库来源信息（AC-043）
+   * 业务含义：SSE observation 事件中包含检索结果的来源前缀（来源: {知识库名}/{文件名}），
+   * 前端正则提取后通过此回调通知调用方，累积写入当前助手消息的 knowledgeSources 字段。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onSources?: (sources: KnowledgeSource[]) => void;
 }
 
 // ===== RAG 知识库类型定义（Task-01，关联 AC-003/AC-005/AC-009）=====

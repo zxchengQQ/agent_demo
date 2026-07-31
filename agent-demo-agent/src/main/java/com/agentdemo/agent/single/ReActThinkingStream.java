@@ -1,14 +1,15 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ToolCall;
 import com.agentdemo.tools.registry.ToolExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -33,7 +34,7 @@ public class ReActThinkingStream implements ThinkingTokenStream {
 
     private static final Logger log = LoggerFactory.getLogger(ReActThinkingStream.class);
 
-    private final ArkThinkingStreamingChatModel model;
+    private final ThinkingStreamingChatModel model;
     private final List<ChatMessage> messages;
     private final String toolsJson;
     private final ToolExecutor toolExecutor;
@@ -52,7 +53,7 @@ public class ReActThinkingStream implements ThinkingTokenStream {
     private CompleteConsumer completeConsumer;
     private ErrorConsumer errorConsumer;
 
-    public ReActThinkingStream(ArkThinkingStreamingChatModel model,
+    public ReActThinkingStream(ThinkingStreamingChatModel model,
                                List<ChatMessage> messages,
                                String toolsJson,
                                ToolExecutor toolExecutor,
@@ -241,7 +242,7 @@ public class ReActThinkingStream implements ThinkingTokenStream {
             }
 
             @Override
-            public void onComplete(String fullResponse, String finishReason) {
+            public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
                 result.finishReason = finishReason;
             }
 

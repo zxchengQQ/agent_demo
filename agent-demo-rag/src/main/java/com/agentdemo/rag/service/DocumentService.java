@@ -2,21 +2,20 @@ package com.agentdemo.rag.service;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.common.utils.SimpleTokenEstimator;
 import com.agentdemo.llm.factory.ModelFactory;
 import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.DocumentChunk;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.DocumentStatus;
 import com.agentdemo.rag.entity.KnowledgeBase;
-import com.agentdemo.rag.loader.DocumentLoader;
+import com.agentdemo.splitter.loader.DocumentLoader;
+import com.agentdemo.splitter.loader.ParsedDocument;
+import com.agentdemo.splitter.splitter.DocumentSplitterRegistry;
 import com.agentdemo.rag.store.DocumentChunkStore;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
-import dev.langchain4j.data.document.Document;
-import dev.langchain4j.data.document.DocumentSplitter;
-import dev.langchain4j.data.document.Metadata;
-import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -34,7 +33,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -55,6 +56,7 @@ public class DocumentService {
     private final DocumentStore documentStore;
     private final KnowledgeBaseStore knowledgeBaseStore;
     private final DocumentLoader documentLoader;
+    private final DocumentSplitterRegistry splitterRegistry;
     private final EmbeddingStoreFactory embeddingStoreFactory;
     private final ModelFactory modelFactory;
     private final RagProperties ragProperties;
@@ -63,6 +65,7 @@ public class DocumentService {
     public DocumentService(DocumentStore documentStore,
                            KnowledgeBaseStore knowledgeBaseStore,
                            DocumentLoader documentLoader,
+                           DocumentSplitterRegistry splitterRegistry,
                            EmbeddingStoreFactory embeddingStoreFactory,
                            ModelFactory modelFactory,
                            RagProperties ragProperties,
@@ -70,6 +73,7 @@ public class DocumentService {
         this.documentStore = documentStore;
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.documentLoader = documentLoader;
+        this.splitterRegistry = splitterRegistry;
         this.embeddingStoreFactory = embeddingStoreFactory;
         this.modelFactory = modelFactory;
         this.ragProperties = ragProperties;
@@ -167,10 +171,10 @@ public class DocumentService {
         // 阶段 1：标记为处理中，通知前端文档开始处理
         documentStore.updateStatus(documentId, DocumentStatus.PROCESSING, null, null);
 
-        // 阶段 2：解析文档为纯文本
-        String text;
+        // 阶段 2：解析文档为 ParsedDocument（含全文和可选的结构化分节）
+        ParsedDocument parsedDoc;
         try {
-            text = documentLoader.load(fileBytes, format);
+            parsedDoc = documentLoader.load(fileBytes, format);
         } catch (Exception e) {
             log.error("文档解析失败, documentId={}", documentId, e);
             documentStore.updateStatus(documentId, DocumentStatus.FAILED, null, "文档解析失败");
@@ -178,23 +182,12 @@ public class DocumentService {
             return;
         }
 
-        // 阶段 3：文本分块，按配置的 size 和 overlap 切分为 TextSegment
-        DocumentSplitter splitter = DocumentSplitters.recursive(
-                ragProperties.getChunk().getSize(),
-                ragProperties.getChunk().getOverlap());
-        Document doc = Document.from(text);
-        List<TextSegment> segments = splitter.split(doc);
-
-        // 为每个分块添加 metadata：knowledgeBaseId 和 documentId，
-        // 用于检索时定位来源和级联删除时按文档过滤向量
-        List<TextSegment> enrichedSegments = new ArrayList<>();
-        for (TextSegment segment : segments) {
-            Metadata metadata = segment.metadata()
-                    .put("knowledgeBaseId", knowledgeBaseId)
-                    .put("documentId", documentId);
-            enrichedSegments.add(TextSegment.from(segment.text(), metadata));
-        }
-        segments = enrichedSegments;
+        // 阶段 3：文本分块，通过 DocumentSplitterRegistry 路由到专属分割器
+        // 专属分割器按文件类型执行结构感知分割，失败时自动回退通用分割器
+        // metadata（knowledgeBaseId、documentId、format、fileName 等）由 Registry 统一注入
+        DocumentInfo docInfo = documentStore.findById(documentId);
+        String fileName = docInfo != null ? docInfo.getFileName() : null;
+        List<TextSegment> segments = splitterRegistry.split(parsedDoc, knowledgeBaseId, documentId, fileName);
 
         // 阶段 4：向量化，将文本分块批量转为 Embedding 向量
         // 业务含义：Embedding API 限制每次最多 10 个输入，需分批处理避免超限
@@ -223,14 +216,26 @@ public class DocumentService {
         // 阶段 5.5：保存分块信息到 DocumentChunkStore（CR-001 新增）
         // 业务含义：将分块文本内容独立存储，供前端查询展示。
         // 与 EmbeddingStore 中的 TextSegment 不同，此处保留分块索引和原始文本。
+        // CR-002: 从 TextSegment.metadata 提取来源元数据（fileName、format、pageNumber/headerText）存入 DocumentChunk
         List<DocumentChunk> chunks = new ArrayList<>();
         for (int i = 0; i < segments.size(); i++) {
+            TextSegment segment = segments.get(i);
             DocumentChunk chunk = new DocumentChunk();
             chunk.setId(UUID.randomUUID().toString().replace("-", ""));
             chunk.setDocumentId(documentId);
             chunk.setChunkIndex(i);
-            chunk.setContent(segments.get(i).text());
-            chunk.setCharCount(segments.get(i).text().length());
+            chunk.setContent(segment.text());
+            chunk.setCharCount(segment.text().length());
+            chunk.setTokenCount(SimpleTokenEstimator.estimate(segment.text()));
+            // CR-002: 提取来源元数据（fileName、format、pageNumber、headerText 等已知字段）
+            Map<String, String> chunkMetadata = new HashMap<>();
+            String[] sourceKeys = {"fileName", "format", "pageNumber", "headerText", "headerLevel"};
+            for (String key : sourceKeys) {
+                if (segment.metadata().containsKey(key)) {
+                    chunkMetadata.put(key, segment.metadata().getString(key));
+                }
+            }
+            chunk.setMetadata(chunkMetadata);
             chunks.add(chunk);
         }
         documentChunkStore.saveChunks(documentId, chunks);

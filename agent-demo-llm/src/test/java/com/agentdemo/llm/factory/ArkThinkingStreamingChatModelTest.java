@@ -2,6 +2,7 @@ package com.agentdemo.llm.factory;
 
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -205,7 +206,8 @@ class ArkThinkingStreamingChatModelTest {
         model.parseSseResponse(sseText, handler);
 
         // 验证 onComplete 被触发，携带完整正式回复（content 拼接）和 finishReason
-        verify(handler).onComplete("你好世界", "stop");
+        // 业务含义：SSE 不含 usage 字段，capturedUsage 为 null，第三参数应为 null（Task-15）
+        verify(handler).onComplete("你好世界", "stop", null);
     }
 
     /**
@@ -236,7 +238,7 @@ class ArkThinkingStreamingChatModelTest {
 
         model.parseSseResponse(sseText, handler);
 
-        verify(handler).onComplete("", "stop");
+        verify(handler).onComplete("", "stop", null);
     }
 
     /**
@@ -293,6 +295,83 @@ class ArkThinkingStreamingChatModelTest {
 
         verify(handler).onPartialThinking("思考");
         verify(handler).onPartialResponse("回复");
-        verify(handler).onComplete("回复", "stop");
+        verify(handler).onComplete("回复", "stop", null);
+    }
+
+    // ========== Task-15: stream_options 与 Token usage 解析 ==========
+
+    /**
+     * 验证请求体包含 stream_options.include_usage=true（Task-15 验证标准 1）
+     * 业务含义：开启 stream_options.include_usage，让方舟在流式响应中返回 usage 字段
+     */
+    @Test
+    void buildRequestBodyShouldContainStreamOptionsIncludeUsage() {
+        List<ChatMessage> messages = Collections.singletonList(UserMessage.from("你好"));
+
+        String requestBody = model.buildRequestBody(messages);
+
+        assertTrue(requestBody.contains("\"stream_options\""),
+                "请求体应包含 stream_options 字段");
+        assertTrue(requestBody.contains("\"include_usage\":true"),
+                "stream_options 应包含 include_usage=true");
+    }
+
+    /**
+     * 验证 parseSseLine 能解析 usage 字段并透传给 onComplete（Task-15 验证标准 2、3）
+     * 业务含义：方舟在 finish_reason chunk 中携带 usage 字段，parseSseLine 提取
+     * prompt_tokens / completion_tokens / total_tokens 并构造 TokenUsage 透传给 onComplete
+     */
+    @Test
+    void parseSseResponseShouldExtractUsageAndPassToOnComplete() {
+        // 业务含义：finish_reason chunk 同时携带 usage 字段（方舟开启 include_usage 后的行为）
+        String sseText = "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n"
+                + "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":20,\"total_tokens\":30}}\n\n"
+                + "data: [DONE]";
+
+        ThinkingStreamHandler handler = mock(ThinkingStreamHandler.class);
+
+        model.parseSseResponse(sseText, handler);
+
+        // 验证 onComplete 收到非 null 的 TokenUsage，且 token 数量正确（TokenUsage 已实现 equals）
+        verify(handler).onComplete("你好", "stop", new TokenUsage(10, 20, 30));
+    }
+
+    /**
+     * 验证 usage 为 null 时的处理（Task-15 验证标准 3）
+     * 业务含义：SSE 不含 usage 字段时，capturedUsage 保持 null，onComplete 第三参数为 null
+     */
+    @Test
+    void parseSseResponseShouldPassNullUsageWhenNoUsageField() {
+        String sseText = "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"回复\"},\"finish_reason\":null}]}\n\n"
+                + "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: [DONE]";
+
+        ThinkingStreamHandler handler = mock(ThinkingStreamHandler.class);
+
+        model.parseSseResponse(sseText, handler);
+
+        // 验证 usage 为 null 时，onComplete 第三参数为 null
+        verify(handler).onComplete("回复", "stop", null);
+    }
+
+    /**
+     * 验证 choices 为空的 usage chunk 不导致异常（Task-15 验证标准 2 边界）
+     * 业务含义：OpenAI 规范中 usage chunk 的 choices 可能为空数组 []，
+     * parseSseLine 在 choices 检查前解析 usage，避免 usage chunk 被直接跳过
+     */
+    @Test
+    void parseSseResponseShouldNotFailOnEmptyChoicesUsageChunk() {
+        String sseText = "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"你好\"},\"finish_reason\":null}]}\n\n"
+                + "data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+                + "data: {\"id\":\"1\",\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":15,\"total_tokens\":20}}\n\n"
+                + "data: [DONE]";
+
+        ThinkingStreamHandler handler = mock(ThinkingStreamHandler.class);
+
+        // 验证 choices 为空的 usage chunk 不抛异常（usage 在 finish_reason 之后到达，onComplete 传 null）
+        model.parseSseResponse(sseText, handler);
+
+        verify(handler).onPartialResponse("你好");
+        verify(handler).onComplete("你好", "stop", null);
     }
 }

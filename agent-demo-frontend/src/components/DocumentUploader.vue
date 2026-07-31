@@ -49,6 +49,11 @@ function validateFile(file: File): boolean {
  * 业务含义：批量上传时逐个处理，校验失败的文件跳过不影响其他文件。
  */
 async function handleFiles(files: FileList | File[]) {
+  // 前置校验：未选择知识库时提示用户先创建/选择
+  if (!ragStore.currentKnowledgeBaseId) {
+    emit('notify', '请先选择或创建知识库后再上传文件');
+    return;
+  }
   const fileArray = Array.from(files);
   for (const file of fileArray) {
     if (!validateFile(file)) continue;

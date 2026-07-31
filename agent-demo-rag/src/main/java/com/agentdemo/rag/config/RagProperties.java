@@ -23,9 +23,6 @@ public class RagProperties {
     /** 文档相关配置 */
     private Document document = new Document();
 
-    /** 分块相关配置 */
-    private Chunk chunk = new Chunk();
-
     /** 检索相关配置 */
     private Retrieval retrieval = new Retrieval();
 
@@ -45,14 +42,6 @@ public class RagProperties {
         private List<String> supportedFormats = List.of("txt", "md", "pdf");
         /** 临时文件目录 */
         private String tempDir = "./data/rag/temp";
-    }
-
-    @Data
-    public static class Chunk {
-        /** 分块大小（token 数） */
-        private int size = 1000;
-        /** 分块重叠（token 数） */
-        private int overlap = 200;
     }
 
     @Data

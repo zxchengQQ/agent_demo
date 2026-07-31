@@ -14,15 +14,17 @@
 
   * 异步文档处理：@Async + 内存任务状态管理，需处理解析失败、向量化失败等异常状态
 
-  * Agent 工具集成：RAG 检索器作为 @Tool 工具，Agent 自主选择知识库
+  * Agent 工具集成：每个知识库动态生成独立的 @Tool 工具，Agent 通过 Function Calling 选择具体知识库工具（CR-003）
 
 * **依赖关系**：
 
   * 复用 `ModelFactory.getEmbeddingModel()`（豆包 Embedding 模型）
 
-  * 复用 `ToolRegistry` 自动扫描注册机制（@Component + @Tool）
+  * 复用 `ToolRegistry` 自动扫描注册机制 + 动态注册 API
 
   * 复用 `SimpleAgent` 的 AiServices.builder().tools() 工具绑定机制
+
+  * CR-003 新增：`KnowledgeBaseToolRegistrar`（启动批注册 + 生命周期监听）、`KnowledgeBaseToolFactory`（ByteBuddy 动态生成带 @Tool 注解的知识库工具类）
 
   * 新增依赖：`langchain4j-milvus`（BOM 已声明）、`apache-pdfbox`（PDF 解析）
 
@@ -43,11 +45,13 @@ agent-demo-web (Controller + DTO)
     │                                   │       │                  ──> EmbeddingStoreFactory (可切换)
     │                                   │       │                       ├── InMemoryEmbeddingStore (默认)
     │                                   │       │                       └── MilvusEmbeddingStore (可选)
-    │                                   │       └── KnowledgeRetrieverTool (@Tool, 被ToolRegistry扫描)
+    │                                   │       ├── KnowledgeBaseToolRegistrar (CR-003: 启动/创建/删除时动态管理 Tool)
+    │                                   │       ├── KnowledgeBaseToolFactory (CR-003: ByteBuddy 动态生成带 @Tool 注解的知识库工具类)
+    │                                   │       └── KnowledgeRetrieverTool (@Component, 核心检索逻辑，被动态 Tool 委托调用)
     │                                   │
     │                                   └── agent-demo-llm (ModelFactory.getEmbeddingModel())
     │
-    └── AgentController ── SimpleAgent ── ToolRegistry ── 自动扫描 KnowledgeRetrieverTool
+    └── AgentController ── SimpleAgent ── ToolRegistry ── 自动扫描静态 Tool + 动态注册知识库 Tool (CR-003)
 ```
 
 ### 1.2 数据流向
@@ -86,7 +90,7 @@ sequenceDiagram
     end
 ```
 
-**检索问答流程：**
+**检索问答流程（CR-003 更新：动态 Tool 模式）：**
 
 ```mermaid
 sequenceDiagram
@@ -94,28 +98,33 @@ sequenceDiagram
     participant AC as AgentController
     participant SA as SimpleAgent
     participant TR as ToolRegistry
+    participant KBT as kb_{kbId} Tool (动态生成)
     participant KRT as KnowledgeRetrieverTool
     participant ES as EmbeddingStore
     participant LLM as ModelFactory
+    participant KST as KnowledgeBaseStore
 
     U->>AC: POST /chat/stream (message)
     AC->>SA: chatStream(sessionId, message)
     SA->>SA: ReAct 循环 - LLM 判断是否需要检索知识库
     alt 需要检索
-        SA->>TR: 调用 KnowledgeRetrieverTool
-        TR->>KRT: search(knowledgeBaseName, query)
-        KRT->>KST: KnowledgeBaseStore.findByName(kbName)
+        SA->>TR: 列出所有可用 Tool（含动态生成的 kb_*）
+        TR-->>SA: 返回工具列表
+        SA->>SA: LLM 根据上下文选择 kb_{kbId} Tool
+        SA->>KBT: 调用 kb_{kbId}.search(query)
+        KBT->>KRT: searchByKbId(kbId, query)
+        KRT->>KST: KnowledgeBaseStore.findById(kbId)
         alt 知识库不存在
-            KRT-->>TR: "知识库不存在"
+            KRT-->>KBT: "知识库不存在"
         else 知识库为空
-            KRT-->>TR: "知识库为空"
+            KRT-->>KBT: "知识库为空"
         else 正常检索
             KRT->>LLM: embed(query) -> 查询向量
             KRT->>ES: search(queryEmbedding, maxResults=5, filter=kbId)
             ES-->>KRT: Top-5 相关文档片段
-            KRT-->>TR: 检索结果文本
+            KRT-->>KBT: 检索结果文本
         end
-        TR-->>SA: 工具返回结果
+        KBT-->>SA: 工具返回结果
         SA->>SA: LLM 基于检索结果生成回答
     else 无需检索
         SA->>SA: LLM 直接回答
@@ -146,8 +155,10 @@ agent-demo-rag/
     │   └── DocumentService.java            # 文档管理服务（含 @Async 异步处理）
     ├── loader/
     │   └── DocumentLoader.java             # 文档加载与解析（txt/md/pdf）
-    └── retriever/
-        └── KnowledgeRetrieverTool.java     # @Tool 知识库检索工具
+    ├── retriever/
+        ├── KnowledgeRetrieverTool.java        # @Component 核心检索逻辑（被动态 Tool 委托调用）
+        ├── KnowledgeBaseToolRegistrar.java    # CR-003: 启动时扫描知识库并批量注册 Tool
+        └── KnowledgeBaseToolFactory.java       # CR-003: ByteBuddy 动态生成带 @Tool 注解的知识库工具类
 ```
 
 ```
@@ -668,13 +679,15 @@ public class DocumentLoader {
 }
 ```
 
-### 4.3 知识库检索（Agent 工具）
+### 4.3 知识库检索（CR-003 动态 Tool 模式）
+
+#### 4.3.1 核心检索逻辑（KnowledgeRetrieverTool）
 
 ```java
 /**
- * 知识库检索工具
- * 业务含义：作为 Agent 的 @Tool 工具，Agent 在 ReAct 循环中自主决定是否调用，
- * 并根据用户问题选择目标知识库进行向量语义检索。
+ * 知识库检索核心逻辑
+ * 业务含义：封装向量检索的完整流程，供动态 Tool 实例委托调用。
+ * 不再直接暴露为 @Tool Bean，而是被每个知识库动态生成的 Tool 代理所引用。
  */
 @Component
 public class KnowledgeRetrieverTool {
@@ -686,19 +699,20 @@ public class KnowledgeRetrieverTool {
     private final EmbeddingStoreFactory embeddingStoreFactory;
     private final ModelFactory modelFactory;
 
-    @Tool("从指定知识库中检索与用户问题相关的文档片段。" +
-          "当用户的问题可能涉及知识库中的内容时调用此工具。" +
-          "参数 knowledgeBaseName 为知识库名称，query 为检索问题。")
-    public String searchKnowledge(String knowledgeBaseName, String query) {
+    /**
+     * 按知识库 ID 检索
+     * 业务含义：被动态 Tool 代理委托调用，kbId 由动态 Tool 构造时绑定，无需 LLM 传递。
+     */
+    public String searchByKbId(String kbId, String query) {
         // 1. 查找知识库
-        KnowledgeBase kb = knowledgeBaseStore.findByName(knowledgeBaseName);
+        KnowledgeBase kb = knowledgeBaseStore.findById(kbId);
         if (kb == null) {
-            return "知识库 '" + knowledgeBaseName + "' 不存在";
+            return "知识库不存在";
         }
 
         // 2. 检查知识库是否有文档
         if (kb.getDocumentCount() == 0) {
-            return "知识库 '" + knowledgeBaseName + "' 为空，暂无文档内容";
+            return "知识库「" + kb.getName() + "」为空，暂无文档内容";
         }
 
         try {
@@ -710,54 +724,304 @@ public class KnowledgeRetrieverTool {
             EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
                     .queryEmbedding(queryEmbedding)
                     .maxResults(MAX_RESULTS)
-                    .filter(metadataKey("knowledgeBaseId").isEqualTo(kb.getId()))
+                    .filter(metadataKey("knowledgeBaseId").isEqualTo(kbId))
                     .build();
 
             List<EmbeddingMatch<TextSegment>> matches =
                     embeddingStoreFactory.getEmbeddingStore().search(searchRequest).matches();
 
-            // 5. 组装结果
+            // 5. 组装结果（携带来源元数据，CR-002）
             if (matches.isEmpty()) {
                 return "未找到与问题相关的文档";
             }
 
             StringBuilder result = new StringBuilder();
             for (int i = 0; i < matches.size(); i++) {
+                TextSegment segment = matches.get(i).embedded();
                 result.append("【片段").append(i + 1).append("】\n");
-                result.append(matches.get(i).embedded().text()).append("\n\n");
+                // 携带来源元数据
+                String source = extractSource(segment.metadata());
+                if (source != null) {
+                    result.append(source).append("\n");
+                }
+                result.append(segment.text()).append("\n\n");
             }
             return result.toString();
 
         } catch (Exception e) {
-            log.error("知识库检索失败: knowledgeBase={}, query={}", knowledgeBaseName, query, e);
+            log.error("知识库检索失败: kbId={}, query={}", kbId, query, e);
             return "知识库服务暂时不可用，请稍后重试";
         }
+    }
+
+    /**
+     * 从 metadata 中提取来源信息（CR-002）
+     */
+    private String extractSource(Map<String, Object> metadata) {
+        if (metadata == null || metadata.isEmpty()) return null;
+        StringBuilder sb = new StringBuilder("来源: ");
+        String fileName = (String) metadata.get("fileName");
+        String pageNumber = (String) metadata.get("pageNumber");
+        String headerText = (String) metadata.get("headerText");
+        if (fileName != null) sb.append(fileName);
+        if (pageNumber != null) sb.append(" 第").append(pageNumber).append("页");
+        if (headerText != null) sb.append(" 章节:").append(headerText);
+        return sb.length() > 6 ? sb.toString() : null;
+    }
+}
+```
+
+#### 4.3.2 动态 Tool 工厂（KnowledgeBaseToolFactory）
+
+```java
+/**
+ * 知识库动态 Tool 工厂
+ * 业务含义：为每个知识库创建独立的 Tool 类（ByteBuddy 动态生成），
+ * 方法上直接写入 @Tool 注解，使 LangChain4j ToolSpecifications 能够识别，
+ * 从而消除 LLM 传递知识库名称参数的幻觉风险。
+ *
+ * 生成的 Tool 命名规则：kb_{kbId}
+ * 生成的 Tool 描述格式：从知识库「{kbName}」中检索与用户问题相关的文档片段...
+ */
+@Component
+public class KnowledgeBaseToolFactory {
+
+    private final KnowledgeRetrieverTool retrieverTool;
+
+    public KnowledgeBaseToolFactory(KnowledgeRetrieverTool retrieverTool) {
+        this.retrieverTool = retrieverTool;
+    }
+
+    /**
+     * 为指定知识库创建动态 Tool 实例
+     * 使用 ByteBuddy 生成带 @Tool 注解的类，方法调用时绑定 kbId 并委托给 KnowledgeRetrieverTool
+     */
+    public Object createTool(KnowledgeBase kb) {
+        String methodName = buildToolMethodName(kb);
+        String className = "com.agentdemo.rag.retriever.KbTool_" + kb.getId();
+        String description = buildToolDescription(kb);
+
+        try {
+            Class<?> toolClass = new ByteBuddy()
+                    .subclass(Object.class)
+                    .name(className)
+                    .defineMethod(methodName, String.class, Modifier.PUBLIC)
+                    .withParameter(String.class, "query")
+                    .intercept(MethodDelegation.to(new SearchInterceptor(kb.getId(), retrieverTool)))
+                    .annotateMethod(AnnotationDescription.Builder.ofType(Tool.class)
+                            .defineArray("value", description)
+                            .build())
+                    .make()
+                    .load(getClass().getClassLoader())
+                    .getLoaded();
+
+            return toolClass.getDeclaredConstructor().newInstance();
+        } catch (Exception e) {
+            throw new RuntimeException("生成知识库 Tool 失败, kbId=" + kb.getId(), e);
+        }
+    }
+
+    /**
+     * 构建 Tool 的 @Tool 描述
+     */
+    public String buildToolDescription(KnowledgeBase kb) {
+        return "从知识库「" + kb.getName() + "」中检索与用户问题相关的文档片段。" +
+               "当用户的问题涉及「" + kb.getName() + "」相关内容时调用此工具。";
+    }
+
+    /**
+     * 构建 Tool 的方法名
+     */
+    public String buildToolMethodName(KnowledgeBase kb) {
+        return "kb_" + kb.getId();
+    }
+
+    /**
+     * ByteBuddy 方法拦截器：绑定 kbId 并委托给 KnowledgeRetrieverTool.searchByKbId
+     */
+    public static class SearchInterceptor {
+
+        private final String kbId;
+        private final KnowledgeRetrieverTool retrieverTool;
+
+        public SearchInterceptor(String kbId, KnowledgeRetrieverTool retrieverTool) {
+            this.kbId = kbId;
+            this.retrieverTool = retrieverTool;
+        }
+
+        @RuntimeType
+        public String search(@AllArguments Object[] args) {
+            String query = (String) args[0];
+            return retrieverTool.searchByKbId(kbId, query);
+        }
+    }
+}
+```
+
+#### 4.3.3 Tool 注册管理（KnowledgeBaseToolRegistrar）
+
+```java
+/**
+ * 知识库 Tool 注册管理
+ * 业务含义：管理知识库 Tool 的全生命周期——启动时批量注册、创建时注册、删除时注销。
+ * 实现 ApplicationRunner 确保启动后立即注册已有知识库的 Tool。
+ */
+@Component
+public class KnowledgeBaseToolRegistrar implements ApplicationRunner {
+
+    private static final Logger log = LoggerFactory.getLogger(KnowledgeBaseToolRegistrar.class);
+
+    private final KnowledgeBaseStore knowledgeBaseStore;
+    private final KnowledgeBaseToolFactory toolFactory;
+    private final ToolRegistry toolRegistry;
+
+    public KnowledgeBaseToolRegistrar(KnowledgeBaseStore knowledgeBaseStore,
+                                       KnowledgeBaseToolFactory toolFactory,
+                                       ToolRegistry toolRegistry) {
+        this.knowledgeBaseStore = knowledgeBaseStore;
+        this.toolFactory = toolFactory;
+        this.toolRegistry = toolRegistry;
+    }
+
+    /**
+     * 系统启动后批量注册已有知识库的 Tool
+     */
+    @Override
+    public void run(ApplicationRunner args) {
+        log.info("开始注册已有知识库的 Tool...");
+        for (KnowledgeBase kb : knowledgeBaseStore.findAll()) {
+            registerToolForKb(kb);
+        }
+        log.info("知识库 Tool 注册完成，共注册 {} 个", toolRegistry.getToolCount());
+    }
+
+    /**
+     * 为指定知识库注册 Tool（创建知识库时调用）
+     */
+    public void registerToolForKb(KnowledgeBase kb) {
+        Object tool = toolFactory.createTool(kb);
+        toolRegistry.register(tool);
+        log.info("注册知识库 Tool: kb_{} ({})", kb.getId(), kb.getName());
+    }
+
+    /**
+     * 注销指定知识库的 Tool（删除知识库时调用）
+     */
+    public void unregisterToolForKb(String kbId) {
+        toolRegistry.unregisterTool("kb_" + kbId);
+        log.info("注销知识库 Tool: kb_{}", kbId);
+    }
+}
+```
+
+#### 4.3.4 改造 ToolRegistry 支持动态注册/注销
+
+```java
+/**
+ * 工具注册表
+ * 业务含义：扫描所有带 @Tool 注解的 Bean，提供工具列表给 Agent。
+ * CR-003 新增 register/unregisterTool 方法支持知识库 Tool 的动态管理。
+ */
+@Component
+public class ToolRegistry {
+
+    private static final Logger log = LoggerFactory.getLogger(ToolRegistry.class);
+
+    private final List<Object> tools = new CopyOnWriteArrayList<>();
+
+    /**
+     * 扫描并注册所有带 @Tool 注解的 Bean（原有逻辑）
+     */
+    @PostConstruct
+    public void scanAndRegister() {
+        // ... 原有扫描逻辑保持不变 ...
+    }
+
+    /**
+     * 动态注册工具（CR-003：知识库 Tool 注册）
+     */
+    public void register(Object tool) {
+        if (tool != null) {
+            tools.add(tool);
+            log.info("动态注册工具: {}", tool.getClass().getSimpleName());
+        }
+    }
+
+    /**
+     * 动态注销工具（CR-003：知识库 Tool 注销）
+     */
+    public void unregisterTool(String toolName) {
+        // 根据工具名称匹配并移除
+        // 遍历工具列表，移除工具名匹配的工具
+        tools.removeIf(tool -> {
+            // 动态 Tool 为 ByteBuddy 生成的类，方法上带有 @Tool 注解
+            // 对于知识库 Tool，方法名为 kb_{kbId}
+            return hasToolMethod(tool, toolName);
+        });
+        log.info("动态注销工具: {}", toolName);
+    }
+
+    /**
+     * 检查工具是否有指定名称的方法
+     */
+    private boolean hasToolMethod(Object tool, String methodName) {
+        for (Method method : tool.getClass().getMethods()) {
+            if (methodName.equals(method.getName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 获取所有工具列表
+     */
+    public List<Object> listTools() {
+        return tools;
+    }
+
+    /**
+     * 获取工具数量
+     */
+    public int getToolCount() {
+        return tools.size();
     }
 }
 ```
 
 * **设计要点**:
 
-  * 工具返回纯文本（非结构化），Agent 直接在 ReAct 循环中读取
+  * 动态 Tool 使用 ByteBuddy 生成带 @Tool 注解的类实现，kbId 在 Tool 创建时绑定，LLM 无需传递（消除幻觉风险）
+
+  * 每个知识库独立 Tool，LLM 通过 Function Calling 选择具体 Tool，由系统自动路由到对应知识库
 
   * 异常不抛出，而是返回错误提示文本，避免 Agent 对话中断（AC-020）
 
-  * `@Tool` 注解描述清晰，LLM 据此判断是否调用及如何传参
+  * `@Tool` 注解描述由知识库名称动态生成，LLM 据此判断是否调用
 
-### 4.4 级联删除知识库
+### 4.4 知识库 CRUD 与 Tool 生命周期联动（CR-003 更新）
 
-* **触发条件**: 用户调用 `DELETE /api/rag/knowledges/{id}`
+* **创建知识库时**：
+  1. KnowledgeBaseService.create() 创建知识库记录
+  2. 调用 KnowledgeBaseToolRegistrar.registerToolForKb(kb) 注册动态 Tool
+  3. Tool 立即可被 Agent 使用（SimpleAgent.delegate 为懒加载）
 
-* **处理步骤**:
-
+* **删除知识库时**：
   1. 校验知识库存在
-  2. 查询该知识库下所有文档 ID
-  3. 从 EmbeddingStore 中删除所有匹配 `knowledgeBaseId` 的向量数据
-  4. 从 DocumentStore 中删除所有文档记录
-  5. 从 KnowledgeBaseStore 中删除知识库记录
+  2. 调用 KnowledgeBaseToolRegistrar.unregisterToolForKb(kbId) 注销动态 Tool
+  3. 查询该知识库下所有文档 ID
+  4. 从 EmbeddingStore 中删除所有匹配 `knowledgeBaseId` 的向量数据
+  5. 从 DocumentStore 中删除所有文档记录
+  6. 从 KnowledgeBaseStore 中删除知识库记录
   6. 删除名称索引
 
-* **事务性**: 内存操作顺序执行，异常时记录日志并返回错误
+* **事务性**: 内存操作顺序执行，异常时记录日志并返回错误。
+
+* **CR-003 Tool 生命周期管理**：
+  * 创建知识库后自动调用 `KnowledgeBaseToolRegistrar.registerToolForKb(kb)` 注册动态 Tool
+  * 删除知识库前自动调用 `KnowledgeBaseToolRegistrar.unregisterToolForKb(kbId)` 注销动态 Tool
+  * 动态 Tool 通过 ByteBuddy 生成带 @Tool 注解的类实现，kbId 在 Tool 创建时绑定，LLM 调用时无需传递（消除知识库名称幻觉风险）
+  * Agent 懒加载机制确保新注册的 Tool 立即可用（下次 `getDelegate()` 时重建）
 
 ### 4.5 删除文档
 
@@ -786,11 +1050,14 @@ public class KnowledgeRetrieverTool {
 | 删除不存在的知识库            | AC-021 | KnowledgeBaseService 校验存在性      | 5305 "知识库不存在"                  |
 | 删除不存在的文档             | AC-022 | DocumentService 校验存在性           | 5306 "文档不存在"                   |
 | 向不存在的知识库上传           | AC-023 | DocumentService 校验知识库存在性        | 5305 "知识库不存在"                  |
-| 检索不存在的知识库            | AC-024 | KnowledgeRetrieverTool 返回提示文本   | "知识库 'xxx' 不存在"                |
+| 检索不存在的知识库            | AC-024 | KnowledgeRetrieverTool 返回提示文本   | "知识库不存在"（CR-003: kbId 绑定，理论上不会触发） |
 | 重复上传同名文档             | AC-025 | 不校验文件名唯一性，以 documentId 区分       | 正常处理，返回新 documentId            |
 | 检索无结果                | AC-014 | EmbeddingStore.search 返回空列表     | "未找到与问题相关的文档"                  |
-| 空知识库检索               | AC-016 | 检查 documentCount == 0           | "知识库 'xxx' 为空，暂无文档内容"          |
+| 空知识库检索               | AC-016 | 检查 documentCount == 0           | "知识库「xxx」为空，暂无文档内容"          |
 | Agent 判断无需检索         | AC-015 | LLM 自主决策，不调用工具                  | Agent 直接回答                     |
+| 创建知识库 Tool 注册失败        | AC-033 | KnowledgeBaseToolRegistrar 捕获异常，不影响知识库创建 | 日志 WARN + Tool 未注册（可手动重启恢复）   |
+| 删除知识库 Tool 注销失败        | AC-034 | ToolRegistry.removeIf 失败不抛出       | 日志 WARN + 继续删除流程                |
+| 启动时批量 Tool 注册异常        | AC-035 | ApplicationRunner 内捕获单个知识库异常，继续注册其他 | 日志 ERROR + 启动不受影响，异常知识库 Tool 缺失 |
 
 ## 6. 安全与性能 (Security & Performance)
 
@@ -940,8 +1207,8 @@ public class RagProperties {
 | AC-003  | 上传文档（异步启动）     | DocumentService.upload() -> 创建 PENDING 记录 -> @Async processDocument()                        |
 | AC-004  | 查询文档处理状态       | DocumentService.getStatus() + RagController GET /api/rag/documents/{id}/status               |
 | AC-005  | 查看文档列表         | DocumentService.listByKnowledgeBase() + RagController GET /api/rag/knowledges/{id}/documents |
-| AC-006  | Agent 检索知识库    | KnowledgeRetrieverTool.searchKnowledge() @Tool 方法                                            |
-| AC-007  | Agent 基于检索结果回答 | SimpleAgent ReAct 循环自动处理（工具返回结果回填 LLM）                                                       |
+| AC-006  | Agent 检索知识库    | CR-003: LLM 通过 Function Calling 选择 kb_{kbId} 动态 Tool -> KnowledgeRetrieverTool.searchByKbId() |
+| AC-007  | Agent 基于检索结果回答 | SimpleAgent ReAct 循环自动处理（动态 Tool 返回结果回填 LLM）                                                                       |
 | AC-008  | 删除文档           | DocumentService.delete() -> 删除 EmbeddingStore 向量 + DocumentStore 记录                          |
 | AC-009  | 删除知识库（级联）      | KnowledgeBaseService.delete() -> 级联删除文档 + 向量数据                                               |
 | AC-010  | 知识库命名规则        | CreateKnowledgeBaseRequest @Pattern + @Size 校验                                               |
@@ -958,21 +1225,26 @@ public class RagProperties {
 | AC-021  | 删除不存在的知识库      | KnowledgeBaseService 校验 -> ErrorCode 5305                                                    |
 | AC-022  | 删除不存在的文档       | DocumentService 校验 -> ErrorCode 5306                                                         |
 | AC-023  | 向不存在的知识库上传     | DocumentService 校验 -> ErrorCode 5305                                                         |
-| AC-024  | 检索不存在的知识库      | KnowledgeRetrieverTool 查找为 null -> 返回提示文本                                                    |
+| AC-024  | 检索不存在的知识库      | CR-003: kbId 绑定，理论上不会触发；KnowledgeRetrieverTool 查找为 null 时返回提示文本                                |
 | AC-025  | 重复上传同名文档       | 不校验文件名唯一性，UUID 区分                                                                            |
 | AC-026  | 知识库描述长度限制      | CreateKnowledgeBaseRequest @Size(max=200) 校验                                                 |
 | AC-027  | 检索结果数量限制       | KnowledgeRetrieverTool MAX\_RESULTS=5 + EmbeddingSearchRequest.maxResults                    |
 | AC-028  | PDF 表格解析为 Markdown   | DocumentLoader.parsePdf() -> extractTablesAsMarkdown()（tabula-java 表格提取 + Markdown 转换）  |
 | AC-029  | PDF 无表格回退纯文本     | DocumentLoader.parsePdf() -> tableText.isEmpty() 时返回 plainText（PDFTextStripper 提取）       |
 | AC-030  | PDF 表格结构完整性      | tabula-java SpreadsheetExtractionAlgorithm 自动检测行列 + Markdown 表格格式保留结构             |
+| AC-031  | 检索结果包含来源元数据   | KnowledgeRetrieverTool.searchByKbId() 从 TextSegment.metadata 提取 fileName/pageNumber/headerText 注入结果文本（CR-002） |
+| AC-032  | DocumentChunk 存储分块元数据 | DocumentService.processDocument() 从 TextSegment.metadata 提取来源信息存入 DocumentChunk.metadata（Map<String, String>）（CR-002） |
+| AC-033  | 创建知识库时自动注册 Tool | KnowledgeBaseToolRegistrar.registerToolForKb() -> ToolRegistry.register() 动态注册 ByteBuddy 生成的带 @Tool 注解的 Tool 类（CR-003） |
+| AC-034  | 删除知识库时自动注销 Tool | KnowledgeBaseToolRegistrar.unregisterToolForKb() -> ToolRegistry.unregisterTool() 移除 Tool（CR-003） |
+| AC-035  | 系统启动时批量注册 Tool | KnowledgeBaseToolRegistrar.run() -> ApplicationRunner 扫描所有知识库批量注册（CR-003） |
 
 ## 8. 技术决策说明 (Technical Decisions)
 
-* **决策 1: RAG 作为 @Tool 工具集成（而非 ContentRetriever）**
+* **决策 1: RAG 作为 @Tool 工具集成（而非 ContentRetriever，CR-003 更新）**
 
-  * 理由：需求要求 Agent 自主选择知识库，ContentRetriever 在 AiServices 构建时绑定，无法运行时动态切换知识库。@Tool 方式下 Agent 通过 ReAct 循环自主决策，工具方法接收 knowledgeBaseName 参数，Agent 根据用户问题判断检索哪个知识库。
+  * 理由：需求要求 Agent 自主选择知识库，ContentRetriever 在 AiServices 构建时绑定，无法运行时动态切换。CR-003 改为每个知识库独立注册为 @Tool，LLM 通过 Function Calling 选择具体工具，消除知识库名称幻觉风险。
 
-  * 对比：ContentRetriever 方式更简单（自动检索注入上下文），但不满足多知识库自主选择需求。
+  * 对比：ContentRetriever 方式更简单（自动检索注入上下文），但不满足多知识库自主选择需求。原单 Tool + 参数化方式有 LLM 幻觉风险。CR-003 动态 Tool 方式彻底消除此风险。
 
 * **决策 2: 向量存储可切换方案（InMemory + Milvus）**
 
@@ -1014,6 +1286,18 @@ public class RagProperties {
 
   * 理由：Agent 工具抛异常会中断 ReAct 循环和用户对话。降级为文本提示让 Agent 自行处理（告知用户服务不可用），保证对话连续性。
 
+* **决策 9: 知识库 Tool 通过 ByteBuddy 动态生成带 @Tool 注解的类实现（CR-003 新增）**
+
+  * 理由：每个知识库需独立注册为 @Tool Bean，但知识库数量动态变化（创建/删除），无法通过静态 @Component 扫描实现。ByteBuddy 可以在运行时生成带 @Tool 注解的方法，LangChain4j 的 `ToolSpecifications.toolSpecificationsFrom(Object)` 能够正确识别。kbId 在类生成时绑定，调用时无需 LLM 传递，彻底消除知识库名称幻觉风险。
+
+  * 对比：CGLIB/JDK 动态代理生成的方法不会继承 @Tool 注解（@Tool 无 @Inherited），LangChain4j 无法识别代理方法；静态 Bean 注册无法支持动态增减；Spring BeanDefinition 注册过于底层且需处理循环依赖。ByteBuddy 直接写入注解是最简可行方案。
+
+* **决策 10: ToolRegistry 支持动态注册/注销（CR-003 新增）**
+
+  * 理由：原有 ToolRegistry 仅支持 @PostConstruct 静态扫描，无法处理运行时动态 Tool。新增 register/unregisterTool 方法，确保知识库 Tool 可随时增删，SimpleAgent 通过懒加载 delegate 自动感知变更。
+
+  * 对比：每次增删重建 AiServices 实例会导致会话上下文丢失；保持懒加载 + 动态注册，对现有 Agent 逻辑零侵入。
+
 ## 9. 风险与注意事项 (Risks & Notes)
 
 * **技术风险**:
@@ -1034,7 +1318,9 @@ public class RagProperties {
 
   * agent-demo-bootstrap 启动类或配置类需添加 `@EnableAsync`
 
-  * KnowledgeRetrieverTool 作为 @Component 自动被 ToolRegistry 扫描注册，SimpleAgent delegate 重建时自动绑定
+  * KnowledgeRetrieverTool 作为 @Component 自动被 ToolRegistry 扫描注册（CR-003: 改为被动态 Tool 委托调用，不再直接作为 @Tool 暴露）
+
+  * CR-003 兼容性：原有单 Tool 模式的 `KnowledgeRetrieverTool.searchKnowledge()` 方法保留，但标记为 @Deprecated，新调用路径为 `searchByKbId(kbId, query)`，由动态 Tool 代理委托调用
 
 * **性能影响**:
 
@@ -1145,4 +1431,33 @@ public class RagProperties {
 - [修改] 技术决策 6：从"PDF 解析使用 Apache PDFBox"改为"PDFBox + tabula-java 混合提取"
 - [修改] AC 映射表：新增 AC-028/029/030 的技术实现映射
 - [修改] 依赖变更清单：BOM 和 RAG pom.xml 新增 tabula 依赖声明
+
+### CR-002: 分块数据携带文件元数据 (2026-07-30)
+**影响范围**: 业务逻辑层（DocumentSplitterRegistry / DocumentService / KnowledgeRetrieverTool / DocumentChunk）
+**变更原因**: 当前检索结果仅返回文本内容，Agent 无法引用文档来源；DocumentChunk 不存储分块级元数据，前端无法展示来源信息。
+**变更内容摘要**:
+- [修改] DocumentSplitterRegistry.split()：方法签名新增 `fileName` 参数，enrichMetadata() 注入 `fileName` 到 TextSegment metadata
+- [修改] DocumentService.processDocument()：传入 `fileName` 到 splitterRegistry.split()；保存 DocumentChunk 时从 TextSegment.metadata 提取来源信息存入 metadata 字段
+- [修改] KnowledgeRetrieverTool.searchKnowledge()：检索结果中从 TextSegment.metadata 提取 fileName/pageNumber/headerText，注入结果文本前缀（如"来源: 产品手册.pdf 第3页"）
+- [修改] DocumentChunk 实体：新增 `metadata` 字段（Map<String, String>），存储分块级来源元数据
+- [修改] AC 映射表：新增 AC-031/032 的技术实现映射
+
+### CR-003: 知识库动态 Tool 注册 (2026-07-31)
+**影响范围**: 业务逻辑层（KnowledgeRetrieverTool / ToolRegistry / 新增 KnowledgeBaseToolFactory / KnowledgeBaseToolRegistrar / KnowledgeBaseService）
+**变更原因**: 原有单 Tool + 参数化调用模式下，LLM 需指定知识库名称作为参数，存在 LLM 幻觉生成未知知识库名称的风险。改为每个知识库独立注册为 Tool，由 LLM 通过 Function Calling 选择具体 Tool，消除知识库名称传递风险。
+**变更内容摘要**:
+- [新增] `KnowledgeBaseToolFactory`（retriever 层）：ByteBuddy 动态生成带 @Tool 注解的知识库工具类，kbId 在类生成时绑定，方法调用时自动委托给 KnowledgeRetrieverTool
+- [新增] `KnowledgeBaseToolRegistrar`（retriever 层）：实现 ApplicationRunner，启动时批量注册已有知识库 Tool；提供 registerToolForKb/unregisterToolForKb 方法供 Service 层调用
+- [新增] `agent-demo-rag/pom.xml`：新增 `net.bytebuddy:byte-buddy` 依赖和 `agent-demo-tools` 模块依赖
+- [修改] `KnowledgeRetrieverTool`：从 @Tool 改为 @Component，移除 @Tool 注解；新增 `searchByKbId(kbId, query)` 方法供动态 Tool 委托调用；原 `searchKnowledge()` 标记为 @Deprecated
+- [修改] `ToolRegistry`（agent-demo-tools）：新增 `register(Object tool)` 和 `unregisterTool(String toolName)` 方法支持动态 Tool 管理
+- [修改] `KnowledgeBaseService.create()`：创建知识库后调用 `KnowledgeBaseToolRegistrar.registerToolForKb()` 注册动态 Tool
+- [修改] `KnowledgeBaseService.delete()`：删除知识库前调用 `KnowledgeBaseToolRegistrar.unregisterToolForKb()` 注销动态 Tool
+- [修改] SimpleAgent：delegate 懒加载，并增加 lastToolCount 检测，Tool 数量变化后重建 delegate 绑定最新工具
+- [修改] 架构图（1.1）、检索流程时序图（1.2）、模块分层（1.3）：更新为动态 Tool 模式
+- [修改] 技术决策 1：从"单 Tool + 参数化"改为"每个知识库独立 @Tool + Function Calling"
+- [新增] 技术决策 9：知识库 Tool 通过 ByteBuddy 动态生成带 @Tool 注解的类实现
+- [新增] 技术决策 10：ToolRegistry 支持动态注册/注销
+- [修改] AC 映射表：新增 AC-033/034/035 的技术实现映射
+- [修改] 异常处理表：新增 Tool 注册失败、注销失败、启动批量注册异常场景
 

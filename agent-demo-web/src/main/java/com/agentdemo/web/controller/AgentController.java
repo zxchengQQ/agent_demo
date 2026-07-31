@@ -5,12 +5,14 @@ import com.agentdemo.agent.core.TaskBreakdownStream;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.common.result.Result;
+import com.agentdemo.common.utils.SimpleTokenEstimator;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.web.dto.ChatRequest;
 import com.agentdemo.web.dto.ChatResponse;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.service.TokenStream;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -90,7 +92,7 @@ public class AgentController {
         memoryManager.addAssistantMessage(sessionId, response);
 
         ChatResponse chatResponse = new ChatResponse(
-                sessionId, response, null, duration, null);
+                sessionId, response, null, duration, null, null);
         return Result.success(chatResponse);
     }
 
@@ -104,6 +106,7 @@ public class AgentController {
      * SSE 事件协议：
      * - session: 携带 sessionId（首次或会话超时新建时发送）
      * - token: 携带文本片段（逐字输出）
+     * - usage: Token 用量（携带 inputTokens/outputTokens/totalTokens/estimated JSON，在 done 之前发送）
      * - done: 流式完成（携带耗时毫秒）
      * - error: 错误信息
      * </p>
@@ -207,6 +210,11 @@ public class AgentController {
                     if (fullResponse.length() > 0) {
                         memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
                     }
+                    // 业务含义：任务拆解路径的 onComplete 无 TokenUsage 透传，使用 SimpleTokenEstimator 估算（estimated=true）
+                    int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
+                    int outputTokens = SimpleTokenEstimator.estimate(fullResponse.toString());
+                    int totalTokens = inputTokens + outputTokens;
+                    sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
                     sendEvent(emitter, "done", System.currentTimeMillis() - start);
                     emitter.complete();
                 })
@@ -238,6 +246,11 @@ public class AgentController {
                         // ReActThinkingStream 的 onComplete 携带完整最终回答文本，直接使用参数而非 StringBuilder
                         memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
                         long duration = System.currentTimeMillis() - start;
+                        // 业务含义：ReAct 路径的 CompleteConsumer 仅透传 fullResponse，无 TokenUsage，使用估算（estimated=true）
+                        int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
+                        int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
+                        int totalTokens = inputTokens + outputTokens;
+                        sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
                         sendEvent(emitter, "done", duration);
                         emitter.complete();
                     })
@@ -259,6 +272,20 @@ public class AgentController {
                         // 业务含义：流式完成后，将完整助手回复写入记忆，保证下一轮对话有上下文
                         memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
                         long duration = System.currentTimeMillis() - start;
+                        // 业务含义：优先使用 API 返回的真实 TokenUsage（estimated=false），
+                        // 未返回时降级为 SimpleTokenEstimator 估算（estimated=true）
+                        TokenUsage tokenUsage = response.tokenUsage();
+                        if (tokenUsage != null) {
+                            int inputTokens = tokenUsage.inputTokenCount() != null ? tokenUsage.inputTokenCount() : 0;
+                            int outputTokens = tokenUsage.outputTokenCount() != null ? tokenUsage.outputTokenCount() : 0;
+                            int totalTokens = tokenUsage.totalTokenCount() != null ? tokenUsage.totalTokenCount() : inputTokens + outputTokens;
+                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, false));
+                        } else {
+                            int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
+                            int outputTokens = SimpleTokenEstimator.estimate(fullResponse.toString());
+                            int totalTokens = inputTokens + outputTokens;
+                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
+                        }
                         sendEvent(emitter, "done", duration);
                         emitter.complete();
                     })
@@ -290,6 +317,24 @@ public class AgentController {
             // 降级为 WARN 日志，不抛异常，避免中断后续 SSE 事件推送
             log.warn("SSE 发送失败: event={}, reason={}", eventName, e.getMessage());
         }
+    }
+
+    /**
+     * 构建 usage 事件的 JSON 数据（Task-16 新增）
+     * <p>
+     * 业务含义：将 Token 用量构造为前端可解析的 JSON 格式，
+     * estimated 标识是否为估算值（true=SimpleTokenEstimator 估算，false=API 返回的真实值）。
+     * </p>
+     *
+     * @param inputTokens  输入 Token 数
+     * @param outputTokens 输出 Token 数
+     * @param totalTokens  总 Token 数
+     * @param estimated    是否为估算值
+     * @return JSON 字符串，如 {"inputTokens":150,"outputTokens":320,"totalTokens":470,"estimated":false}
+     */
+    private String buildUsageJson(int inputTokens, int outputTokens, int totalTokens, boolean estimated) {
+        return String.format("{\"inputTokens\":%d,\"outputTokens\":%d,\"totalTokens\":%d,\"estimated\":%s}",
+                inputTokens, outputTokens, totalTokens, estimated);
     }
 
     /**

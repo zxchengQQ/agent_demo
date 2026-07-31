@@ -5,14 +5,19 @@
 .DESCRIPTION
     业务含义：自动化设置环境变量、Maven 打包、启动 Spring Boot 应用。
     支持 dev / prod 多环境切换，支持跳过打包直接启动。
+    支持通过 -Provider 参数切换 LLM 提供商（ark 火山引擎方舟 / bailian 阿里百炼）。
 
 .EXAMPLE
     .\start.ps1
-    # 使用 $env:ARK_API_KEY 启动（dev 环境）
+    # 使用 $env:ARK_API_KEY 启动（dev 环境，默认 ark 提供商）
 
 .EXAMPLE
     .\start.ps1 -ApiKey "ark-xxxx"
-    # 指定 API Key 启动
+    # 指定火山引擎 API Key 启动
+
+.EXAMPLE
+    .\start.ps1 -Provider bailian -BailianApiKey "sk-xxxx"
+    # 切换为阿里百炼启动，指定百炼 API Key
 
 .EXAMPLE
     .\start.ps1 -Profile prod -SkipBuild
@@ -23,7 +28,10 @@
     # 查看帮助
 #>
 param(
+    [ValidateSet('ark','bailian')]
+    [string]$Provider = "ark",
     [string]$ApiKey = $env:ARK_API_KEY,
+    [string]$BailianApiKey = $env:BAILIAN_API_KEY,
     [string]$Profile = "dev",
     [string]$JavaHome = "D:\java\jdk-17.0.7",
     [string]$TestMessage = "你好，请简单介绍一下自己",
@@ -38,14 +46,19 @@ if ($Help) {
     Write-Host "AI Agent 示例项目启动脚本" -ForegroundColor Cyan
     Write-Host ""
     Write-Host "用法:" -ForegroundColor Yellow
-    Write-Host "  .\start.ps1                          # 默认启动（dev 环境，读取 `$env:ARK_API_KEY）"
-    Write-Host "  .\start.ps1 -ApiKey 'ark-xxxx'       # 指定 API Key"
-    Write-Host "  .\start.ps1 -Profile prod            # 指定 profile（dev / prod）"
-    Write-Host "  .\start.ps1 -SkipBuild               # 跳过打包，直接启动已有 jar"
-    Write-Host "  .\start.ps1 -Test                    # 测试对话接口（需应用已启动）"
-    Write-Host "  .\start.ps1 -Test -TestMessage '2+2='# 自定义测试消息"
-    Write-Host "  .\start.ps1 -JavaHome 'D:\java\jdk-17'# 指定 JDK 路径"
-    Write-Host "  .\start.ps1 -Help                    # 显示本帮助"
+    Write-Host "  .\start.ps1                                      # 默认启动（ark 提供商，dev 环境）"
+    Write-Host "  .\start.ps1 -ApiKey 'ark-xxxx'                   # 指定火山引擎 API Key"
+    Write-Host "  .\start.ps1 -Provider bailian -BailianApiKey 'sk-xxxx'  # 切换阿里百炼启动"
+    Write-Host "  .\start.ps1 -Profile prod                        # 指定 profile（dev / prod）"
+    Write-Host "  .\start.ps1 -SkipBuild                           # 跳过打包，直接启动已有 jar"
+    Write-Host "  .\start.ps1 -Test                                # 测试对话接口（需应用已启动）"
+    Write-Host "  .\start.ps1 -Test -TestMessage '2+2='            # 自定义测试消息"
+    Write-Host "  .\start.ps1 -JavaHome 'D:\java\jdk-17'            # 指定 JDK 路径"
+    Write-Host "  .\start.ps1 -Help                                 # 显示本帮助"
+    Write-Host ""
+    Write-Host "LLM 提供商切换:" -ForegroundColor Yellow
+    Write-Host "  -Provider ark      # 火山引擎方舟（默认），需设置 ARK_API_KEY"
+    Write-Host "  -Provider bailian  # 阿里百炼，需设置 BAILIAN_API_KEY"
     Write-Host ""
     Write-Host "启动后访问地址:" -ForegroundColor Yellow
     Write-Host "  Swagger UI:  http://localhost:8080/swagger-ui.html"
@@ -111,21 +124,37 @@ Write-Host "  AI Agent 示例项目启动脚本" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "项目目录: $ProjectRoot"
 Write-Host "Profile:  $Profile"
+Write-Host "Provider: $Provider"
 Write-Host ""
 
 # ========================================
-# 1. 校验 API Key
+# 1. 校验 API Key（根据提供商校验对应的 Key）
+# 业务含义：切换提供商后只校验当前提供商的 API Key（BR-LLM-010）
 # ========================================
-if ([string]::IsNullOrWhiteSpace($ApiKey)) {
-    Write-Host "[错误] 未检测到 ARK_API_KEY" -ForegroundColor Red
-    Write-Host "请通过以下方式之一提供:" -ForegroundColor Yellow
-    Write-Host "  1. 设置环境变量: `$env:ARK_API_KEY = 'ark-xxxx'"
-    Write-Host "  2. 脚本参数指定: .\start.ps1 -ApiKey 'ark-xxxx'"
-    Write-Host ""
-    exit 1
+if ($Provider -eq "bailian") {
+    if ([string]::IsNullOrWhiteSpace($BailianApiKey)) {
+        Write-Host "[错误] 未检测到 BAILIAN_API_KEY" -ForegroundColor Red
+        Write-Host "请通过以下方式之一提供:" -ForegroundColor Yellow
+        Write-Host "  1. 设置环境变量: `$env:BAILIAN_API_KEY = 'sk-xxxx'"
+        Write-Host "  2. 脚本参数指定: .\start.ps1 -Provider bailian -BailianApiKey 'sk-xxxx'"
+        Write-Host ""
+        exit 1
+    }
+    $env:BAILIAN_API_KEY = $BailianApiKey
+    Write-Host "[OK] BAILIAN_API_KEY 已设置（隐藏显示）" -ForegroundColor Green
+} else {
+    if ([string]::IsNullOrWhiteSpace($ApiKey)) {
+        Write-Host "[错误] 未检测到 ARK_API_KEY" -ForegroundColor Red
+        Write-Host "请通过以下方式之一提供:" -ForegroundColor Yellow
+        Write-Host "  1. 设置环境变量: `$env:ARK_API_KEY = 'ark-xxxx'"
+        Write-Host "  2. 脚本参数指定: .\start.ps1 -ApiKey 'ark-xxxx'"
+        Write-Host "  3. 切换百炼:     .\start.ps1 -Provider bailian -BailianApiKey 'sk-xxxx'"
+        Write-Host ""
+        exit 1
+    }
+    $env:ARK_API_KEY = $ApiKey
+    Write-Host "[OK] ARK_API_KEY 已设置（隐藏显示）" -ForegroundColor Green
 }
-$env:ARK_API_KEY = $ApiKey
-Write-Host "[OK] ARK_API_KEY 已设置（隐藏显示）" -ForegroundColor Green
 
 # ========================================
 # 2. 设置 JAVA_HOME 并校验
@@ -208,10 +237,12 @@ Write-Host "----------------------------------------" -ForegroundColor Cyan
 Write-Host ""
 
 # 使用数组传递 JVM 参数，避免 PowerShell 5 将 -Dfile.encoding=UTF-8 拆分为多个参数
+# 通过 --llm.provider 覆盖 application.yml 中的配置，实现启动时切换提供商
 $javaArgs = @(
     "-Dfile.encoding=UTF-8",
     "-jar",
     $JarPath,
-    "--spring.profiles.active=$Profile"
+    "--spring.profiles.active=$Profile",
+    "--llm.provider=$Provider"
 )
 & java @javaArgs

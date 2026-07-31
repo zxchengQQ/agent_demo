@@ -1,10 +1,11 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ThinkingStreamHandler;
+import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
 import com.agentdemo.llm.factory.ToolCall;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.model.output.TokenUsage;
 
 import java.util.List;
 
@@ -21,7 +22,7 @@ import java.util.List;
  */
 public class ArkThinkingTokenStream implements ThinkingTokenStream {
 
-    private final ArkThinkingStreamingChatModel model;
+    private final ThinkingStreamingChatModel model;
     private final List<ChatMessage> messages;
 
     private ThinkingConsumer thinkingConsumer;
@@ -35,7 +36,7 @@ public class ArkThinkingTokenStream implements ThinkingTokenStream {
     private ObservationConsumer observationConsumer;
     private FinalAnswerConsumer finalAnswerConsumer;
 
-    public ArkThinkingTokenStream(ArkThinkingStreamingChatModel model, List<ChatMessage> messages) {
+    public ArkThinkingTokenStream(ThinkingStreamingChatModel model, List<ChatMessage> messages) {
         this.model = model;
         this.messages = messages;
     }
@@ -113,10 +114,10 @@ public class ArkThinkingTokenStream implements ThinkingTokenStream {
                 }
             }
 
-            // 业务含义：适配 Task-02 新签名，finishReason 由 ArkThinkingStreamingChatModel 传入，
-            // 当前 ThinkingTokenStream 的 CompleteConsumer 仅消费 fullResponse，finishReason 暂不透传
+            // 业务含义：适配 Task-15 新签名，tokenUsage 由 ArkThinkingStreamingChatModel 传入，
+            // 当前 ThinkingTokenStream 的 CompleteConsumer 仅消费 fullResponse，tokenUsage 暂不透传
             @Override
-            public void onComplete(String fullResponse, String finishReason) {
+            public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
                 if (completeConsumer != null) {
                     completeConsumer.accept(fullResponse);
                 }

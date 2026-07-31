@@ -61,4 +61,12 @@ public final class ModelConstants {
      * 默认编程模型
      */
     public static final String DEFAULT_CODE_MODEL = MODEL_DOUBAO_SEED_2_CODE;
+
+    // ========== 阿里百炼模型常量 ==========
+
+    /** 阿里百炼 DeepSeek V4 Flash 模型（默认对话模型） */
+    public static final String MODEL_BAILIAN_DEEPSEEK_V4_FLASH = "deepseek-v4-flash";
+
+    /** 阿里百炼 Embedding 模型 */
+    public static final String MODEL_BAILIAN_EMBEDDING = "text-embedding-v4";
 }

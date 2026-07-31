@@ -328,6 +328,127 @@ export async function streamChat(
 }
 ```
 
+### 2.5 KnowledgeRetrieverTool 后端修改（CR-002 新增）
+
+**设计方案**：修改 `buildSourcePrefix` 方法签名，新增 `knowledgeBaseName` 参数，使来源前缀包含知识库名称，格式从 `来源: {fileName}` 变为 `来源: {知识库名}/{文件名}`。
+
+```java
+/**
+ * 从 TextSegment metadata 构建来源前缀（CR-002 修改）
+ * <p>
+ * 业务含义：检索结果中每个片段标注来源信息，包含知识库名和文件名，
+ * 前端据此解析来源信息并展示在"引用来源"条中。
+ * 格式：来源: {knowledgeBaseName}/{fileName} ({format}) {位置信息}
+ * </p>
+ *
+ * @param knowledgeBaseName 知识库名称（从 searchKnowledge 参数透传）
+ * @param segment 检索到的 TextSegment
+ * @return 来源前缀文本，无 fileName 元数据时返回 null
+ */
+private String buildSourcePrefix(String knowledgeBaseName, TextSegment segment) {
+    if (!segment.metadata().containsKey("fileName")) {
+        return null;
+    }
+
+    StringBuilder prefix = new StringBuilder("来源: ");
+    // CR-002: 添加知识库名称，格式为 {知识库名}/{文件名}
+    prefix.append(knowledgeBaseName).append("/").append(segment.metadata().getString("fileName"));
+
+    // 追加格式
+    if (segment.metadata().containsKey("format")) {
+        prefix.append(" (").append(segment.metadata().getString("format")).append(")");
+    }
+
+    // 追加位置信息
+    if (segment.metadata().containsKey("pageNumber")) {
+        prefix.append(" 第").append(segment.metadata().getString("pageNumber")).append("页");
+    } else if (segment.metadata().containsKey("headerText")) {
+        prefix.append(" 章节\"").append(segment.metadata().getString("headerText")).append("\"");
+    }
+
+    return prefix.toString();
+}
+```
+
+**调用点修改**（searchKnowledge 方法内）：
+
+```java
+// CR-002: 将 knowledgeBaseName 透传给 buildSourcePrefix
+String sourcePrefix = buildSourcePrefix(knowledgeBaseName, match.embedded());
+```
+
+**兼容性说明**：来源前缀格式变更（新增知识库名）不影响 Agent ReAct 循环，LLM 读取检索结果文本时自然兼容。前端通过正则解析 `来源: {知识库名}/{文件名}` 格式。
+
+### 2.6 前端类型修改（CR-002 新增）
+
+**新增 KnowledgeSource 接口**：
+
+```typescript
+/** 知识库来源信息（CR-002 新增） */
+export interface KnowledgeSource {
+    /** 知识库名称 */
+    knowledgeBaseName: string;
+    /** 文档文件名 */
+    fileName: string;
+}
+```
+
+**Message 接口新增字段**：
+
+```typescript
+export interface Message {
+    // ... 原有字段 ...
+    /** 知识库来源信息（CR-002 新增） */
+    knowledgeSources?: KnowledgeSource[];
+}
+```
+
+**StreamCallbacks 新增回调**：
+
+```typescript
+export interface StreamCallbacks {
+    // ... 原有回调 ...
+    /** 收到来源信息（CR-002 新增，observation 事件中解析） */
+    onSources?: (sources: KnowledgeSource[]) => void;
+}
+```
+
+### 2.7 SSE observation 事件来源解析（CR-002 新增）
+
+**设计方案**：在 `handleSseEvent` 的 `observation` 分支中，解析检索结果文本，提取 `来源: {知识库名}/{文件名}` 格式的来源信息，通过 `onSources` 回调通知调用方。
+
+```typescript
+case 'observation': {
+    try {
+        const parsed = JSON.parse(data);
+        callbacks.onObservation?.(parsed.result, parsed.iteration);
+
+        // CR-002: 从 observation 结果中解析来源信息
+        // 格式：来源: {知识库名}/{文件名}，可能包含多行来源
+        const sourceRegex = /来源: ([^\/\n]+)\/([^\s（(]+)/g;
+        const sources: KnowledgeSource[] = [];
+        let match;
+        while ((match = sourceRegex.exec(parsed.result)) !== null) {
+            sources.push({
+                knowledgeBaseName: match[1].trim(),
+                fileName: match[2].trim(),
+            });
+        }
+        if (sources.length > 0) {
+            callbacks.onSources?.(sources);
+        }
+    } catch {
+        // JSON 解析失败时静默跳过（容错）
+    }
+    break;
+}
+```
+
+**正则说明**：
+- `([^\/\n]+)` 匹配知识库名（不含 `/` 和换行）
+- `([^\s（(]+)` 匹配文件名（不含空格、中文括号、英文括号，因为后缀可能有格式和位置信息）
+- 全局匹配 `g` 标志确保提取所有来源条目
+
 ---
 
 ## 3. 数据库设计 (Database Schema)
@@ -712,6 +833,67 @@ function handleViewChunks(doc: DocumentInfo) {
 }
 ```
 
+### 4.9 知识库来源引用条（CR-002 新增）
+
+**设计方案**：在助手消息气泡底部显示折叠的"引用来源"条，点击展开查看具体来源列表。组件接收 `knowledgeSources` 数组，折叠时仅显示标题和数量，展开时列出每条来源。
+
+```vue
+<!-- KnowledgeSourceBar.vue 核心逻辑 -->
+<script setup lang="ts">
+import type { KnowledgeSource } from '@/types';
+import { ref, computed } from 'vue';
+
+const props = defineProps<{
+  sources: KnowledgeSource[];  // 来源列表
+}>();
+
+/** 引用条展开状态（默认折叠） */
+const isExpanded = ref(false);
+
+/** 引用条标题：显示引用数量 */
+const title = computed(() => `引用来源 (${props.sources.length})`);
+
+/** 切换展开/折叠 */
+function toggle() {
+  isExpanded.value = !isExpanded.value;
+}
+</script>
+
+<template>
+  <div class="source-bar">
+    <div class="source-header" @click="toggle">
+      <span class="source-icon">{{ isExpanded ? '▼' : '▶' }}</span>
+      <span class="source-title">{{ title }}</span>
+    </div>
+    <div v-if="isExpanded" class="source-list">
+      <div v-for="(source, idx) in props.sources" :key="idx" class="source-item">
+        <span class="source-kb">{{ source.knowledgeBaseName }}</span>
+        <span class="source-sep">/</span>
+        <span class="source-file">{{ source.fileName }}</span>
+      </div>
+    </div>
+  </div>
+</template>
+```
+
+**MessageItem 中的集成**：
+
+```vue
+<!-- MessageItem.vue 气泡底部新增 -->
+<KnowledgeSourceBar
+  v-if="props.message.role === 'assistant'
+    && props.message.knowledgeSources
+    && props.message.knowledgeSources.length > 0"
+  :sources="props.message.knowledgeSources"
+/>
+```
+
+**设计要点**：
+- 折叠时仅显示"引用来源 (N)"标题，不占额外空间
+- 展开时列出所有来源，每条显示 `{知识库名} / {文件名}`
+- `knowledgeSources` 为空或 undefined 时不渲染组件（AC-045）
+- 样式与 thinking-block / react-block 保持一致的折叠区块风格
+
 ---
 
 ## 5. 异常处理 (Error Handling)
@@ -739,6 +921,8 @@ function handleViewChunks(doc: DocumentInfo) {
 | 非已完成文档查看分块 | AC-040 | "查看分块"按钮不显示或禁用 | 无（视觉反馈） |
 | 分块数据为空 | AC-041 | 抽屉面板展示空状态提示 | "该文档无分块数据" |
 | 分块查询接口异常 | AC-042 | Toast 提示错误，不打开抽屉 | "网络异常，请稍后重试"或后端错误消息 |
+| 未使用知识库时无引用条 | AC-045 | knowledgeSources 为空/undefined 时 KnowledgeSourceBar 不渲染 | 无（视觉反馈） |
+| observation 事件来源解析失败 | - | 正则不匹配时静默跳过，不影响正常对话 | 无 |
 
 ---
 
@@ -806,6 +990,9 @@ function handleViewChunks(doc: DocumentInfo) {
 | AC-040 | 非已完成文档不可查看分块 | DocumentList handleViewChunks 状态判断 |
 | AC-041 | 无分块数据的空状态 | DocumentChunkDrawer 空状态分支 |
 | AC-042 | 分块查询接口异常 | request() 封装 catch + Toast + 关闭抽屉 |
+| AC-043 | 助手消息底部显示折叠引用条 | KnowledgeSourceBar.vue 组件 + MessageItem 集成 |
+| AC-044 | 展开引用来源详情 | KnowledgeSourceBar toggle() + 展开列表 |
+| AC-045 | 未使用知识库时不显示引用条 | v-if 条件渲染判断 knowledgeSources 非空 |
 
 ---
 
@@ -911,6 +1098,23 @@ function handleViewChunks(doc: DocumentInfo) {
 | `src/stores/rag.ts` | 新增 currentChunks state + loadDocumentChunks action |
 | `src/components/DocumentList.vue` | 新增"查看分块"按钮 + 集成 DocumentChunkDrawer |
 
+#### CR-002 增量文件变更
+
+**新增文件（1 个）**：
+
+| 文件路径 | 用途 |
+| :--- | :--- |
+| `src/components/KnowledgeSourceBar.vue` | 知识库来源引用条组件（折叠/展开） |
+
+**修改文件（4 个）**：
+
+| 文件路径 | 改动内容 |
+| :--- | :--- |
+| `agent-demo-rag/.../retriever/KnowledgeRetrieverTool.java` | buildSourcePrefix 新增 knowledgeBaseName 参数，来源格式变为 `{知识库名}/{文件名}` |
+| `src/types/index.ts` | 新增 KnowledgeSource 接口；Message 新增 knowledgeSources 字段；StreamCallbacks 新增 onSources 回调 |
+| `src/api/chat.ts` | observation 事件分支新增来源解析逻辑，提取来源信息后调用 onSources 回调 |
+| `src/components/MessageItem.vue` | 气泡底部集成 KnowledgeSourceBar 组件，条件渲染 |
+
 ---
 
 ## 变更日志 (Change Log)
@@ -929,3 +1133,12 @@ function handleViewChunks(doc: DocumentInfo) {
 - [修改] types/index.ts: 新增 DocumentChunk 类型
 - [修改] api/rag.ts: 新增 getDocumentChunks 函数
 - [修改] stores/rag.ts: 新增 currentChunks state + loadDocumentChunks action
+
+### CR-002: 对话知识库来源展示功能 (2026-07-30)
+**影响范围**: 后端（KnowledgeRetrieverTool 修改来源前缀格式）、前端（新增 KnowledgeSourceBar 组件、类型定义、SSE 解析、MessageItem 集成）
+**变更内容摘要**:
+- [修改] KnowledgeRetrieverTool.buildSourcePrefix(): 新增 knowledgeBaseName 参数，来源格式从 `来源: {fileName}` 变为 `来源: {知识库名}/{文件名}`
+- [新增] 前端类型: KnowledgeSource 接口、Message.knowledgeSources 字段、StreamCallbacks.onSources 回调
+- [修改] api/chat.ts: observation 事件分支新增正则解析来源信息，通过 onSources 回调通知
+- [新增] 前端组件: KnowledgeSourceBar.vue（折叠/展开引用来源条）
+- [修改] MessageItem.vue: 气泡底部集成 KnowledgeSourceBar，条件渲染（knowledgeSources 非空时显示）

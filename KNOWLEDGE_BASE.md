@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v1.5
-> **基线日期**：2026-07-28
+> **文档版本**：v2.1
+> **基线日期**：2026-07-31
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -31,7 +31,7 @@
 
 **AI Agent 示例项目 (agent-demo)** 是一套面向 AI 应用开发学习者的**企业级 Agent 能力演练平台**。系统基于 Java 17 + Spring Boot 3.2.5 + LangChain4j 1.17.2 构建后端，以**单 Agent 工具调用（ReAct 循环）**为基础，扩展多 Agent 协作、RAG 知识库问答、MCP 协议互通、有状态工作流编排等能力。
 
-LLM 提供商为**火山引擎方舟 Coding Plan**（按次计费，OpenAI 兼容协议）。
+LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**（按次计费，OpenAI 兼容协议），也可切换为**阿里百炼**（百炼大模型服务平台，OpenAI 兼容协议）。
 
 前端模块基于 **Vue 3 + Vite 5 + TypeScript 5 + Pinia 2** 构建，提供美观的**暗色科技风（Refined Dark Tech）** 对话界面，通过 SSE 流式接口与后端通信，使用浏览器 localStorage 持久化会话纪录。
 
@@ -68,7 +68,7 @@ LLM 提供商为**火山引擎方舟 Coding Plan**（按次计费，OpenAI 兼�
 | Web 接口 | ✅ 已实现 | REST 同步对话、SSE 流式对话、会话管理、Swagger 文档 |
 | 前端对话 | ✅ 已实现（v1） | Vue 3 对话框、SSE 流式逐字显示、localStorage 持久化、会话管理 UI |
 | 前端知识库管理 | ✅ 已实现 | 知识库 CRUD、文档上传/轮询/删除、对话知识库选择器、左右分栏管理页面 |
-| RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成 |
+| RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
 | MCP 协议 | 🚧 规划中 | MCP 工具集成、A2A 通信 |
 | 多 Agent 协作 | 🚧 规划中 | Sequential/Hierarchical 模式 |
 | 工作流编排 | 🚧 规划中 | 状态机、分支重试、Human-in-the-loop |
@@ -168,6 +168,8 @@ milvus.version=2.4.3               # 向量数据库 SDK（规划中）
 hutool.version=5.8.27              # 通用工具
 springdoc.version=2.5.0            # OpenAPI 文档
 pdfbox.version=3.0.3               # PDF 文档解析（RAG 模块）
+tabula.version=1.0.5               # PDF 表格提取（RAG 模块 CR-001）
+bytebuddy.version=1.14.19          # 运行时动态生成带 @Tool 注解的知识库工具类（RAG 模块 CR-003）
 
 # 构建
 maven.version=3.9+
@@ -175,6 +177,8 @@ project.version=1.0.0
 ```
 
 ### 3.2 LLM 提供商配置
+
+#### 火山引擎方舟（默认）
 
 | 配置项 | 值 |
 |--------|---|
@@ -184,8 +188,23 @@ project.version=1.0.0
 | 协议 | OpenAI 兼容 |
 | 默认模型 | `doubao-seed-2.0-code` |
 | API Key | 环境变量 `ARK_API_KEY` 注入 |
+| 切换配置 | `llm.provider: ark`（默认值） |
+
+#### 阿里百炼（可选）
+
+| 配置项 | 值 |
+|--------|---|
+| 提供商 | 阿里百炼（Alibaba Bailian） |
+| 接入方式 | OpenAI 兼容协议（`/compatible-mode/v1`） |
+| Base URL | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| 协议 | OpenAI 兼容 |
+| 默认模型 | `deepseek-v4-flash` |
+| API Key | 环境变量 `BAILIAN_API_KEY` 注入 |
+| 切换配置 | `llm.provider: bailian` |
 
 ### 3.3 支持的 LLM 模型清单
+
+#### 火山引擎方舟模型
 
 | 模型 | Model Name | 场景 | 状态 |
 |------|-----------|------|------|
@@ -198,6 +217,13 @@ project.version=1.0.0
 | DeepSeek V4 Pro | `deepseek-v4-pro` | 推理任务 | 🚧 常量已定义 |
 | 自动模式 | `ark-code-latest` | 效果+速度智能选择 | 🚧 常量已定义 |
 | 豆包 Embedding | `doubao-embedding-large-text-240915` | RAG 向量化 | ✅ |
+
+#### 阿里百炼模型
+
+| 模型 | Model Name | 场景 | 状态 |
+|------|-----------|------|------|
+| DeepSeek V4 Flash | `deepseek-v4-flash` | 通用对话（默认） | ✅ |
+| 阿里百炼 Embedding | `text-embedding-v4` | RAG 向量化 | ✅ |
 
 ### 3.4 前端技术栈
 
@@ -255,7 +281,8 @@ agent-demo/
 ├── agent-demo-llm/                      # LLM 接入层（火山引擎适配 + 模型工厂）
 ├── agent-demo-tools/                    # 工具集（内置工具 + 注册中心）
 ├── agent-demo-memory/                   # 记忆模块（短期记忆 + 会话管理）
-├── agent-demo-rag/                      # RAG 模块（知识库问答：文档解析、分块、向量化、检索、Agent 工具集成）
+├── agent-demo-rag/                      # RAG 模块（知识库问答：向量化、检索、CR-003 动态 Tool 注册，解析/分割已迁移至 splitter 模块）
+├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（规划中，空模块）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
 ├── agent-demo-app/                      # 应用编排层（规划中，空模块）
@@ -290,7 +317,8 @@ agent-demo/
 | `agent-demo-llm` | common |
 | `agent-demo-tools` | common |
 | `agent-demo-memory` | common, llm |
-| `agent-demo-rag` | common, llm |
+| `agent-demo-rag` | common, llm, splitter |
+| `agent-demo-splitter` | common |
 | `agent-demo-mcp` | common, tools（规划中） |
 | `agent-demo-agent` | common, llm, tools, memory |
 | `agent-demo-app` | agent, rag, mcp（规划中） |
@@ -313,8 +341,8 @@ agent-demo-agent/
 
 ```
 agent-demo-llm/
-├── config/                # ArkProperties / LlmConfig（含 thinking-default-enabled CR-001 新增）
-└── factory/               # ModelFactory（模型工厂，含 getThinkingStreamingChatModel CR-001 新增）
+├── config/                # ArkProperties / LlmProperties / BailianProperties / LlmProvider / LlmConfig（含 thinking-default-enabled CR-001 新增）
+└── factory/               # ModelFactory（模型工厂，含多提供商路由逻辑，getThinkingStreamingChatModel CR-001 新增）
                            # ArkThinkingStreamingChatModel（自定义思考流式模型，CR-001 新增）
                            # ThinkingStreamHandler（思考流式回调接口，CR-001 新增）
 ```
@@ -342,13 +370,32 @@ agent-demo-memory/
 ```
 agent-demo-rag/
 ├── config/                # RagProperties（配置属性绑定）+ RagAsyncConfig（异步线程池 @EnableAsync）
-├── entity/                # DocumentStatus / KnowledgeBase / DocumentInfo
+├── entity/                # DocumentStatus / KnowledgeBase / DocumentInfo / DocumentChunk（含 tokenCount + metadata 字段，CR-002 新增 metadata）
 ├── store/                 # KnowledgeBaseStore + InMemoryKnowledgeBaseStore（知识库元数据）
 │                          # DocumentStore + InMemoryDocumentStore（文档元数据）
 │                          # EmbeddingStoreFactory（向量存储工厂，可切换 InMemory/Milvus）
-├── loader/                # DocumentLoader（文档解析：txt/md/pdf，PDFBox 3.x）
-├── service/               # KnowledgeBaseService（创建/列表/级联删除）+ DocumentService（上传/@Async处理/状态/删除）
-└── retriever/             # KnowledgeRetrieverTool（@Tool 知识库检索工具，Agent 自主调用）
+├── service/               # KnowledgeBaseService（创建/列表/级联删除）+ DocumentService（上传/@Async处理/状态/删除，调用 DocumentSplitterRegistry 分割，CR-002 新增 metadata 提取存入 DocumentChunk）
+└── retriever/             # KnowledgeRetrieverTool（CR-003 后为核心检索逻辑，原 @Tool 入口废弃；CR-002 新增来源元数据注入检索结果）
+                           # KnowledgeBaseToolFactory（CR-003 新增：ByteBuddy 动态生成带 @Tool 注解的知识库工具类）
+                           # KnowledgeBaseToolRegistrar（CR-003 新增：ApplicationRunner 启动批量注册 + create/delete 生命周期联动）
+```
+
+**agent-demo-splitter**（文档分割）：
+
+```
+agent-demo-splitter/
+├── config/                # SplitterProperties（按文件类型配置 size/overlap/minSize，前缀 rag.splitter）
+├── loader/                # DocumentLoader（文档解析：txt/md/pdf，PDFBox 3.x，返回 ParsedDocument）
+│                          # ParsedDocument / DocumentSection（解析结果数据结构，PDF 按页提取）
+├── splitter/              # TypedDocumentSplitter（分割器接口）
+│                          # DocumentSplitterRegistry（按格式路由 + 回退通用分割器 + 注入 fileName 元数据 CR-002）
+│                          # MarkdownDocumentSplitter（MD 专属：commonmark-java AST 按标题分割 + 代码块/表格原子保护）
+│                          # PdfDocumentSplitter（PDF 专属：按页分割 + 页码元数据）
+│                          # TxtDocumentSplitter（TXT 专属：多级递归切分）
+│                          # GenericDocumentSplitter（通用回退分割器）
+│                          # util/CascadeSplitter（多级级联切分：段落->句子->行->Token滑动窗口，仅切分不合并）
+│                          # util/ChunkMerger（分割后合并过短块：全局合并 + 按 metadata key 分组合并，CR-001 新增）
+└── tokenizer/             # SplitterTokenEstimator（分割用 Token 估算器，委托 SimpleTokenEstimator）
 ```
 
 **agent-demo-web**（Web 接口）：
@@ -504,7 +551,9 @@ flowchart TD
 
 ### 5.6 模型场景路由框架
 
-> **数据来源**：`ModelFactory.java`、`ArkProperties.java`
+> **数据来源**：`ModelFactory.java`、`ArkProperties.java`、`BailianProperties.java`
+
+#### 火山引擎方舟场景路由
 
 | 场景标识 | 模型 | 适用场景 |
 |---------|------|---------|
@@ -513,9 +562,19 @@ flowchart TD
 | `lite` | doubao-seed-2.0-lite | 轻量快速场景 |
 | Embedding | doubao-embedding-large-text-240915 | RAG 向量化 |
 
-- **路由方式**：`ModelFactory.getChatModel(scene)` 按场景查找
-- **回退策略**：未命中场景配置时回退到 `default-model`
-- **缓存策略**：模型实例线程安全，ConcurrentHashMap 缓存复用
+#### 阿里百炼场景路由
+
+| 场景标识 | 模型 | 适用场景 |
+|---------|------|---------|
+| `chat`（默认） | deepseek-v4-flash | 通用对话 |
+| `code` | deepseek-v4-flash | 编程任务 |
+| `lite` | deepseek-v4-flash | 轻量快速场景 |
+| Embedding | text-embedding-v4 | RAG 向量化 |
+
+- **提供商切换**：通过 `llm.provider` 配置项切换（`ark` | `bailian`），默认 `ark`
+- **路由方式**：`ModelFactory.getChatModel(scene)` 根据当前提供商路由到对应配置源
+- **回退策略**：未命中场景配置时回退到对应提供商的 `default-model`
+- **缓存策略**：模型实例线程安全，ConcurrentHashMap 缓存复用，与提供商无关
 
 ### 5.8 前端 SSE 流式对话流程
 
@@ -889,8 +948,8 @@ CREATE TABLE `agent_{name}` (
 
 | 安全场景 | 机制 | 实现类 |
 |----------|------|--------|
-| API Key 保护 | 环境变量 `${ARK_API_KEY}` 注入，禁止入库/日志 | ArkProperties |
-| API Key 校验 | 创建模型前校验非空 | ModelFactory.validateApiKey() |
+| API Key 保护 | 环境变量 `${ARK_API_KEY}` 或 `${BAILIAN_API_KEY}` 注入，禁止入库/日志 | ArkProperties / BailianProperties |
+| API Key 校验 | 创建模型前根据当前提供商校验对应 API Key 非空 | ModelFactory.validateArkApiKey() / validateBailianApiKey() |
 | HTTP 工具 SSRF 防护 | 禁止访问内网地址（10./172.16-31./192.168./127./localhost） | HttpTool.validateUrl() |
 | HTTP 响应截断 | 超过 10KB 截断，防止 Token 消耗过大 | HttpTool.truncateResponse() |
 | 文件读取目录限制 | `agent.file-allowed-dir` 白名单（默认 `./data`） | FileReadTool |
@@ -919,6 +978,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 实体 | 字段 | 保护方式 | 说明 |
 |------|------|---------|------|
 | ArkProperties | apiKey | 环境变量注入 | 禁止入库/日志 |
+| BailianProperties | apiKey | 环境变量注入 | 禁止入库/日志 |
 | ChatModel | apiKey | 环境变量注入 | 禁止入库/日志 |
 | ChatRequest | message | 日志脱敏（截断） | 不打印完整明文 |
 | SessionMetadata | userId | - | 用户标识 |
@@ -951,6 +1011,12 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5 | BR-LLM-005 | 调用超时时间默认 60s | LLM 接入 | ⚪ 可覆盖 |
 | 6 | BR-LLM-006 | 最大重试次数默认 3 次 | LLM 接入 | ⚪ 可覆盖 |
 | 7 | BR-LLM-007 | 思考模式（thinking.enabled）必须通过自定义 ArkThinkingStreamingChatModel 直连方舟 API，不走 LangChain4j openai4j（因 openai4j 不透传 reasoning_content） | LLM 接入 | 🔴 强制 |
+| 8 | BR-LLM-008 | LLM 提供商通过 `llm.provider` 配置项切换（`ark` / `bailian`），默认值为 `ark` | LLM 接入 | 🔴 强制 |
+| 9 | BR-LLM-009 | 阿里百炼 API Key 必须通过环境变量 `BAILIAN_API_KEY` 注入，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
+| 10 | BR-LLM-010 | 切换提供商后只校验当前提供商的 API Key，未激活的提供商不校验 | LLM 接入 | 🔴 强制 |
+| 11 | BR-LLM-011 | 阿里百炼必须使用 OpenAI 兼容协议地址 `/compatible-mode/v1` | LLM 接入 | 🔴 强制 |
+| 12 | BR-LLM-012 | 阿里百炼模式暂不支持深度思考（`getThinkingStreamingChatModel()` 抛出 UnsupportedOperationException） | LLM 接入 | 🔴 强制 |
+| 13 | BR-LLM-013 | Embedding 模型跟随提供商切换：ARK 使用 `doubao-embedding-vision`，BAILIAN 使用 `text-embedding-v4` | LLM 接入 | 🔴 强制 |
 
 ### 9.2 Agent 编排规则
 
@@ -1011,10 +1077,16 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 37 | BR-RAG-008 | 检索结果最多返回 5 个最相关文档片段，按相似度降序排列 | RAG 知识库 | ⚪ 可覆盖 |
 | 38 | BR-RAG-009 | 删除知识库时级联删除其下所有文档记录和向量数据 | RAG 知识库 | 🔴 强制 |
 | 39 | BR-RAG-010 | 删除文档时同步删除该文档对应的所有向量数据 | RAG 知识库 | 🔴 强制 |
-| 40 | BR-RAG-011 | Agent 通过工具集成方式检索知识库，Agent 自主选择目标知识库 | RAG 知识库 | 🔴 强制 |
+| 40 | BR-RAG-011 | 每个知识库独立注册为 @Tool（CR-003 动态 Tool 模式），Agent 通过 Function Calling 选择具体知识库工具，LLM 无需传递知识库名称参数 | RAG 知识库 | 🔴 强制 |
 | 41 | BR-RAG-012 | 向量数据库不可用时检索工具返回错误提示，不导致 Agent 对话中断 | RAG 知识库 | 🔴 强制 |
 | 42 | BR-RAG-013 | 文档向量化时 Embeddings API 单次输入上限为 10 个文本片段，超出时必须分批调用（batchEmbed，每批 10 条），避免 InvalidParameter 错误 | RAG 知识库 | 🔴 强制 |
 | 43 | BR-RAG-014 | 对话知识库集成采用提示词注入方案：用户指定知识库时，将知识库名称注入用户消息末尾引导 LLM 检索；不指定时 Agent 自主决策（零回归） | RAG 知识库 | 🔴 强制 |
+| 44 | BR-RAG-015 | 第一轮分割后对过短分块执行合并后处理：低于 minSize 的分块与同组（同页/同节/全局）相邻分块合并，合并后不超过 maxSize，最终结果中不存在低于 minSize 的碎片块（最后一个分块除外） | RAG 知识库 | 🔴 强制 |
+| 45 | BR-RAG-016 | 合并时遵守结构边界约束：PDF 不跨页合并（按 pageNumber 分组），Markdown 不跨标题节合并（按 headerText 分组），TXT/Generic 全局合并 | RAG 知识库 | 🔴 强制 |
+| 46 | BR-RAG-017 | 每种文件类型可独立配置 minSize 参数（最小分块大小），未配置时默认为 size 的 50% | RAG 知识库 | ⚪ 可覆盖 |
+| 47 | BR-RAG-018 | PDF 文档解析支持表格结构提取（tabula-java），表格内容转换为 Markdown 格式保留行列关系，无表格区域回退纯文本提取（CR-001） | RAG 知识库 | 🔴 强制 |
+| 48 | BR-RAG-019 | 分块数据携带来源元数据（fileName、format、pageNumber/headerText），检索结果中包含来源信息，Agent 回答时可引用文档来源（CR-002） | RAG 知识库 | 🔴 强制 |
+| 49 | BR-RAG-020 | 系统启动时自动批量注册所有已有知识库的动态 Tool，确保 Agent 在首次对话前所有知识库工具已就绪（CR-003） | RAG 知识库 | 🔴 强制 |
 
 ### 9.7 前端对话模块规则
 
@@ -1107,7 +1179,8 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 
 | 变量名 | 必填 | 说明 |
 |--------|------|------|
-| `ARK_API_KEY` | ✅ 是 | 火山引擎方舟 API Key，禁止入库 |
+| `ARK_API_KEY` | 仅 `llm.provider: ark` 时 | 火山引擎方舟 API Key，禁止入库 |
+| `BAILIAN_API_KEY` | 仅 `llm.provider: bailian` 时 | 阿里百炼 API Key，禁止入库 |
 
 ### 10.3 多环境配置
 
@@ -1142,9 +1215,23 @@ rag:
     max-size: 10MB                      # 单个文档大小上限
     supported-formats: txt,md,pdf       # 支持的文档格式
     temp-dir: ./data/rag/temp           # 临时文件目录
-  chunk:
-    size: 1000                          # 分块大小（token 数）
-    overlap: 200                        # 分块重叠（token 数）
+  splitter:                             # 文档分割配置（按文件类型独立配置 size/overlap/minSize，单位 Token 数）
+    default-config:
+      size: 1000
+      overlap: 200
+      min-size: 500                     # 最小分块大小，低于此值触发合并（CR-001 新增）
+    md:
+      size: 800
+      overlap: 150
+      min-size: 400
+    pdf:
+      size: 1200
+      overlap: 200
+      min-size: 600
+    txt:
+      size: 1000
+      overlap: 200
+      min-size: 500
   retrieval:
     max-results: 5                      # 检索返回最大片段数
     min-score: 0.0                      # 最小相似度阈值
@@ -1152,6 +1239,10 @@ rag:
     host: ${MILVUS_HOST:localhost}
     port: ${MILVUS_PORT:19530}
     collection-name: agent_demo_rag
+
+# LLM 提供商选择
+llm:
+  provider: ark                    # 提供商切换：ark | bailian（默认 ark）
 
 # 火山引擎配置
 ark:
@@ -1166,6 +1257,20 @@ ark:
     timeout: 60s
     max-retries: 3
     temperature: 0.7
+
+# 阿里百炼配置（当 llm.provider: bailian 时生效）
+bailian:
+  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api-key: ${BAILIAN_API_KEY}
+  default-model: deepseek-v4-flash
+  models:
+    chat: deepseek-v4-flash
+    code: deepseek-v4-flash
+    lite: deepseek-v4-flash
+  timeout: 60s
+  max-retries: 3
+  temperature: 0.7
+  embedding-model: text-embedding-v4
 
 # 服务器配置
 server:
@@ -1348,7 +1453,8 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | `java: error: release version 17 not supported` | JDK 版本低于 17 | 安装 OpenJDK 17+，IDE 配置 JDK 17 |
 | `cannot find symbol class Tool` | 未引入 langchain4j 依赖 | 检查 `agent-demo-tools/pom.xml` 是否引入 `langchain4j` |
 | `ARK_API_KEY 未配置` | 环境变量未设置 | 设置 `ARK_API_KEY` 环境变量后重启 |
-| `LLM API Key 无效` (5004) | API Key 错误或过期 | 检查火山引擎控制台 API Key 状态 |
+| `BAILIAN_API_KEY 未配置` | 环境变量未设置或 `llm.provider` 切换为 bailian 时未配置 | 设置 `BAILIAN_API_KEY` 环境变量后重启 |
+| `LLM API Key 无效` (5004) | API Key 错误或过期 | 检查火山引擎/阿里百炼控制台 API Key 状态 |
 | `端口 8080 被占用` | 端口冲突 | 修改 `application.yml` 的 `server.port` |
 | `循环依赖` 错误 | 构造函数中调用了懒加载方法 | 确认 SimpleAgent/ToolRegistry 使用懒加载模式 |
 
@@ -1474,6 +1580,12 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v1.3 | 2026-07-23 | 深度思考模式优化 CR-001（动态工具声明）：ToolSchemaConverter 新增 convertToDescriptionText() 方法动态生成工具描述；AgentConfig.thinkingReactSystemPrompt 移除硬编码工具描述；SimpleAgent.buildReActMessagesWithMemory() 动态拼接工具描述到系统提示词；新增 BR-THINK-002 业务规则（工具描述动态生成，不硬编码）；更新 4.3 节工程结构（tools/registry 新增 ToolSchemaConverter，agent/config 新增 thinkingReactSystemPrompt） |
 | v1.4 | 2026-07-24 | RAG 知识库问答模块完整实现：agent-demo-rag 从空模块变为完整实现（20 个源文件）；新增知识库管理（创建/列表/级联删除）、文档管理（上传/异步处理/状态查询/删除）、文档解析（txt/md/pdf，PDFBox 3.x）、向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore）、Agent 工具集成（KnowledgeRetrieverTool @Tool）；新增 12 条 RAG 业务规则（BR-RAG-001~012）；新增 7 个错误码（5303-5309）；新增 7 个 REST API（/api/rag/*）；新增 pdfbox 3.0.3 依赖；新增 rag.* 配置段；更新能力矩阵 RAG 状态为已实现；更新工程结构/模块依赖/模块分层；web 模块新增 rag 依赖 |
 | v1.5 | 2026-07-28 | RAG 知识库前端管理界面完整实现：新增 9 个前端组件（NavBar/KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList/DocumentUploader/KnowledgeBaseSelector）+ 1 个 API 封装（rag.ts）+ 1 个 Pinia Store（rag.ts）；修改 App.vue（条件渲染切换对话/知识库页面）、ChatWindow/MessageInput（知识库选择器集成）、session.ts（会话级知识库选择状态）、chat.ts（streamChat 新增 knowledgeBases 参数）；后端 ChatRequest 新增 knowledgeBases 字段、AgentController 提示词注入（3 处调用点）；新增 10 条前端知识库管理规则（BR-RAG-FE-001~010）；新增 2 条 RAG 规则（BR-RAG-013 批量向量化约束、BR-RAG-014 提示词注入方案）；修复向量化 API input limit 问题（batchEmbed 每批 10 条）；更新能力矩阵新增前端知识库管理能力；更新工程结构/前端模块目录 |
+| v1.6 | 2026-07-29 | 文档分割模块化与Token展示 + CR-001 分割后合并过短块：新增 agent-demo-splitter 模块（从 RAG 模块抽取文档解析/分割为独立模块）；新增 DocumentLoader/ParsedDocument（文档解析）、TypedDocumentSplitter/DocumentSplitterRegistry（分割器路由）、MarkdownDocumentSplitter/PdfDocumentSplitter/TxtDocumentSplitter/GenericDocumentSplitter（专属分割器）、CascadeSplitter（多级级联切分）、ChunkMerger（分割后合并过短块，CR-001 新增）、SplitterTokenEstimator（Token 估算）；CascadeSplitter 职责分离（仅切分，合并迁移至 ChunkMerger）；ChunkMerger 支持全局合并 + 按 metadata key 分组合并（PDF 不跨页、MD 不跨节）；SplitterProperties 按文件类型配置 size/overlap/minSize；新增 3 条 RAG 业务规则（BR-RAG-015~017）；更新工程结构/模块依赖/模块分层；更新 rag.splitter 配置段 |
+| v1.7 | 2026-07-30 | CR-001 PDF 表格解析优化：新增 tabula-java 1.0.5 依赖；DocumentLoader.parsePdf() 重构为混合提取策略（tabula-java 表格 + PDFBox 纯文本）；新增 extractTablesAsMarkdown() 方法；新增 3 条 AC（AC-028/029/030）；新增 BR-RAG-018 业务规则 |
+| v1.8 | 2026-07-30 | CR-002 分块数据携带文件元数据：DocumentChunk 新增 metadata 字段（Map<String, String>）；DocumentSplitterRegistry.split() 新增 fileName 参数 + enrichMetadata() 注入 fileName；DocumentService 保存 DocumentChunk 时从 TextSegment.metadata 提取来源元数据；KnowledgeRetrieverTool 新增 buildSourcePrefix() 方法，检索结果注入"来源: 文件名 (格式) 页码/章节"前缀；新增 2 条 AC（AC-031/032）；新增 BR-RAG-019 业务规则 |
+| v1.9 | 2026-07-30 | 多 LLM 提供商支持（阿里百炼）：新增 LlmProvider 枚举（ARK/BAILIAN）、LlmProperties（llm.provider 配置绑定）、BailianProperties（bailian.* 配置绑定）；ModelFactory 新增提供商路由逻辑（if-else 根据 provider 切换配置源）；新增支持阿里百炼同步对话、流式对话、Embedding 模型；API Key 隔离校验（各验各的）；Embedding 模型跟随提供商切换；新增 6 条 LLM 业务规则（BR-LLM-008~013）；更新 3.2 节 LLM 提供商配置表、3.3 节模型清单、5.6 节场景路由框架、10.2 节环境变量、10.4 节关键配置项 |
+| v2.0 | 2026-07-31 | CR-003 知识库动态 Tool 注册：新增 KnowledgeBaseToolFactory（CGLIB 动态代理生成 @Tool Bean）、KnowledgeBaseToolRegistrar（启动批量注册 + 生命周期管理）；KnowledgeRetrieverTool 从 @Tool 改为 @Component，新增 searchByKbId(kbId, query) 方法；ToolRegistry 新增 register/unregisterTool 方法支持动态 Tool；KnowledgeBaseService.create()/delete() 联动 Tool 注册/注销；新增 3 条 AC（AC-033/034/035）；更新 BR-RAG-011（动态 Tool 模式）、新增 BR-RAG-020（启动批量注册）；技术决策 1/9/10 更新；更新 RAG 模块描述为"动态 Tool 注册，每个知识库独立 Tool" |
+| v2.1 | 2026-07-31 | CR-003 实现细节修正：KnowledgeBaseToolFactory 从 CGLIB 改为 ByteBuddy 1.14.19，在生成方法上直接写入 @Tool 注解以被 LangChain4j ToolSpecifications 识别；SimpleAgent 增加 lastToolCount 检测，Tool 数量变化后重建 delegate 绑定最新工具；agent-demo-rag 新增对 agent-demo-tools 依赖；更新 KNOWLEDGE_BASE.md 技术栈与模块描述 |
 
 ---
 

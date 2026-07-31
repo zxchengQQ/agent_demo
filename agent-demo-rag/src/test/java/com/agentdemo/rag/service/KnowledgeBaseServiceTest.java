@@ -5,6 +5,7 @@ import com.agentdemo.common.exception.ErrorCode;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.DocumentStatus;
 import com.agentdemo.rag.entity.KnowledgeBase;
+import com.agentdemo.rag.retriever.KnowledgeBaseToolRegistrar;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
@@ -55,6 +56,9 @@ class KnowledgeBaseServiceTest {
     @Mock
     private EmbeddingStore<TextSegment> embeddingStore;
 
+    @Mock
+    private KnowledgeBaseToolRegistrar toolRegistrar;
+
     @InjectMocks
     private KnowledgeBaseService knowledgeBaseService;
 
@@ -72,6 +76,7 @@ class KnowledgeBaseServiceTest {
         assertEquals(0, result.getDocumentCount(), "新建知识库文档数应为 0");
         assertNotNull(result.getCreateTime(), "创建时间不应为 null");
         verify(knowledgeBaseStore).save(any(KnowledgeBase.class));
+        verify(toolRegistrar).registerToolForKb(result);
     }
 
     @Test
@@ -86,6 +91,7 @@ class KnowledgeBaseServiceTest {
 
         assertEquals(ErrorCode.RAG_KNOWLEDGE_BASE_NAME_EXISTS, ex.getErrorCode());
         verify(knowledgeBaseStore, never()).save(any(KnowledgeBase.class));
+        verify(toolRegistrar, never()).registerToolForKb(any());
     }
 
     @Test
@@ -110,6 +116,7 @@ class KnowledgeBaseServiceTest {
 
         assertEquals(ErrorCode.RAG_KNOWLEDGE_BASE_NOT_FOUND, ex.getErrorCode());
         verify(knowledgeBaseStore, never()).delete(anyString());
+        verify(toolRegistrar, never()).unregisterToolForKb(anyString());
     }
 
     @Test
@@ -140,6 +147,9 @@ class KnowledgeBaseServiceTest {
 
         // 验证：删除知识库记录
         verify(knowledgeBaseStore).delete(kbId);
+
+        // 验证：CR-003 删除前注销对应 Tool
+        verify(toolRegistrar).unregisterToolForKb(kbId);
     }
 
     @Test
@@ -161,6 +171,8 @@ class KnowledgeBaseServiceTest {
         verify(embeddingStore, never()).removeAll(any(Filter.class));
         // 仍删除知识库记录
         verify(knowledgeBaseStore).delete(kbId);
+        // 验证：CR-003 删除前注销对应 Tool
+        verify(toolRegistrar).unregisterToolForKb(kbId);
     }
 
     /**

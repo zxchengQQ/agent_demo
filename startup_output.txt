@@ -1,0 +1,96 @@
+﻿[INFO] Scanning for projects...
+[INFO] 
+[INFO] -----------------< com.agentdemo:agent-demo-bootstrap >-----------------
+[INFO] Building agent-demo-bootstrap 1.0.0
+[INFO]   from pom.xml
+[INFO] --------------------------------[ jar ]---------------------------------
+[INFO] 
+[INFO] >>> spring-boot:3.2.5:run (default-cli) > test-compile @ agent-demo-bootstrap >>>
+[INFO] 
+[INFO] --- resources:3.3.1:resources (default-resources) @ agent-demo-bootstrap ---
+[INFO] Copying 3 resources from src\main\resources to target\classes
+[INFO] Copying 4 resources from src\main\resources to target\classes
+[INFO] 
+[INFO] --- compiler:3.11.0:compile (default-compile) @ agent-demo-bootstrap ---
+[INFO] Nothing to compile - all classes are up to date
+[INFO] 
+[INFO] --- resources:3.3.1:testResources (default-testResources) @ agent-demo-bootstrap ---
+[INFO] skip non existing resourceDirectory D:\project_demo\agent_demo\agent-demo-bootstrap\src\test\resources
+[INFO] 
+[INFO] --- compiler:3.11.0:testCompile (default-testCompile) @ agent-demo-bootstrap ---
+[INFO] No sources to compile
+[INFO] 
+[INFO] <<< spring-boot:3.2.5:run (default-cli) < test-compile @ agent-demo-bootstrap <<<
+[INFO] 
+[INFO] 
+[INFO] --- spring-boot:3.2.5:run (default-cli) @ agent-demo-bootstrap ---
+[INFO] Attaching agents: []
+15:41:43,435 |-INFO in ch.qos.logback.classic.LoggerContext[default] - This is logback-classic version 1.4.14
+15:41:43,468 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Here is a list of configurators discovered as a service, by rank: 
+15:41:43,468 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 -   org.springframework.boot.logging.logback.RootLogLevelConfigurator
+15:41:43,468 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - They will be invoked in order until ExecutionStatus.DO_NOT_INVOKE_NEXT_IF_ANY is returned.
+15:41:43,468 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Constructed configurator of type class org.springframework.boot.logging.logback.RootLogLevelConfigurator
+15:41:43,483 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - org.springframework.boot.logging.logback.RootLogLevelConfigurator.configure() call lasted 0 milliseconds. ExecutionStatus=INVOKE_NEXT_IF_ANY
+15:41:43,483 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Trying to configure with ch.qos.logback.classic.joran.SerializedModelConfigurator
+15:41:43,485 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Constructed configurator of type class ch.qos.logback.classic.joran.SerializedModelConfigurator
+15:41:43,491 |-INFO in ch.qos.logback.classic.LoggerContext[default] - Could NOT find resource [logback-test.scmo]
+15:41:43,492 |-INFO in ch.qos.logback.classic.LoggerContext[default] - Could NOT find resource [logback.scmo]
+15:41:43,492 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - ch.qos.logback.classic.joran.SerializedModelConfigurator.configure() call lasted 7 milliseconds. ExecutionStatus=INVOKE_NEXT_IF_ANY
+15:41:43,492 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Trying to configure with ch.qos.logback.classic.util.DefaultJoranConfigurator
+15:41:43,493 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Constructed configurator of type class ch.qos.logback.classic.util.DefaultJoranConfigurator
+15:41:43,495 |-INFO in ch.qos.logback.classic.LoggerContext[default] - Could NOT find resource [logback-test.xml]
+15:41:43,495 |-INFO in ch.qos.logback.classic.LoggerContext[default] - Could NOT find resource [logback.xml]
+15:41:43,495 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - ch.qos.logback.classic.util.DefaultJoranConfigurator.configure() call lasted 2 milliseconds. ExecutionStatus=INVOKE_NEXT_IF_ANY
+15:41:43,495 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Trying to configure with ch.qos.logback.classic.BasicConfigurator
+15:41:43,497 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - Constructed configurator of type class ch.qos.logback.classic.BasicConfigurator
+15:41:43,497 |-INFO in ch.qos.logback.classic.BasicConfigurator@2374d36a - Setting up default configuration.
+15:41:43,638 |-INFO in ch.qos.logback.classic.util.ContextInitializer@5a411614 - ch.qos.logback.classic.BasicConfigurator.configure() call lasted 141 milliseconds. ExecutionStatus=NEUTRAL
+15:41:47,797 |-INFO in ch.qos.logback.core.model.processor.AppenderModelHandler - Processing appender named [CONSOLE]
+15:41:47,797 |-INFO in ch.qos.logback.core.model.processor.AppenderModelHandler - About to instantiate appender of type [ch.qos.logback.core.ConsoleAppender]
+15:41:47,800 |-INFO in ch.qos.logback.core.model.processor.ImplicitModelHandler - Assuming default type [ch.qos.logback.classic.encoder.PatternLayoutEncoder] for [encoder] property
+15:41:47,909 |-INFO in ch.qos.logback.core.model.processor.AppenderModelHandler - Processing appender named [FILE]
+15:41:47,909 |-INFO in ch.qos.logback.core.model.processor.AppenderModelHandler - About to instantiate appender of type [ch.qos.logback.core.rolling.RollingFileAppender]
+15:41:47,918 |-INFO in c.q.l.core.rolling.TimeBasedRollingPolicy@1423016050 - setting totalSizeCap to 1 GB
+15:41:47,920 |-INFO in c.q.l.core.rolling.TimeBasedRollingPolicy@1423016050 - No compression will be used
+15:41:47,920 |-INFO in c.q.l.core.rolling.TimeBasedRollingPolicy@1423016050 - Will use the pattern ./logs/agent-demo.%d{yyyy-MM-dd}.log for the active file
+15:41:47,932 |-INFO in c.q.l.core.rolling.DefaultTimeBasedFileNamingAndTriggeringPolicy - The date pattern is 'yyyy-MM-dd' from file name pattern './logs/agent-demo.%d{yyyy-MM-dd}.log'.
+15:41:47,932 |-INFO in c.q.l.core.rolling.DefaultTimeBasedFileNamingAndTriggeringPolicy - Roll-over at midnight.
+15:41:47,974 |-INFO in c.q.l.core.rolling.DefaultTimeBasedFileNamingAndTriggeringPolicy - Setting initial period to 2026-07-29T07:34:07.978Z
+15:41:47,975 |-INFO in ch.qos.logback.core.model.processor.ImplicitModelHandler - Assuming default type [ch.qos.logback.classic.encoder.PatternLayoutEncoder] for [encoder] property
+15:41:47,980 |-INFO in ch.qos.logback.core.rolling.RollingFileAppender[FILE] - Active log file name: ./logs/agent-demo.log
+15:41:47,980 |-INFO in ch.qos.logback.core.rolling.RollingFileAppender[FILE] - File property is set to [./logs/agent-demo.log]
+15:41:47,981 |-WARN in ch.qos.logback.core.model.processor.AppenderModelHandler - Appender named [LLM_FILE] not referenced. Skipping further processing.
+15:41:47,981 |-INFO in ch.qos.logback.classic.model.processor.RootLoggerModelHandler - Setting level of ROOT logger to INFO
+15:41:47,981 |-INFO in ch.qos.logback.classic.jul.LevelChangePropagator@1506f20f - Propagating INFO level on Logger[ROOT] onto the JUL framework
+15:41:47,982 |-INFO in ch.qos.logback.core.model.processor.AppenderRefModelHandler - Attaching appender named [CONSOLE] to Logger[ROOT]
+15:41:47,982 |-INFO in ch.qos.logback.core.model.processor.AppenderRefModelHandler - Attaching appender named [FILE] to Logger[ROOT]
+15:41:47,982 |-INFO in ch.qos.logback.classic.model.processor.LoggerModelHandler - Setting level of logger [com.agentdemo] to DEBUG
+15:41:47,982 |-INFO in ch.qos.logback.classic.jul.LevelChangePropagator@1506f20f - Propagating DEBUG level on Logger[com.agentdemo] onto the JUL framework
+15:41:47,982 |-INFO in ch.qos.logback.classic.model.processor.LoggerModelHandler - Setting level of logger [dev.langchain4j] to DEBUG
+15:41:47,982 |-INFO in ch.qos.logback.classic.jul.LevelChangePropagator@1506f20f - Propagating DEBUG level on Logger[dev.langchain4j] onto the JUL framework
+15:41:47,982 |-INFO in ch.qos.logback.core.model.processor.DefaultProcessor@47a5b70d - End of configuration.
+15:41:47,982 |-INFO in org.springframework.boot.logging.logback.SpringBootJoranConfigurator@424fd310 - Registering current configuration as safe fallback point
+
+
+  .   ____          _            __ _ _
+ /\\ / ___'_ __ _ _(_)_ __  __ _ \ \ \ \
+( ( )\___ | '_ | '_| | '_ \/ _` | \ \ \ \
+ \\/  ___)| |_)| | | | | || (_| |  ) ) ) )
+  '  |____| .__|_| |_|_| |_\__, | / / / /
+ =========|_|==============|___/=/_/_/_/
+2026-07-29 15:41:48 [background-preinit] [] INFO  o.h.validator.internal.util.Version - HV000001: Hibernate Validator 8.0.1.Final
+ :: Spring Boot ::                (v3.2.5)
+
+2026-07-29 15:41:48 [main] [] INFO  com.agentdemo.AgentDemoApplication - Starting AgentDemoApplication using Java 17.0.7 with PID 29084 (D:\project_demo\agent_demo\agent-demo-bootstrap\target\classes started by cy in D:\project_demo\agent_demo\agent-demo-bootstrap)
+2026-07-29 15:41:48 [main] [] DEBUG com.agentdemo.AgentDemoApplication - Running with Spring Boot v3.2.5, Spring v6.1.6
+2026-07-29 15:41:48 [main] [] INFO  com.agentdemo.AgentDemoApplication - The following 1 profile is active: "dev"
+2026-07-29 15:41:54 [main] [] INFO  o.s.b.w.e.tomcat.TomcatWebServer - Tomcat initialized with port 8080 (http)
+2026-07-29 15:41:54 [main] [] INFO  o.a.coyote.http11.Http11NioProtocol - Initializing ProtocolHandler ["http-nio-8080"]
+2026-07-29 15:41:54 [main] [] INFO  o.a.catalina.core.StandardService - Starting service [Tomcat]
+2026-07-29 15:41:54 [main] [] INFO  o.a.catalina.core.StandardEngine - Starting Servlet engine: [Apache Tomcat/10.1.20]
+2026-07-29 15:41:55 [main] [] INFO  o.a.c.c.C.[Tomcat].[localhost].[/] - Initializing Spring embedded WebApplicationContext
+2026-07-29 15:41:55 [main] [] INFO  o.s.b.w.s.c.ServletWebServerApplicationContext - Root WebApplicationContext: initialization completed in 7253 ms
+2026-07-29 15:41:56 [main] [] INFO  c.agentdemo.agent.single.SimpleAgent - SimpleAgent 构造完成（delegate 懒加载）
+2026-07-29 15:41:56 [main] [] INFO  o.a.coyote.http11.Http11NioProtocol - Starting ProtocolHandler ["http-nio-8080"]
+2026-07-29 15:41:57 [main] [] INFO  o.s.b.w.e.tomcat.TomcatWebServer - Tomcat started on port 8080 (http) with context path ''
+2026-07-29 15:41:57 [main] [] INFO  com.agentdemo.AgentDemoApplication - Started AgentDemoApplication in 12.396 seconds (process running for 14.775)
