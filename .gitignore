@@ -70,3 +70,4 @@ coverage/
 
 # --- Playwright browsers ---
 .playwright-browsers/
+data/

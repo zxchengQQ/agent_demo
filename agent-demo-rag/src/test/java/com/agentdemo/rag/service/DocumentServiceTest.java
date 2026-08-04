@@ -8,9 +8,13 @@ import com.agentdemo.rag.entity.DocumentChunk;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.DocumentStatus;
 import com.agentdemo.rag.entity.KnowledgeBase;
+import com.agentdemo.splitter.config.SplitterProperties;
 import com.agentdemo.splitter.loader.DocumentLoader;
 import com.agentdemo.splitter.loader.ParsedDocument;
 import com.agentdemo.splitter.splitter.DocumentSplitterRegistry;
+import com.agentdemo.splitter.splitter.image.ImageDescriptor;
+import com.agentdemo.splitter.splitter.image.ImageExtractor;
+import com.agentdemo.splitter.splitter.image.ImageInfo;
 import com.agentdemo.rag.store.DocumentChunkStore;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
@@ -18,6 +22,7 @@ import com.agentdemo.rag.store.KnowledgeBaseStore;
 import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.store.embedding.EmbeddingStore;
@@ -26,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -36,17 +42,22 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -93,6 +104,18 @@ class DocumentServiceTest {
     @Mock
     private EmbeddingStore<TextSegment> embeddingStore;
 
+    @Mock
+    private ImageExtractor imageExtractor;
+
+    @Mock
+    private ImageDescriptor imageDescriptor;
+
+    @Mock
+    private SplitterProperties splitterProperties;
+
+    @Mock
+    private ChatModel visionChatModel;
+
     private DocumentService documentService;
 
     @BeforeEach
@@ -100,7 +123,8 @@ class DocumentServiceTest {
         documentService = spy(new DocumentService(
                 documentStore, knowledgeBaseStore, documentLoader,
                 splitterRegistry, embeddingStoreFactory, modelFactory,
-                ragProperties, documentChunkStore));
+                ragProperties, documentChunkStore,
+                imageExtractor, imageDescriptor, splitterProperties));
     }
 
     // ==================== upload 测试 ====================
@@ -340,6 +364,325 @@ class DocumentServiceTest {
         verify(documentChunkStore, org.mockito.Mockito.never()).saveChunks(anyString(), anyList());
     }
 
+    // ==================== CR-002: 图片处理分支测试 ====================
+
+    @Test
+    @DisplayName("AC-023: PDF 文档开启图片提取后，分块列表应包含 chunkType=image 的图片描述分块")
+    void processPdfWithImageExtractionShouldAddImageSegments() {
+        setupProcessDocumentMocks();
+
+        // 开启图片提取
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        pdfConfig.setImageDpi(144);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        // Mock PDF 解析与文本分块
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本内容").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+
+        List<TextSegment> textSegments = new ArrayList<>(List.of(
+                TextSegment.from("第一个文本分块", new Metadata().put("pageNumber", "1")),
+                TextSegment.from("第二个文本分块", new Metadata().put("pageNumber", "2"))));
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(textSegments);
+
+        // Mock 图片提取返回 2 张图片
+        List<ImageInfo> images = List.of(
+                ImageInfo.builder().imagePath("/tmp/page1_img0.png").pageNumber(1).imageIndex(0).build(),
+                ImageInfo.builder().imagePath("/tmp/page2_img0.png").pageNumber(2).imageIndex(0).build());
+        when(imageExtractor.extractImages(any(byte[].class), anyString(), any(), anyInt()))
+                .thenReturn(images);
+
+        // Mock 图片描述生成
+        when(imageDescriptor.describe(any(ImageInfo.class), eq(visionChatModel)))
+                .thenReturn("第一页图片描述")
+                .thenReturn("第二页图片描述");
+
+        // Mock 向量化
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f, 2.0f, 3.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        byte[] fileBytes = "pdf-bytes".getBytes();
+        documentService.processDocument("docPdf01", fileBytes, "pdf", "kb001");
+
+        // 验证：保存的分块包含文本分块 + 2 个图片分块 = 4
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DocumentChunk>> chunksCaptor = ArgumentCaptor.forClass(List.class);
+        verify(documentChunkStore).saveChunks(eq("docPdf01"), chunksCaptor.capture());
+        List<DocumentChunk> savedChunks = chunksCaptor.getValue();
+
+        long imageChunkCount = savedChunks.stream()
+                .filter(c -> "image".equals(c.getMetadata().get("chunkType")))
+                .count();
+        assertEquals(2, imageChunkCount, "应包含 2 个 chunkType=image 的图片描述分块");
+        assertEquals(4, savedChunks.size(), "总分块数应为 2 个文本 + 2 个图片 = 4");
+    }
+
+    @Test
+    @DisplayName("AC-023: 图片描述分块的 metadata 应包含 imagePath/imageDescription/pageNumber")
+    void imageSegmentMetadataShouldContainImageInfo() {
+        setupProcessDocumentMocks();
+
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(imageExtractor.extractImages(any(byte[].class), anyString(), any(), anyInt()))
+                .thenReturn(List.of(ImageInfo.builder()
+                        .imagePath("/tmp/docX/page1_img0.png")
+                        .pageNumber(3)
+                        .imageIndex(0)
+                        .build()));
+        when(imageDescriptor.describe(any(ImageInfo.class), eq(visionChatModel)))
+                .thenReturn("第三页包含柱状图");
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docPdf02", "pdf".getBytes(), "pdf", "kb001");
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DocumentChunk>> chunksCaptor = ArgumentCaptor.forClass(List.class);
+        verify(documentChunkStore).saveChunks(eq("docPdf02"), chunksCaptor.capture());
+        List<DocumentChunk> savedChunks = chunksCaptor.getValue();
+
+        DocumentChunk imageChunk = savedChunks.stream()
+                .filter(c -> "image".equals(c.getMetadata().get("chunkType")))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("应存在 chunkType=image 的分块"));
+
+        assertEquals("/tmp/docX/page1_img0.png", imageChunk.getMetadata().get("imagePath"),
+                "metadata 应包含 imagePath");
+        assertEquals("第三页包含柱状图", imageChunk.getMetadata().get("imageDescription"),
+                "metadata 应包含 imageDescription");
+        assertEquals("3", imageChunk.getMetadata().get("pageNumber"),
+                "metadata 应包含 pageNumber");
+        assertEquals("image", imageChunk.getMetadata().get("chunkType"),
+                "metadata 应标记 chunkType=image");
+        assertEquals("第三页包含柱状图", imageChunk.getContent(),
+                "图片描述分块正文应为图片描述文本");
+    }
+
+    @Test
+    @DisplayName("AC-023: 图片描述分块应与文本分块一同向量化入库")
+    void imageSegmentsShouldBeEmbeddedTogetherWithTextSegments() {
+        setupProcessDocumentMocks();
+
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(imageExtractor.extractImages(any(byte[].class), anyString(), any(), anyInt()))
+                .thenReturn(List.of(ImageInfo.builder()
+                        .imagePath("/tmp/p1.png").pageNumber(1).imageIndex(0).build()));
+        when(imageDescriptor.describe(any(ImageInfo.class), eq(visionChatModel)))
+                .thenReturn("图片描述内容");
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docPdf03", "pdf".getBytes(), "pdf", "kb001");
+
+        // 验证：embedAll 调用时入参的 segments 应同时包含文本分块和图片描述分块
+        ArgumentCaptor<List<TextSegment>> embedCaptor = ArgumentCaptor.forClass(List.class);
+        verify(embeddingModel).embedAll(embedCaptor.capture());
+        List<TextSegment> embeddedSegments = embedCaptor.getValue();
+
+        // 由于 batchEmbed 分批（每批 10 个），1 个文本 + 1 个图片描述应一批完成
+        assertTrue(embeddedSegments.size() >= 2,
+                "向量化时应至少包含 1 个文本 + 1 个图片描述分块，实际: " + embeddedSegments.size());
+
+        // 验证 embeddingStore.addAll 入参含图片描述分块
+        ArgumentCaptor<List<TextSegment>> storeCaptor = ArgumentCaptor.forClass(List.class);
+        verify(embeddingStore).addAll(anyList(), storeCaptor.capture());
+        List<TextSegment> storedSegments = storeCaptor.getValue();
+        boolean hasImageSegment = storedSegments.stream()
+                .anyMatch(s -> "image".equals(s.metadata().getString("chunkType")));
+        assertTrue(hasImageSegment, "向量存储应包含 chunkType=image 的图片描述分块");
+    }
+
+    @Test
+    @DisplayName("AC-024: 视觉模型失败时图片被跳过，文档状态为 COMPLETED")
+    void visionModelFailureShouldSkipImagesAndComplete() {
+        setupProcessDocumentMocks();
+
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(imageExtractor.extractImages(any(byte[].class), anyString(), any(), anyInt()))
+                .thenReturn(List.of(ImageInfo.builder()
+                        .imagePath("/tmp/p1.png").pageNumber(1).imageIndex(0).build()));
+        // 视觉模型失败，describe 返回 null
+        when(imageDescriptor.describe(any(ImageInfo.class), eq(visionChatModel)))
+                .thenReturn(null);
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docPdf04", "pdf".getBytes(), "pdf", "kb001");
+
+        // 验证：文档状态为 COMPLETED（未因图片失败而失败）
+        verify(documentStore).updateStatus(eq("docPdf04"), eq(DocumentStatus.COMPLETED), anyInt(), eq(null));
+
+        // 验证：保存的分块仅含文本分块（图片被跳过）
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<DocumentChunk>> chunksCaptor = ArgumentCaptor.forClass(List.class);
+        verify(documentChunkStore).saveChunks(eq("docPdf04"), chunksCaptor.capture());
+        List<DocumentChunk> savedChunks = chunksCaptor.getValue();
+        boolean hasImageChunk = savedChunks.stream()
+                .anyMatch(c -> "image".equals(c.getMetadata().get("chunkType")));
+        assertFalse(hasImageChunk, "视觉模型失败时图片应被跳过，不应包含图片描述分块");
+    }
+
+    @Test
+    @DisplayName("extract-images=false 时不执行图片处理（分块列表仅含文本）")
+    void imageExtractionDisabledShouldNotProcessImages() {
+        setupProcessDocumentMocks();
+
+        // 显式禁用图片提取
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(false);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docPdf05", "pdf".getBytes(), "pdf", "kb001");
+
+        // 验证：从未调用 imageExtractor
+        verify(imageExtractor, never())
+                .extractImages(any(byte[].class), anyString(), any(), anyInt());
+        // 验证：从未调用 visionChatModel
+        verify(modelFactory, never()).getVisionChatModel();
+    }
+
+    @Test
+    @DisplayName("TXT 文档不触发图片处理")
+    void txtDocumentShouldNotTriggerImageProcessing() {
+        setupProcessDocumentMocks();
+
+        // TXT 不应触发图片提取（即使 PDF 配置开启也不应生效）
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本内容").format("txt").build();
+        when(documentLoader.load(any(byte[].class), eq("txt"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docTxt01", "txt".getBytes(), "txt", "kb001");
+
+        // 验证：TXT 文档不应调用图片提取
+        verify(imageExtractor, never())
+                .extractImages(any(byte[].class), anyString(), any(), anyInt());
+    }
+
+    @Test
+    @DisplayName("AC-024: 视觉模型未配置（抛异常）时图片被跳过，文档仍 COMPLETED")
+    void visionModelNotConfiguredShouldSkipImagesAndComplete() {
+        setupProcessDocumentMocks();
+
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(true);
+        when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+
+        // 视觉模型未配置：getVisionChatModel 抛 BusinessException
+        when(modelFactory.getVisionChatModel())
+                .thenThrow(new BusinessException(ErrorCode.LLM_MODEL_NOT_CONFIGURED, "VISION_MODEL 未配置"));
+
+        ParsedDocument parsedDoc = ParsedDocument.builder().text("文本").format("pdf").build();
+        when(documentLoader.load(any(byte[].class), eq("pdf"))).thenReturn(parsedDoc);
+        when(splitterRegistry.split(any(ParsedDocument.class), anyString(), anyString(), any()))
+                .thenReturn(new ArrayList<>(List.of(TextSegment.from("文本分块"))));
+
+        when(imageExtractor.extractImages(any(byte[].class), anyString(), any(), anyInt()))
+                .thenReturn(List.of(ImageInfo.builder()
+                        .imagePath("/tmp/p1.png").pageNumber(1).imageIndex(0).build()));
+
+        when(embeddingModel.embedAll(anyList())).thenAnswer(invocation -> {
+            @SuppressWarnings("unchecked")
+            List<TextSegment> segments = invocation.getArgument(0);
+            List<Embedding> embeddings = new ArrayList<>();
+            for (int i = 0; i < segments.size(); i++) {
+                embeddings.add(new Embedding(new float[]{1.0f}));
+            }
+            return new Response<>(embeddings);
+        });
+
+        documentService.processDocument("docPdf06", "pdf".getBytes(), "pdf", "kb001");
+
+        // 验证：视觉模型未配置时文档仍能 COMPLETED
+        verify(documentStore).updateStatus(eq("docPdf06"), eq(DocumentStatus.COMPLETED), anyInt(), eq(null));
+    }
+
     // ==================== getStatus 测试 ====================
 
     @Test
@@ -391,6 +734,8 @@ class DocumentServiceTest {
         when(documentStore.findById("doc001")).thenReturn(doc);
         when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
         when(embeddingStoreFactory.getEmbeddingStore()).thenReturn(embeddingStore);
+        // BUG 修复后 delete() 会调用 deleteImageDir() 读取临时目录，需补充 mock
+        lenient().when(ragProperties.getDocument()).thenReturn(createDocumentConfig());
 
         documentService.delete("doc001");
 
@@ -409,6 +754,56 @@ class DocumentServiceTest {
                 () -> documentService.delete("不存在"));
 
         assertEquals(ErrorCode.RAG_DOCUMENT_NOT_FOUND, ex.getErrorCode());
+    }
+
+    @Test
+    @DisplayName("删除文档时同步清理图片目录（BUG 修复：避免孤儿图片数据残留）")
+    void deleteShouldAlsoRemoveImageDir(@TempDir Path tempDir) throws Exception {
+        // 准备：在 tempDir/images/docWithImages/ 下创建多张图片（含子结构，验证递归删除）
+        Path docImageDir = tempDir.resolve("images").resolve("docWithImages");
+        Files.createDirectories(docImageDir);
+        Files.write(docImageDir.resolve("page1_img1.png"), new byte[]{1, 2, 3});
+        Files.write(docImageDir.resolve("page2_img1.png"), new byte[]{4, 5, 6});
+        assertTrue(Files.exists(docImageDir), "前置条件：图片目录应存在");
+
+        DocumentInfo doc = createDocumentInfo("docWithImages", "kb001", "test.pdf");
+        KnowledgeBase kb = createKnowledgeBase("kb001", "测试知识库", 1);
+
+        when(documentStore.findById("docWithImages")).thenReturn(doc);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+        when(embeddingStoreFactory.getEmbeddingStore()).thenReturn(embeddingStore);
+        RagProperties.Document document = new RagProperties.Document();
+        document.setTempDir(tempDir.toString());
+        when(ragProperties.getDocument()).thenReturn(document);
+
+        documentService.delete("docWithImages");
+
+        // 断言：图片目录及其下所有图片文件已被递归清理
+        assertFalse(Files.exists(docImageDir),
+                "删除文档后图片目录应被清理，避免孤儿数据残留");
+        // images 父目录可保留（其他文档可能共享），仅校验本文档子目录
+        verify(documentStore).delete("docWithImages");
+    }
+
+    @Test
+    @DisplayName("删除文档时无图片目录不应报错（非 PDF 或未开启图片提取的容错）")
+    void deleteWithoutImageDirShouldNotFail(@TempDir Path tempDir) {
+        // 准备：仅创建文档元数据，不创建图片目录（模拟 TXT 文档或未开启图片提取）
+        DocumentInfo doc = createDocumentInfo("docNoImages", "kb001", "test.txt");
+        KnowledgeBase kb = createKnowledgeBase("kb001", "测试知识库", 1);
+
+        when(documentStore.findById("docNoImages")).thenReturn(doc);
+        when(knowledgeBaseStore.findById("kb001")).thenReturn(kb);
+        when(embeddingStoreFactory.getEmbeddingStore()).thenReturn(embeddingStore);
+        RagProperties.Document document = new RagProperties.Document();
+        document.setTempDir(tempDir.toString());
+        when(ragProperties.getDocument()).thenReturn(document);
+
+        // 不应抛异常，删除流程正常完成
+        documentService.delete("docNoImages");
+
+        verify(documentStore).delete("docNoImages");
+        verify(knowledgeBaseStore).updateDocumentCount("kb001", 0);
     }
 
     // ==================== 辅助方法 ====================
@@ -430,6 +825,12 @@ class DocumentServiceTest {
 
         lenient().when(modelFactory.getEmbeddingModel()).thenReturn(embeddingModel);
         lenient().when(embeddingStoreFactory.getEmbeddingStore()).thenReturn(embeddingStore);
+
+        // CR-002: 默认禁用图片提取（不影响既有 TXT/MD 测试），具体测试用例单独覆盖
+        SplitterProperties.PdfChunkConfig pdfConfig = new SplitterProperties.PdfChunkConfig(1200, 200, 600);
+        pdfConfig.setExtractImages(false);
+        lenient().when(splitterProperties.getPdf()).thenReturn(pdfConfig);
+        lenient().when(modelFactory.getVisionChatModel()).thenReturn(visionChatModel);
     }
 
     /**

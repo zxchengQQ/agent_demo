@@ -75,6 +75,15 @@ public class ArkProperties {
     private double temperature = 0.7;
 
     /**
+     * 视觉模型名称（CR-002 新增）
+     * <p>
+     * 业务含义：用于 PDF 图片描述生成，配置后 ModelFactory.getVisionChatModel() 返回支持图片输入的 ChatModel。
+     * 未配置（null）时图片描述功能不可用。示例：doubao-vision-pro
+     * </p>
+     */
+    private String visionModel;
+
+    /**
      * 根据场景获取模型名称
      * 业务含义：优先从 models Map 查找，未命中时回退到 defaultModel
      *

@@ -199,8 +199,8 @@ graph TD
 
 ## 风险与注意事项
 
-1. **CGLIB 代理与 LangChain4j @Tool 注解兼容性**: 需验证 CGLIB 代理生成的 Tool 能否被 LangChain4j 的 AiServices.builder().tools() 正确识别和调用。如不兼容，需考虑 JDK 动态代理或手动注册 Tool 元数据
+1. **~~CGLIB 代理与 LangChain4j @Tool 注解兼容性~~（已解决）**: CGLIB 代理生成的方法不继承 `@Tool` 注解（@Tool 无 @Inherited），LangChain4j ToolSpecifications 无法识别代理方法。**实际解决方案**：改用 ByteBuddy 运行时字节码生成，在生成的方法上直接写入 `@Tool` 注解，被 LangChain4j 正确识别
 2. **Agent 会话上下文**: Tool 变化后重建 delegate 不影响现有会话的 memoryId 绑定
 3. **并发安全**: ToolRegistry.register/unregister 需考虑并发场景（多线程同时操作知识库）
-4. **性能影响**: 大量知识库（>100）时，CGLIB 代理创建和 Tool 列表遍历的性能需关注
+4. **性能影响**: 大量知识库（>100）时，ByteBuddy 动态类生成和 Tool 列表遍历的性能需关注
 5. **异常隔离**: 单个知识库 Tool 注册失败不应影响其他知识库 Tool 注册和系统启动

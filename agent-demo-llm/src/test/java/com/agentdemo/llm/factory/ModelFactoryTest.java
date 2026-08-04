@@ -255,4 +255,83 @@ class ModelFactoryTest {
         StreamingChatModel model = factory.getDefaultStreamingChatModel();
         assertNotNull(model, "BAILIAN 模式下 getDefaultStreamingChatModel 应返回非 null 实例");
     }
+
+    // ========== CR-002: 视觉模型（Vision ChatModel）==========
+
+    /** 验证标准 13：provider = ARK 且 visionModel 已配置时，getVisionChatModel 返回非 null 实例（AC-022） */
+    @Test
+    void shouldReturnArkVisionChatModelWhenVisionModelConfigured() {
+        arkProperties.setVisionModel("doubao-vision-pro");
+        llmProperties.setProvider(LlmProvider.ARK);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        ChatModel model = factory.getVisionChatModel();
+
+        assertNotNull(model, "ARK 模式且 visionModel 已配置时 getVisionChatModel 应返回非 null 实例");
+    }
+
+    /** 验证标准 14：provider = BAILIAN 且 visionModel 已配置时，getVisionChatModel 返回非 null 实例（AC-022） */
+    @Test
+    void shouldReturnBailianVisionChatModelWhenVisionModelConfigured() {
+        bailianProperties.setVisionModel("qwen-vl-plus");
+        llmProperties.setProvider(LlmProvider.BAILIAN);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        ChatModel model = factory.getVisionChatModel();
+
+        assertNotNull(model, "BAILIAN 模式且 visionModel 已配置时 getVisionChatModel 应返回非 null 实例");
+    }
+
+    /** 验证标准 15：多次调用 getVisionChatModel 返回同一实例（缓存复用） */
+    @Test
+    void shouldReturnSameInstanceOnMultipleCallsForVisionModel() {
+        arkProperties.setVisionModel("doubao-vision-pro");
+        llmProperties.setProvider(LlmProvider.ARK);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        ChatModel first = factory.getVisionChatModel();
+        ChatModel second = factory.getVisionChatModel();
+
+        assertSame(first, second, "多次调用 getVisionChatModel 应返回同一缓存实例");
+    }
+
+    /** 验证标准 16：provider = ARK 且 visionModel 未配置时抛出 BusinessException */
+    @Test
+    void shouldThrowWhenArkVisionModelNotConfigured() {
+        arkProperties.setVisionModel(null);
+        llmProperties.setProvider(LlmProvider.ARK);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                factory::getVisionChatModel,
+                "ARK 模式下 visionModel 未配置时应抛出 BusinessException");
+        assertTrue(ex.getMessage().contains("VISION_MODEL"),
+                "错误信息应提示 VISION_MODEL 未配置");
+    }
+
+    /** 验证标准 17：provider = BAILIAN 且 visionModel 未配置时抛出 BusinessException */
+    @Test
+    void shouldThrowWhenBailianVisionModelNotConfigured() {
+        bailianProperties.setVisionModel(null);
+        llmProperties.setProvider(LlmProvider.BAILIAN);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                factory::getVisionChatModel,
+                "BAILIAN 模式下 visionModel 未配置时应抛出 BusinessException");
+        assertTrue(ex.getMessage().contains("VISION_MODEL"),
+                "错误信息应提示 VISION_MODEL 未配置");
+    }
+
+    /** 验证标准 18：provider = ARK 且 visionModel 为空字符串时抛出 BusinessException */
+    @Test
+    void shouldThrowWhenArkVisionModelIsEmptyString() {
+        arkProperties.setVisionModel("");
+        llmProperties.setProvider(LlmProvider.ARK);
+        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+
+        assertThrows(BusinessException.class,
+                factory::getVisionChatModel,
+                "ARK 模式下 visionModel 为空字符串时应抛出 BusinessException");
+    }
 }

@@ -2,7 +2,7 @@
 
 ## 1. 模块概述
 
-RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问答能力模块，负责文档管理、向量化、语义检索和 Agent 工具集成。文档解析与分割功能已抽取为独立的 agent-demo-splitter 模块，RAG 模块通过 DocumentSplitterRegistry 调用专属分割策略。模块基于 LangChain4j EmbeddingStore 实现，支持多知识库分组管理、文档异步处理（解析-分割-合并-向量化-入库）、纯向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore），并通过 @Tool 注解将检索能力集成为 Agent 工具，Agent 在 ReAct 循环中自主选择知识库进行检索。
+RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问答能力模块，负责文档管理、向量化、语义检索和 Agent 工具集成。文档解析与分割功能已抽取为独立的 agent-demo-splitter 模块，RAG 模块通过 DocumentSplitterRegistry 调用专属分割策略。模块基于 LangChain4j EmbeddingStore 实现，支持多知识库分组管理、文档异步处理（解析-分割-合并-向量化-入库）、纯向量语义检索（InMemoryEmbeddingStore 可切换 MilvusEmbeddingStore），并通过动态 Tool 注册将检索能力集成为 Agent 工具。CR-003 后，每个知识库独立注册为一个 @Tool（由 ByteBuddy 运行时生成带注解的工具类），Agent 在 ReAct 循环中通过 Function Calling 自主选择知识库工具进行检索，无需 LLM 传递知识库名称参数，消除了 LLM 幻觉生成未知知识库名称的风险。
 
 ## 2. 用户角色与权限
 
@@ -70,20 +70,22 @@ RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问�
 - **操作步骤**：`DELETE /api/rag/documents/{documentId}`。
 - **系统行为**：删除文档记录和对应的向量数据，更新知识库文档计数。
 
-### 3.9 知识库检索（Agent 工具）
+### 3.9 知识库检索（动态 Tool 模式，CR-003 重构）
 
-- **触发场景**：Agent 在 ReAct 循环中判断需要检索知识库。
-- **操作步骤**：Agent 调用 `KnowledgeRetrieverTool.searchKnowledge(knowledgeBaseName, query)`。
+- **触发场景**：Agent 在 ReAct 循环中判断需要检索知识库，通过 Function Calling 选择对应知识库的独立 Tool。
+- **检索模式**：每个知识库在创建时由 KnowledgeBaseToolFactory 通过 ByteBuddy 动态生成一个带 `@Tool` 注解的独立工具类（方法名 `kb_{kbId}`），注册到 ToolRegistry。Agent 通过 Function Calling 直接选择调用哪个知识库的 Tool，无需传递知识库名称参数。
+- **操作步骤**：Agent 调用动态生成的 `kb_{kbId}(query)` 工具方法 -> KnowledgeBaseToolFactory 生成的工具类委托 `KnowledgeRetrieverTool.searchByKbId(kbId, query)` 执行检索。
 - **系统行为**：查找知识库 -> 向量化查询 -> metadata 过滤检索 Top-5 -> 返回文档片段文本（CR-002 新增：每个片段标注来源前缀，如"来源: 产品手册.pdf (pdf) 第3页"）。
 - **来源元数据格式**：来源: {fileName} ({format}) {位置信息}，其中位置信息为 PDF 显示"第N页"，MD 显示章节"标题"，无位置信息时仅显示文件名和格式。
-- **异常降级**：知识库不存在/为空/无结果/服务不可用时返回提示文本，不中断对话。
+- **异常降级**：知识库不存在/为空/无结果/服务不可用时返回提示文本，不中断对话。单个知识库 Tool 注册失败不影响其他知识库 Tool 注册。
+- **CR-003 变更说明**：原模式为单 `KnowledgeRetrieverTool.searchKnowledge(knowledgeBaseName, query)` @Tool 方法，LLM 需传递知识库名称参数，存在幻觉风险。原方法已标记 `@Deprecated`，内部委托 `searchByKbId()`。
 
 ### 3.10 对话知识库集成（提示词注入）
 
 - **触发场景**：用户在对话页面通过知识库选择器选择知识库后发送消息。
 - **操作步骤**：前端 `streamChat` 携带 `knowledgeBases` 参数 -> `AgentController` 在调用 Agent 前将知识库名称注入用户消息末尾。
 - **注入格式**：`[系统提示：请优先使用以下知识库检索相关信息：知识库A、知识库B]`
-- **系统行为**：LLM 在 ReAct 循环中遵循注入提示，调用 `searchKnowledge` 工具时使用指定知识库。
+- **系统行为**：LLM 在 ReAct 循环中遵循注入提示，通过 Function Calling 选择对应知识库的独立 Tool 进行检索（CR-003 后无需传递知识库名称参数）。
 - **兼容性**：`knowledgeBases` 为 null 或空数组时走原有路径（Agent 自主决策），零回归。
 - **记忆隔离**：`memoryManager.addUserMessage` 仍存入原始消息（不含注入内容），避免记忆污染。
 
@@ -95,6 +97,15 @@ RAG 知识库模块（agent-demo-rag）是 AI Agent 示例项目的知识库问�
 - **文档管理**：拖拽/点击批量上传、前端校验（格式 txt/md/pdf、大小 10MB）、状态自动轮询（3 秒间隔，终态停止）、删除。
 - **对话集成**：对话输入框旁的知识库选择器，默认"自动"模式，支持多选，按会话维度保持状态。
 - **设计风格**：遵循 Refined Dark Tech 设计系统，与对话页一致。
+
+### 3.12 知识库 Tool 生命周期管理（CR-003 新增）
+
+- **触发场景**：系统启动、知识库创建、知识库删除。
+- **启动批量注册**：系统启动时 `KnowledgeBaseToolRegistrar`（实现 `ApplicationRunner`）扫描所有已有知识库，对每个知识库调用 `KnowledgeBaseToolFactory.createTool()` 生成动态 Tool 并注册到 `ToolRegistry`。单个知识库注册异常不中断其他知识库注册。
+- **创建联动**：`KnowledgeBaseService.create()` 保存知识库后调用 `KnowledgeBaseToolRegistrar.registerToolForKb()` 注册对应 Tool。
+- **删除联动**：`KnowledgeBaseService.delete()` 在级联删除前调用 `KnowledgeBaseToolRegistrar.unregisterToolForKb()` 注销对应 Tool。
+- **Agent 感知**：`SimpleAgent` 通过 `lastToolCount` 检测 Tool 数量变化，当 Tool 增减时自动重建 delegate 绑定最新工具列表。
+- **业务规则**：BR-RAG-020（系统启动时自动批量注册所有已有知识库的动态 Tool）。
 
 ## 4. 业务流程串联
 
@@ -123,12 +134,19 @@ flowchart TD
         G[用户提问] --> H{知识库选择器}
         H -->|自动模式| I_AUTO[Agent 自主决策]
         H -->|指定知识库| I_INJECT[提示词注入知识库名称]
-        I_AUTO --> J[Agent 判断是否检索]
+        I_AUTO --> J[Agent 通过 Function Calling 选择知识库 Tool]
         I_INJECT --> J
-        J -->|需检索| K[选择知识库]
+        J -->|需检索| K[调用 kb_{kbId} 动态 Tool]
         K --> L[向量语义检索 Top-5]
         L --> M[Agent 基于片段回答]
         J -->|无需检索| N[Agent 直接回答]
+    end
+
+    subgraph Tool生命周期["知识库 Tool 生命周期（CR-003）"]
+        T1[系统启动] --> T2[批量注册已有知识库 Tool]
+        T3[创建知识库] --> T4[自动注册 Tool]
+        T5[删除知识库] --> T6[自动注销 Tool]
+        T7[Tool 数量变化] --> T8[SimpleAgent 重建 delegate]
     end
 
     FE_CREATE --> A
@@ -159,7 +177,15 @@ flowchart TD
 | DocumentChunk | 实体 | ConcurrentHashMap | 文档分块信息（ID/文档ID/分块索引/内容/字符数/Token数/metadata，CR-002 新增 metadata 字段存储来源元数据） |
 | TextSegment | 向量数据 | EmbeddingStore | 文档分块向量（含 metadata: knowledgeBaseId, documentId, fileName, format, pageNumber/headerText，CR-002 新增 fileName） |
 
-### 6.2 向量存储
+### 6.2 核心组件（CR-003 新增）
+
+| 组件 | 类型 | 职责 |
+|---------|------|------|
+| KnowledgeRetrieverTool | @Component | 核心检索逻辑提供者。原 @Tool 入口已废弃（@Deprecated），新增 `searchByKbId(kbId, query)` 方法供动态 Tool 委托调用。CR-002 新增来源元数据注入。 |
+| KnowledgeBaseToolFactory | @Component | 动态工具工厂。使用 ByteBuddy 运行时生成带 `@Tool` 注解的知识库工具类，方法名 `kb_{kbId}`，方法调用时委托 `KnowledgeRetrieverTool.searchByKbId()`。 |
+| KnowledgeBaseToolRegistrar | @Component | 生命周期管理器。实现 `ApplicationRunner`，系统启动时批量注册已有知识库 Tool；提供 `registerToolForKb()` / `unregisterToolForKb()` 供 Service 层联动调用。 |
+
+### 6.3 向量存储
 
 | 存储类型 | 实现类 | 部署方式 | 适用场景 |
 |---------|--------|---------|---------|
@@ -175,6 +201,7 @@ flowchart TD
 | agent-demo-common | ErrorCode 错误码、Result 返回结构、BusinessException |
 | agent-demo-llm | ModelFactory.getEmbeddingModel() 向量化模型 |
 | agent-demo-splitter | DocumentLoader 文档解析、DocumentSplitterRegistry 分割路由、ChunkMerger 过短块合并 |
+| agent-demo-tools | ToolRegistry 动态 Tool 注册/注销（CR-003 新增：知识库动态 Tool 注册到 ToolRegistry） |
 
 ### 7.2 外部依赖
 
@@ -183,6 +210,7 @@ flowchart TD
 | langchain4j | 1.17.2 | EmbeddingStore/TextSegment |
 | langchain4j-milvus | 1.17.2-beta27 | MilvusEmbeddingStore（可切换） |
 | milvus-sdk-java | 2.4.3 | Milvus 向量数据库 SDK |
+| byte-buddy | 1.14.19 | 运行时动态生成带 @Tool 注解的知识库工具类（CR-003 新增） |
 
 ### 7.3 被依赖模块
 

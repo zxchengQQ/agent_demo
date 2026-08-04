@@ -62,6 +62,15 @@ public class ModelFactory {
      */
     private volatile EmbeddingModel embeddingModel;
 
+    /**
+     * 视觉对话模型缓存（CR-002 新增）
+     * <p>
+     * 业务含义：用于 PDF 图片描述生成的视觉 ChatModel，按模型名称缓存复用。
+     * 通过 ark.coding-plan.vision-model 或 bailian.vision-model 配置。
+     * </p>
+     */
+    private final ConcurrentHashMap<String, ChatModel> visionModelCache = new ConcurrentHashMap<>();
+
     public ModelFactory(ArkProperties arkProperties, LlmProperties llmProperties,
                         BailianProperties bailianProperties) {
         this.arkProperties = arkProperties;
@@ -323,5 +332,78 @@ public class ModelFactory {
             throw new BusinessException(ErrorCode.LLM_API_KEY_INVALID,
                     "BAILIAN_API_KEY 未配置，请通过环境变量注入");
         }
+    }
+
+    /**
+     * 获取视觉对话模型（CR-002 新增）
+     * <p>
+     * 业务含义：用于 PDF 图片描述生成，返回支持图片输入的 ChatModel 实例。
+     * 通过 ark.coding-plan.vision-model 或 bailian.vision-model 配置视觉模型名称。
+     * 按模型名称缓存复用，避免重复构建。
+     * </p>
+     *
+     * @return 支持图片输入的 ChatModel 实例
+     * @throws BusinessException 视觉模型名称未配置时抛出（错误码 LLM_MODEL_NOT_CONFIGURED）
+     */
+    public ChatModel getVisionChatModel() {
+        String modelName = getVisionModelName();
+        return visionModelCache.computeIfAbsent(modelName, this::createVisionChatModel);
+    }
+
+    /**
+     * 获取当前提供商配置的视觉模型名称（CR-002 新增）
+     * 业务含义：根据 llm.provider 路由到对应提供商配置，返回 visionModel 字段值。
+     * 未配置（null 或空字符串）时抛出 BusinessException，避免调用方误判空值。
+     *
+     * @return 视觉模型名称
+     * @throws BusinessException 视觉模型未配置时抛出
+     */
+    private String getVisionModelName() {
+        if (llmProperties.getProvider() == LlmProvider.BAILIAN) {
+            String visionModel = bailianProperties.getVisionModel();
+            if (visionModel == null || visionModel.isEmpty()) {
+                throw new BusinessException(ErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                        "BAILIAN_VISION_MODEL 未配置，请通过 bailian.vision-model 设置视觉模型名称");
+            }
+            return visionModel;
+        }
+        String visionModel = arkProperties.getVisionModel();
+        if (visionModel == null || visionModel.isEmpty()) {
+            throw new BusinessException(ErrorCode.LLM_MODEL_NOT_CONFIGURED,
+                    "ARK_VISION_MODEL 未配置，请通过 ark.coding-plan.vision-model 设置视觉模型名称");
+        }
+        return visionModel;
+    }
+
+    /**
+     * 创建视觉对话模型实例（CR-002 新增）
+     * 业务含义：根据当前提供商构建支持图片输入的 ChatModel：
+     * - ARK：基于 ArkProperties 构建 OpenAiChatModel，复用 Coding Plan API Key 和 Base URL
+     * - BAILIAN：基于 BailianProperties 构建 OpenAiChatModel，复用 OpenAI 兼容协议端点
+     *
+     * @param modelName 视觉模型名称
+     * @return 支持图片输入的 ChatModel 实例
+     */
+    private ChatModel createVisionChatModel(String modelName) {
+        if (llmProperties.getProvider() == LlmProvider.BAILIAN) {
+            validateBailianApiKey();
+            return OpenAiChatModel.builder()
+                    .baseUrl(bailianProperties.getBaseUrl())
+                    .apiKey(bailianProperties.getApiKey())
+                    .modelName(modelName)
+                    .temperature(bailianProperties.getTemperature())
+                    .timeout(bailianProperties.getTimeout())
+                    .maxRetries(bailianProperties.getMaxRetries())
+                    .build();
+        }
+        validateArkApiKey();
+        return OpenAiChatModel.builder()
+                .baseUrl(arkProperties.getBaseUrl())
+                .apiKey(arkProperties.getApiKey())
+                .modelName(modelName)
+                .temperature(arkProperties.getTemperature())
+                .timeout(arkProperties.getTimeout())
+                .maxRetries(arkProperties.getMaxRetries())
+                .build();
     }
 }

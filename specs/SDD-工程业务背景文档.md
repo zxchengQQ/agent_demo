@@ -209,7 +209,7 @@
 |------|---------|------|
 | BR-AGT-001 | 所有 Agent 实现必须实现 `BaseAgent` 接口 | 🔴 强制 |
 | BR-AGT-002 | ReAct 循环最大迭代次数默认 10，超过后强制返回当前结果 | 🔴 强制 |
-| BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖 | 🔴 强制 |
+| BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖；Tool 数量变化时必须重建 delegate 绑定最新工具列表（CR-003 新增） | 🔴 强制 |
 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | 🔴 强制 |
 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供，支持场景定制 | 🟡 尽量 |
 | BR-AGT-006 | Agent 调用日志默认开启，记录 sessionId/耗时/回复长度 | ⚪ 可覆盖 |
@@ -224,7 +224,7 @@
 | BR-TOOL-004 | HTTP 工具响应超过 10KB 必须截断，防止 Token 消耗过大 | 🔴 强制 |
 | BR-TOOL-005 | 文件读取工具必须限定在 `agent.file-allowed-dir` 目录白名单内 | 🔴 强制 |
 | BR-TOOL-006 | 工具执行失败必须抛出 `BusinessException` + 对应 ErrorCode | 🔴 强制 |
-| BR-TOOL-007 | 动态注册工具（MCP 等）应通过 `ToolRegistry.register()` 注册 | 🟡 尽量 |
+| BR-TOOL-007 | 动态注册/注销工具应通过 `ToolRegistry.register()` / `unregisterTool()` 操作（CR-003 新增注销方法） | 🟡 尽量 |
 
 ### 5.5 记忆与会话约束
 

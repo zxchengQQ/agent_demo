@@ -10,6 +10,7 @@
     3. 超大语义单元多级优先级级联切分算法
     4. 火山引擎 API Token usage 提取（需确认 API 是否返回 usage，可能需要 `stream_options.include_usage`）
     5. SSE 协议扩展（新增 usage 事件）与前端解析适配
+    6. PDF 图片提取（PDFBox PDFRender 渲染页面为图片）与视觉模型描述生成（CR-002 新增）
 *   **依赖关系**：新模块依赖 `agent-demo-common` + langchain4j + pdfbox + tabula + commonmark-java；RAG 模块改为依赖新模块。
 
 ## 1. 架构概览 (Architecture Overview)
@@ -48,6 +49,10 @@ agent-demo-splitter/
     │   ├── PdfDocumentSplitter.java          # PDF 专属分割器（PDFBox 按页）
     │   ├── TxtDocumentSplitter.java          # TXT 专属分割器（多级递归）
     │   ├── GenericDocumentSplitter.java      # 通用递归分割器（回退用）
+    │   ├── image/                            # 图片处理（CR-002 新增）
+    │   │   ├── ImageExtractor.java          # PDF 图片提取器（PDFBox PDFRender）
+    │   │   ├── ImageDescriptor.java          # 图片描述生成器（调用视觉 ChatModel）
+    │   │   └── ImageInfo.java                # 图片信息数据结构（path/pageNumber/index）
     │   └── util/
     │       ├── CascadeSplitter.java          # 多级优先级级联切分工具（仅切分，不合并）
     │       └── ChunkMerger.java              # 分割后合并过短块工具（CR-001 新增）
@@ -85,7 +90,17 @@ sequenceDiagram
         Reg-->>DS: List<TextSegment>
     end
     Reg-->>DS: List<TextSegment> (含 metadata)
-    DS->>DS: 向量化 + 存储
+
+    alt 文件为 PDF（CR-002 新增）
+        DS->>Loader: extractImages(fileBytes, documentId)
+        Loader->>Loader: PDFRender 渲染页面为 PNG，保存到 images/{documentId}/
+        Loader-->>DS: List<ImageInfo> (path + pageNumber + index)
+        DS->>DS: ImageDescriptor 调用视觉模型生成描述
+        DS->>DS: 图片描述构建为 TextSegment (chunkType=image, metadata 含 imagePath)
+        DS-->>DS: 合并文本分块 + 图片描述分块
+    end
+
+    DS->>DS: 向量化 + 存储（文本分块 + 图片描述分块统一向量化）
 ```
 
 ### 1.4 Token 消耗展示数据流
@@ -250,6 +265,65 @@ public class DocumentSection {
 **PDF 解析行为**：DocumentLoader 使用 PDFBox 的 `PDFTextStripper` 按页提取文本，每页构建一个 `DocumentSection`，metadata 中写入 `pageNumber`。表格提取（tabula）结果合并到对应页面的文本中。
 
 **MD/TXT 解析行为**：DocumentLoader 直接返回全文文本，`sections` 为 null。结构解析由各自的专属分割器负责。
+
+#### 4.1.1 ImageInfo 数据结构（CR-002 新增）
+
+**触发条件**：DocumentLoader 解析 PDF 时提取图片后构建。
+
+```java
+@Data
+@Builder
+public class ImageInfo {
+    /** 图片文件存储路径（绝对路径） */
+    private String imagePath;
+    /** 图片所属页码 */
+    private int pageNumber;
+    /** 图片在页面中的索引（同页多图时区分） */
+    private int imageIndex;
+}
+```
+
+**图片提取行为**：DocumentLoader 使用 PDFBox 的 `PDFRenderer` 将 PDF 每页渲染为 PNG 图片，保存到 `${rag.document.temp-dir}/images/{documentId}/page{N}_img{M}.png`。图片提取可通过配置开关 `rag.splitter.pdf.extract-images` 控制（默认 true）。
+
+#### 4.1.2 ImageExtractor 图片提取器（CR-002 新增）
+
+**职责**：从 PDF 文档中提取图片并保存到文件系统。
+
+```java
+@Component
+public class ImageExtractor {
+    /**
+     * 从 PDF 提取所有页面图片并保存为 PNG
+     * @param fileBytes PDF 文件字节数组
+     * @param documentId 文档 ID（用于构建存储路径）
+     * @param imageDir 图片存储根目录
+     * @return 提取的图片信息列表
+     */
+    public List<ImageInfo> extractImages(byte[] fileBytes, String documentId, Path imageDir);
+}
+```
+
+**提取策略**：使用 `PDFRenderer.renderImageWithDPI(pageIndex, 144)` 将每页渲染为 144 DPI 的 BufferedImage，通过 `ImageIO.write(image, "png", file)` 保存。144 DPI 兼顾清晰度和文件大小。
+
+#### 4.1.3 ImageDescriptor 图片描述生成器（CR-002 新增）
+
+**职责**：调用视觉模型为图片生成文本描述。
+
+```java
+@Component
+public class ImageDescriptor {
+    private final ModelFactory modelFactory;
+
+    /**
+     * 为图片生成文本描述
+     * @param imagePath 图片路径
+     * @return 图片文本描述（涵盖图中文字、图表内容、示意图含义）
+     */
+    public String describe(String imagePath);
+}
+```
+
+**实现方案**：通过 `ModelFactory.getVisionChatModel()` 获取视觉 ChatModel，将图片转为 Base64 后作为 UserMessage 的 image content 发送，提示词引导模型描述图片中的可见信息。调用失败时返回 null 并记录 WARN 日志（AC-024）。
 
 ### 4.2 DocumentSplitterRegistry 路由与回退
 
@@ -528,7 +602,78 @@ handler.onComplete(fullResponse.toString(), finishReason, capturedUsage);
 
 与正常流式路径类似，在 `onComplete` 回调中提取 Token usage。若 LangChain4j `AiServices` 代理的 `Response` 包含 `tokenUsage()` 则直接使用，否则本地估算。
 
-### 4.8 SimpleTokenEstimator 估算算法
+### 4.8 图片处理流程（CR-002 新增）
+
+**触发条件**：DocumentService 处理 PDF 文档时，文本分割完成后执行。
+
+**处理步骤**：
+1. DocumentService 检查文件格式为 `pdf` 且 `rag.splitter.pdf.extract-images=true`
+2. 调用 `ImageExtractor.extractImages(fileBytes, documentId, imageDir)` 提取图片并保存
+3. 对每张图片调用 `ImageDescriptor.describe(imagePath)` 生成文本描述
+4. 将图片描述构建为独立 `TextSegment`，metadata 写入：
+   - `chunkType`: "image"（标识为图片描述分块）
+   - `imagePath`: 图片文件路径（供前端展示原图）
+   - `imageDescription`: 视觉模型生成的描述
+   - `pageNumber`: 图片所属页码
+5. 图片描述分块追加到文本分块列表后，统一执行向量化+入库
+6. 视觉模型调用失败的图片跳过（不构建 TextSegment），记录 WARN 日志
+
+**伪代码**：
+```
+function processPdfImages(fileBytes, documentId, textSegments):
+    if format != "pdf" or not config.extractImages:
+        return textSegments
+
+    images = imageExtractor.extractImages(fileBytes, documentId, imageDir)
+    imageSegments = []
+    for image in images:
+        description = imageDescriptor.describe(image.imagePath)
+        if description == null:
+            log.warn("图片描述生成失败, skip: {}", image.imagePath)
+            continue
+        segment = TextSegment(
+            text="[图片描述] " + description,
+            metadata={
+                chunkType: "image",
+                imagePath: image.imagePath,
+                imageDescription: description,
+                pageNumber: image.pageNumber
+            }
+        )
+        imageSegments.add(segment)
+
+    return textSegments + imageSegments
+```
+
+**ModelFactory 新增方法**：
+
+```java
+/**
+ * 获取视觉对话模型（CR-002 新增）
+ * 业务含义：用于 PDF 图片描述生成，支持图片输入的 ChatModel
+ */
+public ChatModel getVisionChatModel() {
+    String modelName = arkProperties.getVisionModel();  // 如 doubao-vision-pro
+    return chatModelCache.computeIfAbsent(modelName, this::createVisionChatModel);
+}
+```
+
+**配置新增**（application.yml）：
+
+```yaml
+rag:
+  splitter:
+    pdf:
+      extract-images: true          # 是否提取 PDF 图片（CR-002 新增）
+      image-dpi: 144                # 图片渲染 DPI（CR-002 新增）
+  document:
+    image-dir: ${rag.document.temp-dir}/images  # 图片存储目录（CR-002 新增）
+
+ark:
+  vision-model: doubao-vision-pro  # 视觉模型名称（CR-002 新增）
+```
+
+### 4.9 SimpleTokenEstimator 估算算法
 
 **位置**：`agent-demo-common/src/main/java/com/agentdemo/common/utils/SimpleTokenEstimator.java`
 
@@ -706,6 +851,9 @@ function merge(segments, minSize, maxSize, groupByKey):
 | Markdown 格式异常 | AC-012 | commonmark-java Parser 具有容错性，格式异常不会抛异常（按原文处理）。若极端情况抛异常，回退到通用分割器 | 无前端提示 |
 | 页面刷新 | AC-015 | Token 累计值随 Session 对象持久化到 localStorage，页面加载时从 localStorage 恢复 | 无提示，自动恢复 |
 | SSE usage 事件解析失败 | - | chat.ts 中 JSON.parse 异常捕获，记录 console.warn，不影响 done 事件处理 | 无提示（降级为不展示 Token） |
+| PDF 图片提取失败 | AC-021 | ImageExtractor 捕获 PDFRender 异常，记录 WARN 日志，跳过该页图片，继续处理其他页 | 无前端提示（文本分块正常） |
+| 视觉模型调用失败/超时 | AC-024 | ImageDescriptor 捕获异常返回 null，跳过该图片描述，不影响文档整体处理 | 无前端提示（文档状态为已完成） |
+| 图片描述向量化失败 | - | 复用现有向量化失败处理逻辑（DocumentService 阶段 4 catch） | 文档状态标记为 FAILED |
 
 ## 6. 安全与性能 (Security & Performance)
 
@@ -716,6 +864,8 @@ function merge(segments, minSize, maxSize, groupByKey):
     - PDFBox 按页提取需逐页调用 `PDFTextStripper`，对大 PDF 文件（100+页）可能有数秒延迟，但现有 10MB 限制可控制
     - SimpleTokenEstimator 为纯字符遍历，性能可忽略
     - SSE `usage` 事件仅增加一个轻量 JSON 推送，对流式性能无影响
+    - PDF 图片提取（PDFRender 144 DPI 渲染）对每页约 100-300ms，10MB PDF 通常 < 50 页，总耗时 < 15s，在异步线程池中执行不阻塞用户（CR-002 新增）
+    - 视觉模型调用为同步 API 调用，每张图片约 2-5s，多图时累积耗时较长；通过 `@Async` 异步处理不影响用户体验，失败时跳过不阻断（CR-002 新增）
 *   **缓存策略**：无变更（分割器无状态，无需缓存）
 *   **安全考虑**：commonmark-java 解析 Markdown 不会执行嵌入脚本；PDFBox 解析 PDF 不会执行嵌入 JavaScript
 
@@ -743,6 +893,10 @@ function merge(segments, minSize, maxSize, groupByKey):
 | AC-018 | 新模块的模块依赖关系正确 | 根 pom.xml 新增模块声明 + agent-demo-rag pom.xml 新增 splitter 依赖 + BOM 版本管理 |
 | AC-019 | 分割后合并过短分块 | `ChunkMerger` 合并工具类 + 各分割器最终输出前调用（MD 按 headerText 分组、PDF 按 pageNumber 分组、TXT/Generic 全局合并）（CR-001 新增） |
 | AC-020 | 每种文件类型独立配置 minSize 参数 | `SplitterProperties.ChunkConfig` 新增 minSize 字段 + application.yml `rag.splitter.{format}.min-size`（CR-001 新增） |
+| AC-021 | PDF 文档中的图片被提取并保存 | `ImageExtractor.extractImages()` + PDFBox PDFRender 渲染保存 PNG 到 `${rag.document.temp-dir}/images/{documentId}/`（CR-002 新增） |
+| AC-022 | 图片通过视觉模型生成文本描述 | `ImageDescriptor.describe()` + `ModelFactory.getVisionChatModel()` 调用视觉 ChatModel（CR-002 新增） |
+| AC-023 | 图片描述向量化并作为独立分块支持检索 | DocumentService 图片描述构建 TextSegment（chunkType=image）追加到分块列表，统一 batchEmbed 向量化入库（CR-002 新增） |
+| AC-024 | 视觉模型调用失败时跳过图片不影响文档处理 | ImageDescriptor 捕获异常返回 null，DocumentService 跳过该图片，文档状态保持已完成（CR-002 新增） |
 
 ## 8. 技术决策说明 (Technical Decisions)
 
@@ -779,6 +933,23 @@ function merge(segments, minSize, maxSize, groupByKey):
 *   **决策**：废弃 `DocumentSplitters.recursive(size, overlap)` 默认字符切分，改用自定义 Token 估算
 *   **理由**：调研发现现有代码注释标注"token 数"但实际按字符切分（未传 Tokenizer 参数），存在设计偏差；新模块统一使用 `SimpleTokenEstimator` 估算 Token 数进行切分，修正此偏差
 
+### 8.7 图片向量化方案：视觉模型描述+文本向量化 vs 多模态 Embedding（CR-002 新增）
+
+*   **决策**：采用视觉模型生成图片文本描述，再通过现有文本 Embedding 模型向量化
+*   **理由**：
+    - 复用现有文本向量化流程（batchEmbed + EmbeddingStore），改动最小
+    - 无需引入多模态 Embedding 模型，避免新增模型配置和向量化分支
+    - 检索时返回图片描述文本 + 原图路径引用，用户可理解图片内容
+    - 多模态 Embedding 方案需新增模型和图片向量化流程，维护成本高
+
+### 8.8 图片存储方案：文件系统 vs Base64 metadata（CR-002 新增）
+
+*   **决策**：图片保存到文件系统 `${rag.document.temp-dir}/images/{documentId}/`，metadata 存储 imagePath
+*   **理由**：
+    - Base64 编码存入 metadata 会显著膨胀向量存储，影响检索性能
+    - 文件系统存储支持前端直接通过 URL 访问原图展示
+    - 删除文档时可按 documentId 目录清理关联图片
+
 ## 9. 风险与注意事项 (Risks & Notes)
 
 ### 9.1 技术风险
@@ -786,6 +957,8 @@ function merge(segments, minSize, maxSize, groupByKey):
 *   **火山引擎 API Token usage 返回不确定性**：Coding Plan（按次计费）模式的 API 响应中是否包含 `usage` 字段需实际验证。若不包含，`stream_options.include_usage` 可能也无效。**缓解措施**：AC-014 已设计本地估算回退方案，确保功能可用。
 *   **commonmark-java 版本兼容性**：0.22.0 需 Java 8+，与项目 Java 17 兼容。需在 BOM 中新增版本管理。
 *   **PDF 按页提取性能**：大 PDF 文件（100+页）逐页提取可能有数秒延迟。**缓解措施**：现有 10MB 文件大小限制可控制页数；异步处理机制（`@Async`）已有。
+*   **视觉模型 API 可用性**：视觉模型（如 doubao-vision-pro）可能不可用或超时。**缓解措施**：AC-024 设计了失败跳过机制，不影响文档整体处理（CR-002 新增）。
+*   **图片提取精度**：PDFRender 整页渲染会将整页转为图片（含文字+图片），而非仅提取嵌入图片对象。**缓解措施**：视觉模型描述会区分文字和图片内容；如需仅提取嵌入图片对象，可后续迭代引入 PDFBox 的 XObject 提取（CR-002 新增）。
 
 ### 9.2 兼容性
 
@@ -835,6 +1008,15 @@ function merge(segments, minSize, maxSize, groupByKey):
 | | `stores/session.ts` | 修改 | 新增 addTokenUsage 方法、tokenUsage 持久化 |
 | | `components/ChatWindow.vue` | 修改 | 新增 onUsage 回调处理 |
 | | `components/MessageInput.vue` | 修改 | 新增 Token 展示区域 |
+| **agent-demo-splitter**（CR-002） | `splitter/image/ImageExtractor.java` | 新建 | PDF 图片提取器（PDFBox PDFRender） |
+| | `splitter/image/ImageDescriptor.java` | 新建 | 图片描述生成器（视觉 ChatModel） |
+| | `splitter/image/ImageInfo.java` | 新建 | 图片信息数据结构 |
+| | `loader/DocumentLoader.java` | 修改 | 新增 extractImages 方法（PDF 图片提取入口） |
+| agent-demo-rag（CR-002） | `service/DocumentService.java` | 修改 | processDocument 新增图片处理分支（提取→描述→向量化） |
+| | `store/DocumentChunkStore.java` | 修改 | chunkType=image 分块的存储支持 |
+| agent-demo-llm（CR-002） | `factory/ModelFactory.java` | 修改 | 新增 getVisionChatModel 方法 |
+| | `config/ArkProperties.java` | 修改 | 新增 visionModel 配置字段 |
+| agent-demo-bootstrap（CR-002） | `application.yml` | 修改 | 新增 rag.splitter.pdf.extract-images/image-dpi、ark.vision-model 配置 |
 
 ---
 ## 变更日志 (Change Log)
@@ -853,3 +1035,23 @@ function merge(segments, minSize, maxSize, groupByKey):
 - [修改] `application.yml`：rag.splitter 各类型新增 min-size 配置项
 - [修改] AC-007：级联切分后补充合并后处理步骤
 - [新增] AC-019、AC-020 验收标准映射
+
+### CR-002: PDF 图片提取与向量化检索 (2026-08-03)
+**影响范围**: 数据结构层（ImageInfo）、业务逻辑层（图片提取/描述生成/向量化流程）、配置层（视觉模型/图片提取配置）、模型工厂（视觉模型获取）
+**变更内容摘要**:
+- [新增] `ImageExtractor.java`：PDF 图片提取器，基于 PDFBox PDFRender 渲染页面为 PNG
+- [新增] `ImageDescriptor.java`：图片描述生成器，调用视觉 ChatModel 生成文本描述
+- [新增] `ImageInfo.java`：图片信息数据结构（path/pageNumber/index）
+- [新增] 技术方案 Sec 4.1.1 ImageInfo 数据结构
+- [新增] 技术方案 Sec 4.1.2 ImageExtractor 图片提取器
+- [新增] 技术方案 Sec 4.1.3 ImageDescriptor 图片描述生成器
+- [新增] 技术方案 Sec 4.8 图片处理流程（含伪代码、ModelFactory 新增方法、配置新增）
+- [新增] 技术方案 Sec 8.7 图片向量化方案决策说明
+- [新增] 技术方案 Sec 8.8 图片存储方案决策说明
+- [修改] 数据流图：新增 PDF 图片处理分支
+- [修改] 模块内部结构：新增 splitter/image/ 子包
+- [修改] 异常处理表：新增图片提取失败、视觉模型失败、图片描述向量化失败
+- [修改] 性能影响：新增图片提取和视觉模型调用耗时说明
+- [修改] 风险与注意事项：新增视觉模型可用性、图片提取精度风险
+- [修改] 改动文件清单：新增 CR-002 相关文件
+- [新增] AC-021、AC-022、AC-023、AC-024 验收标准映射

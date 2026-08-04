@@ -9,15 +9,21 @@ import com.agentdemo.rag.entity.DocumentChunk;
 import com.agentdemo.rag.entity.DocumentInfo;
 import com.agentdemo.rag.entity.DocumentStatus;
 import com.agentdemo.rag.entity.KnowledgeBase;
+import com.agentdemo.splitter.config.SplitterProperties;
 import com.agentdemo.splitter.loader.DocumentLoader;
 import com.agentdemo.splitter.loader.ParsedDocument;
 import com.agentdemo.splitter.splitter.DocumentSplitterRegistry;
+import com.agentdemo.splitter.splitter.image.ImageDescriptor;
+import com.agentdemo.splitter.splitter.image.ImageExtractor;
+import com.agentdemo.splitter.splitter.image.ImageInfo;
 import com.agentdemo.rag.store.DocumentChunkStore;
 import com.agentdemo.rag.store.DocumentStore;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.filter.Filter;
@@ -33,10 +39,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Stream;
 
 /**
  * 文档管理服务
@@ -61,6 +69,12 @@ public class DocumentService {
     private final ModelFactory modelFactory;
     private final RagProperties ragProperties;
     private final DocumentChunkStore documentChunkStore;
+    /** CR-002 新增：PDF 图片提取器，仅在 PDF 且 extract-images=true 时触发 */
+    private final ImageExtractor imageExtractor;
+    /** CR-002 新增：图片描述生成器，调用视觉模型生成图片文本描述 */
+    private final ImageDescriptor imageDescriptor;
+    /** CR-002 新增：分割配置，用于读取 PDF 图片提取参数（extract-images/image-dpi） */
+    private final SplitterProperties splitterProperties;
 
     public DocumentService(DocumentStore documentStore,
                            KnowledgeBaseStore knowledgeBaseStore,
@@ -69,7 +83,10 @@ public class DocumentService {
                            EmbeddingStoreFactory embeddingStoreFactory,
                            ModelFactory modelFactory,
                            RagProperties ragProperties,
-                           DocumentChunkStore documentChunkStore) {
+                           DocumentChunkStore documentChunkStore,
+                           ImageExtractor imageExtractor,
+                           ImageDescriptor imageDescriptor,
+                           SplitterProperties splitterProperties) {
         this.documentStore = documentStore;
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.documentLoader = documentLoader;
@@ -78,6 +95,9 @@ public class DocumentService {
         this.modelFactory = modelFactory;
         this.ragProperties = ragProperties;
         this.documentChunkStore = documentChunkStore;
+        this.imageExtractor = imageExtractor;
+        this.imageDescriptor = imageDescriptor;
+        this.splitterProperties = splitterProperties;
     }
 
     /**
@@ -189,6 +209,14 @@ public class DocumentService {
         String fileName = docInfo != null ? docInfo.getFileName() : null;
         List<TextSegment> segments = splitterRegistry.split(parsedDoc, knowledgeBaseId, documentId, fileName);
 
+        // 阶段 3.5：PDF 图片处理分支（CR-002 新增）
+        // 业务含义：PDF 文档且开启图片提取时，将每页渲染为图片，调用视觉模型生成文本描述，
+        // 描述作为独立 TextSegment（chunkType=image）追加到分块列表，与文本分块一同向量化入库。
+        // 容错策略：图片提取/描述失败均不中断主流程，仅记录 WARN 并跳过图片（AC-024）
+        if (isPdfImageExtractionEnabled(format)) {
+            segments = processPdfImages(segments, fileBytes, documentId, knowledgeBaseId, fileName, format);
+        }
+
         // 阶段 4：向量化，将文本分块批量转为 Embedding 向量
         // 业务含义：Embedding API 限制每次最多 10 个输入，需分批处理避免超限
         List<Embedding> embeddings;
@@ -228,8 +256,10 @@ public class DocumentService {
             chunk.setCharCount(segment.text().length());
             chunk.setTokenCount(SimpleTokenEstimator.estimate(segment.text()));
             // CR-002: 提取来源元数据（fileName、format、pageNumber、headerText 等已知字段）
+            // 同时包含图片描述分块的元数据（chunkType、imagePath、imageDescription）
             Map<String, String> chunkMetadata = new HashMap<>();
-            String[] sourceKeys = {"fileName", "format", "pageNumber", "headerText", "headerLevel"};
+            String[] sourceKeys = {"fileName", "format", "pageNumber", "headerText", "headerLevel",
+                    "chunkType", "imagePath", "imageDescription"};
             for (String key : sourceKeys) {
                 if (segment.metadata().containsKey(key)) {
                     chunkMetadata.put(key, segment.metadata().getString(key));
@@ -319,6 +349,9 @@ public class DocumentService {
             knowledgeBaseStore.updateDocumentCount(kb.getId(), Math.max(0, kb.getDocumentCount() - 1));
         }
 
+        // 删除文档对应的图片目录（BUG 修复：避免删除文档后残留孤儿图片数据占满磁盘）
+        deleteImageDir(documentId);
+
         log.info("删除文档完成, documentId={}", documentId);
     }
 
@@ -355,6 +388,43 @@ public class DocumentService {
         } catch (IOException e) {
             log.warn("删除临时文件失败, documentId={}", documentId, e);
         }
+    }
+
+    /**
+     * 删除文档对应的图片目录（BUG 修复新增）
+     * <p>
+     * 业务含义：PDF 图片提取时会在 {tempDir}/images/{documentId}/ 下保存图片文件，
+     * 删除文档时需递归清理该目录，避免残留孤儿图片数据占满磁盘。
+     * </p>
+     * <p>
+     * 容错策略：
+     * 1. 目录不存在时直接返回（非 PDF 文档或未开启图片提取时无该目录，属正常情况）
+     * 2. 单个文件删除失败仅记录 WARN，继续清理其余文件，避免一处失败导致整目录残留
+     * 3. 整体 IOException 不抛出，不阻断删除主流程（文档元数据已删除，图片残留仅占磁盘不影响功能）
+     * </p>
+     *
+     * @param documentId 文档 ID（作为图片子目录名）
+     */
+    private void deleteImageDir(String documentId) {
+        Path imageDir = Paths.get(ragProperties.getDocument().getTempDir(), "images", documentId);
+        if (!Files.exists(imageDir)) {
+            return;
+        }
+        // 递归删除：先按 reverseOrder 排序确保子文件/目录先于父目录被删除
+        try (Stream<Path> walk = Files.walk(imageDir)) {
+            walk.sorted(Comparator.reverseOrder())
+                    .forEach(path -> {
+                        try {
+                            Files.deleteIfExists(path);
+                        } catch (IOException e) {
+                            log.warn("删除图片文件失败: path={}, error={}", path, e.getMessage());
+                        }
+                    });
+        } catch (IOException e) {
+            log.warn("删除文档图片目录失败: documentId={}, imageDir={}", documentId, imageDir, e);
+            return;
+        }
+        log.info("删除文档图片目录完成: documentId={}, imageDir={}", documentId, imageDir);
     }
 
     /**
@@ -396,5 +466,116 @@ public class DocumentService {
             allEmbeddings.addAll(embeddingModel.embedAll(batch).content());
         }
         return allEmbeddings;
+    }
+
+    /**
+     * 判断当前文档是否需要触发 PDF 图片提取（CR-002 新增）
+     * <p>
+     * 业务含义：仅 PDF 格式且 rag.splitter.pdf.extract-images=true 时触发图片提取。
+     * TXT/MD 文档无图片概念，始终返回 false，避免误调用图片提取器。
+     * </p>
+     *
+     * @param format 文件格式
+     * @return 是否触发图片提取
+     */
+    private boolean isPdfImageExtractionEnabled(String format) {
+        if (format == null || !"pdf".equalsIgnoreCase(format)) {
+            return false;
+        }
+        SplitterProperties.PdfChunkConfig pdfConfig = splitterProperties.getPdf();
+        return pdfConfig != null && pdfConfig.isExtractImages();
+    }
+
+    /**
+     * 处理 PDF 图片：提取图片→生成描述→构造图片描述分块→追加到分块列表（CR-002 新增）
+     * <p>
+     * 业务含义：将 PDF 每页渲染为图片，调用视觉 ChatModel 生成文本描述，
+     * 描述作为独立 TextSegment 追加到 segments 列表，metadata 标记 chunkType=image，
+     * 包含 imagePath/imageDescription/pageNumber，供检索时定位图片来源。
+     * </p>
+     * <p>
+     * 容错策略（AC-024）：
+     * - 图片提取失败：记录 WARN，跳过图片处理，返回原 segments
+     * - 视觉模型未配置/获取失败：记录 WARN，跳过描述生成，返回原 segments
+     * - 单张图片描述失败：ImageDescriptor 内部已降级返回 null，此处跳过该图片
+     * </p>
+     *
+     * @param segments        原文本分块列表
+     * @param fileBytes       PDF 文件字节数组
+     * @param documentId      文档 ID（用于构建图片存储子目录）
+     * @param knowledgeBaseId 知识库 ID（注入到图片分块 metadata）
+     * @param fileName        文件名（注入到图片分块 metadata）
+     * @param format          文件格式（应为 "pdf"）
+     * @return 追加了图片描述分块的完整分块列表
+     */
+    private List<TextSegment> processPdfImages(List<TextSegment> segments, byte[] fileBytes,
+                                                String documentId, String knowledgeBaseId,
+                                                String fileName, String format) {
+        List<TextSegment> resultSegments = new ArrayList<>(segments);
+
+        // 1. 提取图片
+        SplitterProperties.PdfChunkConfig pdfConfig = splitterProperties.getPdf();
+        Path imageDir = Paths.get(ragProperties.getDocument().getTempDir(), "images");
+        List<ImageInfo> images;
+        try {
+            images = imageExtractor.extractImages(fileBytes, documentId, imageDir, pdfConfig.getImageDpi());
+        } catch (Exception e) {
+            log.warn("PDF 图片提取失败，跳过图片处理: documentId={}, error={}", documentId, e.getMessage());
+            return resultSegments;
+        }
+
+        if (images == null || images.isEmpty()) {
+            log.debug("PDF 未提取到图片，跳过图片处理: documentId={}", documentId);
+            return resultSegments;
+        }
+
+        // 2. 获取视觉模型（未配置或失败时跳过图片描述生成）
+        ChatModel visionChatModel;
+        try {
+            visionChatModel = modelFactory.getVisionChatModel();
+        } catch (Exception e) {
+            log.warn("视觉模型未配置或获取失败，跳过图片描述生成: documentId={}, error={}",
+                    documentId, e.getMessage());
+            return resultSegments;
+        }
+
+        // 3. 为每张图片生成描述，构造图片描述分块
+        int imageCount = 0;
+        for (ImageInfo image : images) {
+            String description;
+            try {
+                description = imageDescriptor.describe(image, visionChatModel);
+            } catch (Exception e) {
+                // 双重防御：ImageDescriptor 内部已捕获异常，此处兜底
+                log.warn("图片描述生成异常，跳过该图片: imagePath={}, error={}",
+                        image.getImagePath(), e.getMessage());
+                continue;
+            }
+
+            if (description == null || description.isEmpty()) {
+                // 视觉模型失败/图片不可读等场景，跳过该图片（AC-024）
+                continue;
+            }
+
+            // 构造图片描述分块：正文为描述文本，metadata 标记 chunkType=image 并包含来源信息
+            Metadata imageMetadata = new Metadata()
+                    .put("knowledgeBaseId", knowledgeBaseId)
+                    .put("documentId", documentId)
+                    .put("format", format)
+                    .put("chunkType", "image")
+                    .put("imagePath", image.getImagePath())
+                    .put("imageDescription", description)
+                    .put("pageNumber", String.valueOf(image.getPageNumber()));
+            if (fileName != null) {
+                imageMetadata = imageMetadata.put("fileName", fileName);
+            }
+            TextSegment imageSegment = TextSegment.from(description, imageMetadata);
+            resultSegments.add(imageSegment);
+            imageCount++;
+        }
+
+        log.info("PDF 图片处理完成: documentId={}, totalImages={}, describedImages={}",
+                documentId, images.size(), imageCount);
+        return resultSegments;
     }
 }

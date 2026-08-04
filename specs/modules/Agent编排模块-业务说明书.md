@@ -23,12 +23,13 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 - **前置条件**：应用已启动，ARK_API_KEY 已配置。
 - **后置结果**：返回 `Result<ChatResponse>`，含 sessionId/response/duration。
 
-### 3.2 Agent 委托懒加载
+### 3.2 Agent 委托懒加载与 Tool 变化重建
 
-- **触发场景**：SimpleAgent 首次被调用 chat() 时。
+- **触发场景**：SimpleAgent 首次被调用 chat() 时，或 Tool 数量发生变化时（CR-003 新增）。
 - **操作步骤**：双重检查锁创建 AiServices 代理。
 - **系统行为**：`AiServices.builder(BaseAgent.class)` 绑定 chatModel + memoryProvider + tools + systemMessageProvider。
-- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖。
+- **Tool 变化检测（CR-003 新增）**：`SimpleAgent` 维护 `lastToolCount` 字段，每次 `getDelegate()` 调用时检测 `toolRegistry.getToolCount()` 是否变化。若 Tool 数量变化（如知识库创建/删除导致动态 Tool 增减），则重建 delegate 绑定最新工具列表，确保新注册/注销的知识库 Tool 对 Agent 生效。
+- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖；Tool 变化重建确保动态 Tool 实时生效（BR-AGT-003）。
 
 ### 3.3 ReAct 循环执行
 
@@ -59,9 +60,11 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 
 ```mermaid
 flowchart TD
-    A[用户调用 chat] --> B{首次调用?}
+    A[用户调用 chat] --> B{delegate 为 null?}
     B -->|是| C[懒加载创建 delegate]
-    B -->|否| D[复用 delegate]
+    B -->|否| E1{Tool 数量变化?（CR-003）}
+    E1 -->|是| C
+    E1 -->|否| D[复用 delegate]
     C --> D
     D --> E[AiServices ReAct 循环]
     E --> F{需要工具?}
@@ -74,9 +77,10 @@ flowchart TD
 
 **流程说明**：
 1. SimpleAgent.chat() 首次调用时懒加载创建 AiServices 代理
-2. AiServices 自动执行 ReAct 循环（思考-行动-观察）
-3. LLM 决策是否调用工具，是则执行工具并回填结果
-4. 无需工具时生成最终回复返回
+2. CR-003 新增：每次调用检测 Tool 数量变化，变化时重建 delegate 绑定最新工具
+3. AiServices 自动执行 ReAct 循环（思考-行动-观察）
+4. LLM 决策是否调用工具，是则执行工具并回填结果
+5. 无需工具时生成最终回复返回
 
 ## 5. 安全与合规
 
@@ -95,7 +99,7 @@ flowchart TD
 ## 7. 核心数据实体
 
 - **BaseAgent**：Agent 抽象接口，定义 `chat(sessionId, message)` 和 `chatStream(sessionId, message)` 入口，使用 `@MemoryId` + `@UserMessage` 注解。
-- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。
+- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。CR-003 新增 `lastToolCount` 字段检测 Tool 数量变化，Tool 增减时自动重建 delegate 绑定最新工具列表。
 - **ThinkingTokenStream**：思考流式接口（CR-001 新增），定义 `onPartialThinking`/`onPartialResponse`/`onComplete`/`onError` 四个回调 + `start()` 方法，区别于 LangChain4j TokenStream 仅回调 content。
 - **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultSystemPrompt/thinkingSystemPrompt/thinkingReactSystemPrompt/enableLogging/fileAllowedDir。thinkingReactSystemPrompt 仅含 ReAct 格式引导和约束规则，工具描述由 ToolSchemaConverter.convertToDescriptionText() 动态追加（深度思考 CR-001）。
 
@@ -115,7 +119,7 @@ flowchart TD
 |---------|---------|------|
 | BR-AGT-001 | 所有 Agent 实现必须实现 `BaseAgent` 接口 | 🔴 强制 |
 | BR-AGT-002 | ReAct 循环最大迭代次数默认 10 | 🔴 强制 |
-| BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖 | 🔴 强制 |
+| BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖；Tool 数量变化时必须重建 delegate 绑定最新工具列表（CR-003 新增） | 🔴 强制 |
 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | 🔴 强制 |
 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | 🟡 尽量 |
 | BR-AGT-006 | Agent 调用日志默认开启，记录 sessionId/耗时/回复长度 | ⚪ 可覆盖 |

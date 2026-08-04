@@ -33,6 +33,7 @@ ark:
     timeout: 60s
     max-retries: 3
     temperature: 0.7
+    vision-model: doubao-vision-pro  # 视觉模型名称，用于 PDF 图片描述生成（CR-002 新增）
 
 # LLM 提供商选择
 # 业务含义：通过 provider 切换当前使用的 LLM 提供商，支持 ark（火山引擎方舟）和 bailian（阿里百炼）
@@ -54,6 +55,7 @@ bailian:
   max-retries: 3
   temperature: 0.7
   embedding-model: text-embedding-v4
+  vision-model: qwen3.7-plus  # 视觉模型名称，用于 PDF 图片描述生成（CR-002 新增；与 ark.coding-plan.vision-model 对称，保证 bailian 启动时也能生成图片描述）
 
 # Agent 配置
 agent:
@@ -101,6 +103,9 @@ rag:
       size: 1200
       overlap: 200
       min-size: 600
+      extract-images: true  # 是否提取 PDF 嵌入图片对象（CR-002 新增；BUG 修复后仅提取嵌入图片，不渲染整页）
+      image-dpi: 144         # （已废弃）原整页渲染 DPI，BUG 修复后改为提取嵌入图片，配置值不再生效
+      max-images-per-page: 15  # 单页图片数量上限（BUG 修复新增），超过则认为是流程图导出碎片化PDF，整页跳过
     txt:
       size: 1000
       overlap: 200

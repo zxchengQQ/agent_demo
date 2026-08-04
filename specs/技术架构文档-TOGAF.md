@@ -1,7 +1,7 @@
 # AI Agent 示例项目 - 技术架构文档 (TOGAF)
 
-> **文档版本**：v1.1
-> **基线日期**：2026-07-21
+> **文档版本**：v1.2
+> **基线日期**：2026-08-03
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **TOGAF 版本**：The Open Group Architecture Framework 10.0
 > **关联文档**：[业务架构文档 (Phase B)](./业务架构文档.md) | [数据架构文档 (Phase C-Data)](./数据架构文档-TOGAF.md) | [SDD-项目技术指南文档](./SDD-项目技术指南文档.md)
@@ -170,7 +170,7 @@ graph TD
         D["agent-demo-llm<br/>ModelFactory + ArkProperties"]
         E["agent-demo-tools<br/>ToolRegistry + 内置工具"]
         F["agent-demo-memory<br/>ChatMemoryManager + SessionManager"]
-        G["agent-demo-rag<br/>文档加载 + 分块 + 向量化 + 检索 + 对话集成"]
+        G["agent-demo-rag<br/>知识库管理 + 向量化 + 检索 + 动态 Tool 注册（CR-003）"]
         H["agent-demo-mcp（规划中）<br/>MCP 客户端/服务端"]
     end
 
@@ -271,7 +271,7 @@ agent-demo-llm/
 ```
 agent-demo-tools/
 ├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
-└── registry/              # ToolRegistry（注册中心）
+└── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展）+ ToolSchemaConverter（Schema/描述转换）
 ```
 
 #### 3.3.5 agent-demo-memory 内部分层
@@ -633,6 +633,7 @@ flowchart LR
 | MyBatis-Plus | 3.5.7 | ORM（规划中） |
 | springdoc-openapi | 2.5.0 | 接口文档 |
 | Hutool | 5.8.27 | 通用工具库 |
+| ByteBuddy | 1.14.19 | 运行时字节码生成（RAG 模块 CR-003 动态 Tool 生成） |
 | Jackson | Spring Boot 内置 | JSON 序列化 |
 | Logback | Spring Boot 内置 | 日志框架 |
 | Lombok | Spring Boot 内置 | 代码简化 |
@@ -654,7 +655,7 @@ flowchart LR
 | **agent-demo-llm** | ✅ | - | | | | | | | | |
 | **agent-demo-tools** | ✅ | | - | | | | | | | |
 | **agent-demo-memory** | ✅ | ✅ | | - | | | | | | |
-| **agent-demo-rag** | ✅ | ✅ | | | - | | | | | |
+| **agent-demo-rag** | ✅ | ✅ | ✅ | | - | | | | | |
 | **agent-demo-mcp** | ✅ | | ✅ | | | - | | | | |
 | **agent-demo-agent** | ✅ | ✅ | ✅ | ✅ | - | | | | | |
 | **agent-demo-app** | ✅ | | | | ✅ | ✅ | ✅ | - | | |

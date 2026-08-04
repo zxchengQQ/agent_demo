@@ -32,6 +32,8 @@ public enum ErrorCode {
     LLM_TIMEOUT(5002, "LLM 调用超时"),
     LLM_RATE_LIMITED(5003, "LLM 调用被限流"),
     LLM_API_KEY_INVALID(5004, "LLM API Key 无效"),
+    /** 模型名称未配置（CR-002 新增） */
+    LLM_MODEL_NOT_CONFIGURED(5005, "LLM 模型未配置"),
 
     // 工具相关错误（5100-5199）
     TOOL_EXECUTION_FAILED(5100, "工具执行失败"),

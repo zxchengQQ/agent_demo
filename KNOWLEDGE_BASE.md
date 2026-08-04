@@ -1,6 +1,6 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.1
+> **文档版本**：v2.2
 > **基线日期**：2026-07-31
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
@@ -317,7 +317,7 @@ agent-demo/
 | `agent-demo-llm` | common |
 | `agent-demo-tools` | common |
 | `agent-demo-memory` | common, llm |
-| `agent-demo-rag` | common, llm, splitter |
+| `agent-demo-rag` | common, llm, splitter, tools（CR-003 新增） |
 | `agent-demo-splitter` | common |
 | `agent-demo-mcp` | common, tools（规划中） |
 | `agent-demo-agent` | common, llm, tools, memory |
@@ -352,7 +352,7 @@ agent-demo-llm/
 ```
 agent-demo-tools/
 ├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
-└── registry/              # ToolRegistry（注册中心）+ ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
+└── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展）+ ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
 ```
 
 **agent-demo-memory**（记忆系统）：
@@ -663,7 +663,7 @@ sequenceDiagram
 
 | 对象 | 懒加载方式 | 原因 |
 |------|---------|------|
-| SimpleAgent.delegate | volatile + synchronized 双重检查锁 | 避免构造时调用 listTools() 触发循环依赖 |
+| SimpleAgent.delegate | volatile + synchronized 双重检查锁 | 避免构造时调用 listTools() 触发循环依赖；CR-003 新增 lastToolCount 检测，Tool 数量变化后重建 delegate |
 | ToolRegistry.scanned | volatile + synchronized 双重检查锁 | 避免 SimpleAgent 构造时触发 Tool 扫描循环依赖 |
 | ModelFactory.embeddingModel | volatile + synchronized 双重检查锁 | 单例懒加载，首次使用时创建 |
 | ChatMemoryManager.getMemory | computeIfAbsent | 会话记忆不存在时自动创建 |
@@ -713,21 +713,26 @@ public interface BaseAgent {
     String chat(...);
 }
 
-// 2. 实现 Agent（委托模式 + 懒加载）
+// 2. 实现 Agent（委托模式 + 懒加载 + Tool 变化重建）
 @Service
 public class SimpleAgent implements BaseAgent {
     private volatile BaseAgent delegate;  // 懒加载代理
+    private volatile int lastToolCount = -1;  // CR-003: Tool 数量变化检测
 
     private BaseAgent getDelegate() {
-        if (delegate == null) {
+        // CR-003: 若 Tool 数量变化（如知识库动态 Tool 增减），重建 delegate 绑定最新工具
+        int currentToolCount = toolRegistry.getToolCount();
+        if (delegate == null || currentToolCount != lastToolCount) {
             synchronized (this) {
-                if (delegate == null) {
+                currentToolCount = toolRegistry.getToolCount();
+                if (delegate == null || currentToolCount != lastToolCount) {
                     delegate = AiServices.builder(BaseAgent.class)
                             .chatModel(modelFactory.getDefaultChatModel())
                             .chatMemoryProvider(memoryId -> memoryManager.getMemory((String) memoryId))
                             .tools(toolRegistry.listTools().toArray())
                             .systemMessageProvider(memoryId -> agentConfig.getDefaultSystemPrompt())
                             .build();
+                    lastToolCount = currentToolCount;
                 }
             }
         }
@@ -1024,7 +1029,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 |---|------|------|------|------|
 | 7 | BR-AGT-001 | 所有 Agent 实现必须实现 `BaseAgent` 接口 | Agent 编排 | 🔴 强制 |
 | 8 | BR-AGT-002 | ReAct 循环最大迭代次数默认 10 | Agent 编排 | 🔴 强制 |
-| 9 | BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖 | Agent 编排 | 🔴 强制 |
+| 9 | BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖；Tool 数量变化时必须重建 delegate 绑定最新工具列表（CR-003 新增） | Agent 编排 | 🔴 强制 |
 | 10 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | Agent 编排 | 🔴 强制 |
 | 11 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | Agent 编排 | 🟡 尽量 |
 | 12 | BR-AGT-006 | Agent 调用日志默认开启 | Agent 编排 | ⚪ 可覆盖 |
@@ -1041,7 +1046,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 16 | BR-TOOL-004 | HTTP 工具响应超过 10KB 必须截断 | 工具调用 | 🔴 强制 |
 | 17 | BR-TOOL-005 | 文件读取工具必须限定在 `agent.file-allowed-dir` 目录白名单内 | 工具调用 | 🔴 强制 |
 | 18 | BR-TOOL-006 | 工具执行失败必须抛出 `BusinessException` + 对应 ErrorCode | 工具调用 | 🔴 强制 |
-| 19 | BR-TOOL-007 | 动态注册工具应通过 `ToolRegistry.register()` 注册 | 工具调用 | 🟡 尽量 |
+| 19 | BR-TOOL-007 | 动态注册/注销工具应通过 `ToolRegistry.register()` / `unregisterTool()` 操作（CR-003 新增注销方法） | 工具调用 | 🟡 尽量 |
 
 ### 9.4 记忆与会话规则
 
@@ -1586,6 +1591,7 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v1.9 | 2026-07-30 | 多 LLM 提供商支持（阿里百炼）：新增 LlmProvider 枚举（ARK/BAILIAN）、LlmProperties（llm.provider 配置绑定）、BailianProperties（bailian.* 配置绑定）；ModelFactory 新增提供商路由逻辑（if-else 根据 provider 切换配置源）；新增支持阿里百炼同步对话、流式对话、Embedding 模型；API Key 隔离校验（各验各的）；Embedding 模型跟随提供商切换；新增 6 条 LLM 业务规则（BR-LLM-008~013）；更新 3.2 节 LLM 提供商配置表、3.3 节模型清单、5.6 节场景路由框架、10.2 节环境变量、10.4 节关键配置项 |
 | v2.0 | 2026-07-31 | CR-003 知识库动态 Tool 注册：新增 KnowledgeBaseToolFactory（CGLIB 动态代理生成 @Tool Bean）、KnowledgeBaseToolRegistrar（启动批量注册 + 生命周期管理）；KnowledgeRetrieverTool 从 @Tool 改为 @Component，新增 searchByKbId(kbId, query) 方法；ToolRegistry 新增 register/unregisterTool 方法支持动态 Tool；KnowledgeBaseService.create()/delete() 联动 Tool 注册/注销；新增 3 条 AC（AC-033/034/035）；更新 BR-RAG-011（动态 Tool 模式）、新增 BR-RAG-020（启动批量注册）；技术决策 1/9/10 更新；更新 RAG 模块描述为"动态 Tool 注册，每个知识库独立 Tool" |
 | v2.1 | 2026-07-31 | CR-003 实现细节修正：KnowledgeBaseToolFactory 从 CGLIB 改为 ByteBuddy 1.14.19，在生成方法上直接写入 @Tool 注解以被 LangChain4j ToolSpecifications 识别；SimpleAgent 增加 lastToolCount 检测，Tool 数量变化后重建 delegate 绑定最新工具；agent-demo-rag 新增对 agent-demo-tools 依赖；更新 KNOWLEDGE_BASE.md 技术栈与模块描述 |
+| v2.2 | 2026-08-03 | CR-003 文档同步：更新 6.2 节 Agent 开发范式代码示例（含 lastToolCount 检测逻辑）；更新 5.9.1 节懒加载机制表（SimpleAgent.delegate 增加 Tool 变化重建说明）；更新 BR-AGT-003（Tool 数量变化重建 delegate）、BR-TOOL-007（新增注销方法）；更新 4.2 节模块依赖方向（rag 新增 tools 依赖）；更新 4.3 节 agent-demo-tools 内部分层描述；同步更新 RAG/工具调用/Agent 编排模块业务说明书与技术架构文档 |
 
 ---
 
