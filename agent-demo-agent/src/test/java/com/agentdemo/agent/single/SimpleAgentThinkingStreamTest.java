@@ -2,15 +2,14 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
-import dev.langchain4j.data.message.Content;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.TextContent;
 import dev.langchain4j.data.message.UserMessage;

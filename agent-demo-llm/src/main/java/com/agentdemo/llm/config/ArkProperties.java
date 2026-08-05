@@ -1,5 +1,6 @@
 package com.agentdemo.llm.config;
 
+import com.agentdemo.common.constant.ModelConstants;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
@@ -33,7 +34,7 @@ import java.util.Map;
  */
 @Data
 @ConfigurationProperties(prefix = "ark.coding-plan")
-public class ArkProperties {
+public class ArkProperties implements LlmProviderConfig {
 
     /**
      * 火山引擎 Base URL
@@ -90,10 +91,26 @@ public class ArkProperties {
      * @param scene 场景标识（chat/code/lite 等）
      * @return 模型名称
      */
+    @Override
     public String getModelName(String scene) {
         if (scene == null || scene.isEmpty()) {
             return defaultModel;
         }
         return models.getOrDefault(scene, defaultModel);
+    }
+
+    /**
+     * 获取 Embedding 模型名称（CR-002 Task-19 新增）
+     * <p>
+     * 业务含义：火山引擎的 Embedding 模型未在 {@code ark.coding-plan} 配置中独立抽字段，
+     * 沿用 {@link ModelConstants#MODEL_DOUBAO_EMBEDDING} 常量。
+     * 实现 {@link LlmProviderConfig} 接口以统一配置访问契约（对应 AC-018）。
+     * </p>
+     *
+     * @return Embedding 模型名称（doubao-embedding-vision）
+     */
+    @Override
+    public String getEmbeddingModel() {
+        return ModelConstants.MODEL_DOUBAO_EMBEDDING;
     }
 }

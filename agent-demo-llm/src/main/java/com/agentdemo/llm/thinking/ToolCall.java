@@ -1,4 +1,4 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
 import lombok.Data;
 

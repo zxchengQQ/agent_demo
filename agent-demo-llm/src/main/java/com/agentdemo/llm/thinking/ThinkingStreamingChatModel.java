@@ -1,5 +1,6 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
+import com.agentdemo.llm.registry.ModelFactory;
 import dev.langchain4j.data.message.ChatMessage;
 
 import java.util.List;

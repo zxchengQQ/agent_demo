@@ -1,10 +1,10 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
-import com.agentdemo.llm.factory.ModelFactory;
-import com.agentdemo.llm.factory.ThinkingStreamHandler;
-import com.agentdemo.llm.factory.ToolCall;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.registry.ModelFactory;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
@@ -18,9 +18,7 @@ import org.mockito.invocation.InvocationOnMock;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.List;
 
-import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;

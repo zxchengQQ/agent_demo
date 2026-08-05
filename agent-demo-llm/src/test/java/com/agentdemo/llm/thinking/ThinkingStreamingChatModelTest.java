@@ -1,10 +1,10 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
-import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.data.message.ChatMessage;
+import com.agentdemo.llm.thinking.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import org.junit.jupiter.api.Test;
 
-import java.util.Collections;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;

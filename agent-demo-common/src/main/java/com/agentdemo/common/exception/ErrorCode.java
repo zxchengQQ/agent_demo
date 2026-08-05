@@ -34,6 +34,10 @@ public enum ErrorCode {
     LLM_API_KEY_INVALID(5004, "LLM API Key 无效"),
     /** 模型名称未配置（CR-002 新增） */
     LLM_MODEL_NOT_CONFIGURED(5005, "LLM 模型未配置"),
+    /** LLM 提供商未注册（CR-002 Task-24 新增）：编排层在注册表中未找到对应 providerCode 的厂商策略实现 */
+    LLM_PROVIDER_NOT_FOUND(5006, "LLM 提供商未注册"),
+    /** LLM 能力不支持（CR-002 Task-24 新增）：厂商未实现某能力接口（如视觉对话），调用该能力方法时抛出 */
+    LLM_CAPABILITY_NOT_SUPPORTED(5007, "LLM 能力不支持"),
 
     // 工具相关错误（5100-5199）
     TOOL_EXECUTION_FAILED(5100, "工具执行失败"),

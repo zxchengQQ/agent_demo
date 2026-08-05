@@ -34,7 +34,7 @@ import java.util.Map;
  */
 @Data
 @ConfigurationProperties(prefix = "bailian")
-public class BailianProperties {
+public class BailianProperties implements LlmProviderConfig {
 
     /**
      * 阿里百炼 OpenAI 兼容协议 Base URL
@@ -98,6 +98,7 @@ public class BailianProperties {
      * @param scene 场景标识（chat/code/lite 等）
      * @return 模型名称
      */
+    @Override
     public String getModelName(String scene) {
         if (scene == null || scene.isEmpty()) {
             return defaultModel;

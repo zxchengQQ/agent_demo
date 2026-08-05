@@ -1,5 +1,7 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ToolCall;
 import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.Test;
 

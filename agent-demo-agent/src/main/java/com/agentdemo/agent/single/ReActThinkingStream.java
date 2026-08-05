@@ -1,9 +1,9 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ThinkingStreamHandler;
-import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
-import com.agentdemo.llm.factory.ToolCall;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.tools.registry.ToolExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;

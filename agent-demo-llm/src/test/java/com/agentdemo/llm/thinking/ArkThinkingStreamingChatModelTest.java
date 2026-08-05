@@ -1,11 +1,12 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
+import com.agentdemo.llm.thinking.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.mockito.ArgumentCaptor;
 
 import java.time.Duration;
 import java.util.Collections;

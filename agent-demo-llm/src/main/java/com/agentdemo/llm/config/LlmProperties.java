@@ -17,6 +17,10 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  *   provider: ark    # ark | bailian
  * </pre>
  * </p>
+ * <p>
+ * CR-002 新增：{@link #getProviderCode()} 派生方法，便于编排层（ModelFactory）
+ * 直接获取当前激活的厂商代码，用于从注册表查找对应 {@code LlmServiceProvider}。
+ * </p>
  */
 @Data
 @ConfigurationProperties(prefix = "llm")
@@ -28,4 +32,17 @@ public class LlmProperties {
      * 默认值 ARK 确保不配置时不影响现有功能
      */
     private LlmProvider provider = LlmProvider.ARK;
+
+    /**
+     * 获取当前激活的厂商代码（CR-002 新增）
+     * <p>
+     * 业务含义：从 {@link LlmProvider#getCode()} 派生，便于编排层注册表查找。
+     * 与 {@code application.yml} 中 {@code llm.provider} 配置值一致。
+     * </p>
+     *
+     * @return 厂商代码（如 "ark"、"bailian"）
+     */
+    public String getProviderCode() {
+        return provider.getCode();
+    }
 }

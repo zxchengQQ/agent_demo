@@ -1,5 +1,8 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.thinking;
 
+import com.agentdemo.llm.thinking.ArkThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ToolCall;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import org.junit.jupiter.api.BeforeEach;
@@ -350,7 +353,7 @@ class ArkThinkingStreamingReActTest {
         ArkThinkingStreamingChatModel spyModel = org.mockito.Mockito.spy(model);
         ThinkingStreamHandler handler = mock(ThinkingStreamHandler.class);
 
-        // mock fetchAndParseSseStream，模拟逐行回调
+        // mock executeStream（CR-002 后基类用 executeStream 替代 fetchAndParseSseStream），模拟逐行回调
         org.mockito.Mockito.doAnswer(invocation -> {
             ThinkingStreamHandler h = invocation.getArgument(1);
             StringBuilder fullResp = new StringBuilder();
@@ -359,7 +362,7 @@ class ArkThinkingStreamingReActTest {
             spyModel.parseSseLine("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"回复\"},\"finish_reason\":null}]}", h, fullResp, acc);
             spyModel.parseSseLine("data: {\"id\":\"1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}", h, fullResp, acc);
             return null;
-        }).when(spyModel).fetchAndParseSseStream(
+        }).when(spyModel).executeStream(
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(ThinkingStreamHandler.class));
 
@@ -380,7 +383,7 @@ class ArkThinkingStreamingReActTest {
         ThinkingStreamHandler handler = mock(ThinkingStreamHandler.class);
         RuntimeException exception = new RuntimeException("连接失败");
 
-        doThrow(exception).when(spyModel).fetchAndParseSseStream(
+        doThrow(exception).when(spyModel).executeStream(
                 org.mockito.ArgumentMatchers.anyString(),
                 org.mockito.ArgumentMatchers.any(ThinkingStreamHandler.class));
 

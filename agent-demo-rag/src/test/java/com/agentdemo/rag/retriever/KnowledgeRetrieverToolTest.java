@@ -1,6 +1,6 @@
 package com.agentdemo.rag.retriever;
 
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;

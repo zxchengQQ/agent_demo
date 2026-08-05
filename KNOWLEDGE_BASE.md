@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.2
-> **基线日期**：2026-07-31
+> **文档版本**：v2.3
+> **基线日期**：2026-08-05
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -61,7 +61,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 
 | 能力域 | 实现状态 | 学习要点 |
 |--------|---------|---------|
-| LLM 调用 | ✅ 已实现 | 模型抽象、流式输出、参数调优、场景路由 |
+| LLM 调用 | ✅ 已实现 | 模型抽象、流式输出、参数调优、场景路由、**多厂商注册表路由（CR-002 重构：能力矩阵 + 提供商策略 + 注册表，无厂商硬编码分支）** |
 | 工具调用 | ✅ 已实现 | ReAct 循环、Function Calling、声明式注册 |
 | 记忆系统 | ✅ 已实现（短期） | 短期窗口记忆、会话隔离、超时清理 |
 | Agent 编排 | ✅ 已实现（单 Agent） | AiServices 代理、ReAct 循环、懒加载 |
@@ -337,14 +337,32 @@ agent-demo-agent/
 └── single/                # SimpleAgent（单 Agent 实现，含 chatStream/chatThinkingStream CR-001 扩展，buildReActMessagesWithMemory 动态拼接工具描述）
 ```
 
-**agent-demo-llm**（LLM 接入）：
+**agent-demo-llm**（LLM 接入，CR-002 重构为能力矩阵 + 提供商策略 + 注册表架构）：
 
 ```
 agent-demo-llm/
-├── config/                # ArkProperties / LlmProperties / BailianProperties / LlmProvider / LlmConfig（含 thinking-default-enabled CR-001 新增）
-└── factory/               # ModelFactory（模型工厂，含多提供商路由逻辑，getThinkingStreamingChatModel CR-001 新增）
-                           # ArkThinkingStreamingChatModel（自定义思考流式模型，CR-001 新增）
-                           # ThinkingStreamHandler（思考流式回调接口，CR-001 新增）
+├── config/                # 配置层：属性绑定 + 配置访问契约
+│                          # - LlmProviderConfig（配置访问契约接口，CR-002 从 factory 迁入）
+│                          # - LlmProvider（厂商枚举，CR-002 新增 code 字段，ARK("ark")/BAILIAN("bailian")）
+│                          # - LlmProperties（全局配置，llm.provider 切换，CR-002 新增 getProviderCode()）
+│                          # - ArkProperties / BailianProperties（厂商配置，CR-002 实现 LlmProviderConfig 接口）
+│                          # - LlmConfig（Spring @Configuration）
+├── capability/            # 能力契约层（ISP 接口，CR-002 新增）：定义"有什么能力"
+│                          # - ChatModelProvider / StreamingChatModelProvider / EmbeddingModelProvider
+│                          # - ThinkingStreamingChatModelProvider（工厂方法模式，声明 getThinkingStreamingChatModel(scene)）
+│                          # - VisionChatModelProvider（可选能力接口，ISP 拆出聚合接口外）
+├── provider/              # 厂商策略层（CR-002 新增）：定义"谁来提供"，新增厂商仅在此包加文件
+│                          # - LlmServiceProvider（聚合接口，继承 4 个核心能力接口 + getProviderCode()）
+│                          # - ArkLlmServiceProvider / BailianLlmServiceProvider（厂商实现，显式 implements VisionChatModelProvider）
+├── thinking/              # 思考流式模型层（CR-002 抽取为独立子系统）
+│                          # - ThinkingStreamingChatModel（核心接口）
+│                          # - AbstractThinkingStreamingChatModel（模板方法基类，上提 SSE 解析/HTTP 调用通用逻辑）
+│                          # - ArkThinkingStreamingChatModel / BailianThinkingStreamingChatModel（子类仅实现差异化钩子）
+│                          # - ThinkingStreamHandler（回调接口）/ ToolCall（数据结构）
+├── registry/              # 编排层（CR-002 新增）：注册表路由，对外门面
+│                          # - ModelFactory（注入 List<LlmServiceProvider>，按 providerCode 路由，无厂商硬编码分支）
+└── exception/             # 异常层
+                           # - UnsupportedCapabilityException（CR-002 新增，能力缺失时抛出）
 ```
 
 **agent-demo-tools**（工具系统）：
@@ -424,7 +442,7 @@ agent-demo-common/
 ```
 com.agentdemo
 ├── common.{constant,enums,exception,result,utils}
-├── llm.{config,factory}
+├── llm.{config,capability,provider,thinking,registry,exception}    # CR-002 重构：从单一 factory 包拆为 6 个职责清晰的子包
 ├── tools.{builtin,registry}
 ├── memory.{longterm,session,shortterm,store}
 ├── agent.{config,core,single}
@@ -551,7 +569,25 @@ flowchart TD
 
 ### 5.6 模型场景路由框架
 
-> **数据来源**：`ModelFactory.java`、`ArkProperties.java`、`BailianProperties.java`
+> **数据来源**：`ModelFactory.java`、`ArkProperties.java`、`BailianProperties.java`、`LlmServiceProvider.java`（CR-002 注册表路由）
+
+#### 路由架构（CR-002 重构后）
+
+```mermaid
+flowchart LR
+    Caller[调用方: Agent/RAG/Web] --> MF[ModelFactory]
+    MF -->|llmProperties.getProviderCode| Reg{providerRegistry}
+    Reg -->|ark| Ark[ArkLlmServiceProvider]
+    Reg -->|bailian| BL[BailianLlmServiceProvider]
+    Reg -->|mock| Mock[MockLlmServiceProvider<br>扩展性验证]
+    Ark -->|委托| ArkModels[ChatModel/StreamingModel/Embedding/<br>ThinkingStreaming/VisionModel]
+    BL -->|委托| BlModels[同上能力集]
+```
+
+- **路由方式（CR-002 改变）**：`ModelFactory` 注入 `List<LlmServiceProvider>`，按 `providerCode` 路由，**无厂商硬编码分支**（原 7 处 if-else 已移除）
+- **扩展点**：新增厂商仅需在 `provider/` 包新增 `@Component` 实现类，ModelFactory 零修改
+- **能力检测**：可选能力（如 VisionChatModelProvider）通过 `instanceof` 检测，未实现时抛 `UnsupportedCapabilityException`
+- **缓存语义**：缓存委托给 Provider 实例（Spring 单例），多次调用同 scene 返回同一实例（AC-022）
 
 #### 火山引擎方舟场景路由
 
@@ -572,9 +608,7 @@ flowchart TD
 | Embedding | text-embedding-v4 | RAG 向量化 |
 
 - **提供商切换**：通过 `llm.provider` 配置项切换（`ark` | `bailian`），默认 `ark`
-- **路由方式**：`ModelFactory.getChatModel(scene)` 根据当前提供商路由到对应配置源
 - **回退策略**：未命中场景配置时回退到对应提供商的 `default-model`
-- **缓存策略**：模型实例线程安全，ConcurrentHashMap 缓存复用，与提供商无关
 
 ### 5.8 前端 SSE 流式对话流程
 
@@ -665,7 +699,7 @@ sequenceDiagram
 |------|---------|------|
 | SimpleAgent.delegate | volatile + synchronized 双重检查锁 | 避免构造时调用 listTools() 触发循环依赖；CR-003 新增 lastToolCount 检测，Tool 数量变化后重建 delegate |
 | ToolRegistry.scanned | volatile + synchronized 双重检查锁 | 避免 SimpleAgent 构造时触发 Tool 扫描循环依赖 |
-| ModelFactory.embeddingModel | volatile + synchronized 双重检查锁 | 单例懒加载，首次使用时创建 |
+| ModelFactory.embeddingModel | ~~volatile + synchronized 双重检查锁~~ **CR-002 已迁移**：缓存委托给 Provider 实例（ArkLlmServiceProvider / BailianLlmServiceProvider），Provider 为 Spring 单例，懒加载由各 Provider 内部实现 | 单例懒加载，首次使用时创建 |
 | ChatMemoryManager.getMemory | computeIfAbsent | 会话记忆不存在时自动创建 |
 
 #### 5.9.2 Agent 类型框架
@@ -902,9 +936,10 @@ public class GlobalExceptionHandler {
 |---------|------|--------|------|
 | sessionMap | ConcurrentHashMap<String, SessionMetadata> | SessionManager | 会话管理 |
 | memoryMap | ConcurrentHashMap<String, ChatMemory> | ChatMemoryManager | 记忆管理 |
-| chatModelCache | ConcurrentHashMap<String, ChatModel> | ModelFactory | 对话模型缓存 |
-| streamingModelCache | ConcurrentHashMap<String, StreamingChatModel> | ModelFactory | 流式模型缓存 |
-| embeddingModel | volatile EmbeddingModel | ModelFactory | Embedding 单例 |
+| chatModelCache | ConcurrentHashMap<String, ChatModel> | ArkLlmServiceProvider / BailianLlmServiceProvider | 对话模型缓存（CR-002 缓存持有者从 ModelFactory 迁移到 Provider 实例） |
+| streamingModelCache | ConcurrentHashMap<String, StreamingChatModel> | ArkLlmServiceProvider / BailianLlmServiceProvider | 流式模型缓存（CR-002 迁移到 Provider） |
+| embeddingModel | volatile EmbeddingModel | ArkLlmServiceProvider / BailianLlmServiceProvider | Embedding 单例（CR-002 迁移到 Provider） |
+| providerRegistry | Map<String, LlmServiceProvider> | ModelFactory | 厂商注册表（CR-002 新增，按 providerCode 索引） |
 | tools | CopyOnWriteArrayList<Object> | ToolRegistry | 工具列表 |
 | delegate | volatile BaseAgent | SimpleAgent | AiServices 代理 |
 
@@ -954,7 +989,7 @@ CREATE TABLE `agent_{name}` (
 | 安全场景 | 机制 | 实现类 |
 |----------|------|--------|
 | API Key 保护 | 环境变量 `${ARK_API_KEY}` 或 `${BAILIAN_API_KEY}` 注入，禁止入库/日志 | ArkProperties / BailianProperties |
-| API Key 校验 | 创建模型前根据当前提供商校验对应 API Key 非空 | ModelFactory.validateArkApiKey() / validateBailianApiKey() |
+| API Key 校验 | 创建模型前由各 Provider 实现类校验对应 API Key 非空（CR-002 重构：从 ModelFactory 迁移到 ArkLlmServiceProvider / BailianLlmServiceProvider） | ArkLlmServiceProvider.validateApiKey() / BailianLlmServiceProvider.validateApiKey() |
 | HTTP 工具 SSRF 防护 | 禁止访问内网地址（10./172.16-31./192.168./127./localhost） | HttpTool.validateUrl() |
 | HTTP 响应截断 | 超过 10KB 截断，防止 Token 消耗过大 | HttpTool.truncateResponse() |
 | 文件读取目录限制 | `agent.file-allowed-dir` 白名单（默认 `./data`） | FileReadTool |
@@ -1012,7 +1047,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 1 | BR-LLM-001 | API Key 必须通过环境变量 `ARK_API_KEY` 注入，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
 | 2 | BR-LLM-002 | 必须使用 Coding Plan 专用地址 `/api/coding/v3`（按次计费） | LLM 接入 | 🔴 强制 |
 | 3 | BR-LLM-003 | 模型名称必须通过 `ModelConstants` 常量类引用 | LLM 接入 | 🔴 强制 |
-| 4 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用 | LLM 接入 | 🔴 强制 |
+| 4 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用（CR-002 补充：缓存委托给 Provider 实例，持有者变更但语义不变） | LLM 接入 | 🔴 强制 |
 | 5 | BR-LLM-005 | 调用超时时间默认 60s | LLM 接入 | ⚪ 可覆盖 |
 | 6 | BR-LLM-006 | 最大重试次数默认 3 次 | LLM 接入 | ⚪ 可覆盖 |
 | 7 | BR-LLM-007 | 思考模式（thinking.enabled）必须通过自定义 ArkThinkingStreamingChatModel 直连方舟 API，不走 LangChain4j openai4j（因 openai4j 不透传 reasoning_content） | LLM 接入 | 🔴 强制 |
@@ -1020,8 +1055,13 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 9 | BR-LLM-009 | 阿里百炼 API Key 必须通过环境变量 `BAILIAN_API_KEY` 注入，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
 | 10 | BR-LLM-010 | 切换提供商后只校验当前提供商的 API Key，未激活的提供商不校验 | LLM 接入 | 🔴 强制 |
 | 11 | BR-LLM-011 | 阿里百炼必须使用 OpenAI 兼容协议地址 `/compatible-mode/v1` | LLM 接入 | 🔴 强制 |
-| 12 | BR-LLM-012 | 阿里百炼模式暂不支持深度思考（`getThinkingStreamingChatModel()` 抛出 UnsupportedOperationException） | LLM 接入 | 🔴 强制 |
+| 12 | BR-LLM-012 | ~~阿里百炼模式暂不支持深度思考~~ **CR-002 已修正**：阿里百炼通过 `BailianThinkingStreamingChatModel` 支持深度思考（继承 AbstractThinkingStreamingChatModel，模型名称自身触发思考能力） | LLM 接入 | 🔴 强制 |
 | 13 | BR-LLM-013 | Embedding 模型跟随提供商切换：ARK 使用 `doubao-embedding-vision`，BAILIAN 使用 `text-embedding-v4` | LLM 接入 | 🔴 强制 |
+| 14 | BR-LLM-014 | 新增 LLM 厂商时 `ModelFactory` 核心代码必须零修改，仅通过新增 `LlmServiceProvider` 实现类（标注 `@Component`）+ `LlmProviderConfig` 实现类完成接入（CR-002 新增，对应 AC-018） | LLM 接入 | 🔴 强制 |
+| 15 | BR-LLM-015 | `ModelFactory` 中禁止出现任何 `if (provider == XXX) {...} else {...}` 形式的厂商硬编码分支（CR-002 新增，对应 AC-019，静态扫描验证） | LLM 接入 | 🔴 强制 |
+| 16 | BR-LLM-016 | `ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 代码重复率必须 ≤ 30%，通过继承 `AbstractThinkingStreamingChatModel` 实现（CR-002 新增，对应 AC-020，jscpd 检测） | LLM 接入 | 🔴 强制 |
+| 17 | BR-LLM-017 | 厂商未实现的能力接口在运行时必须抛出 `UnsupportedCapabilityException`，禁止隐式失败（CR-002 新增，对应 AC-021） | LLM 接入 | 🔴 强制 |
+| 18 | BR-LLM-018 | `LlmServiceProvider` 接口必须按 ISP 原则拆分为多能力接口（`ChatModelProvider`、`StreamingChatModelProvider`、`ThinkingStreamingChatModelProvider`、`EmbeddingModelProvider`、`VisionChatModelProvider`），`VisionChatModelProvider` 为可选能力接口不强制聚合，厂商按需 `implements`（CR-002 新增） | LLM 接入 | 🔴 强制 |
 
 ### 9.2 Agent 编排规则
 
@@ -1128,7 +1168,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 200 | 成功 | SUCCESS(200) |
 | 400-404 | 客户端错误 | PARAM_INVALID(400)、UNAUTHORIZED(401)、FORBIDDEN(403)、NOT_FOUND(404) |
 | 5000 | 系统异常 | SYSTEM_ERROR(5000) |
-| 5001-5099 | LLM 相关 | LLM_CALL_FAILED(5001)、LLM_TIMEOUT(5002)、LLM_RATE_LIMITED(5003)、LLM_API_KEY_INVALID(5004) |
+| 5001-5099 | LLM 相关 | LLM_CALL_FAILED(5001)、LLM_TIMEOUT(5002)、LLM_RATE_LIMITED(5003)、LLM_API_KEY_INVALID(5004)、**LLM_PROVIDER_NOT_FOUND(5006)（CR-002 新增）**、**LLM_CAPABILITY_NOT_SUPPORTED(5007)（CR-002 新增）** |
 | 5100-5199 | 工具相关 | TOOL_EXECUTION_FAILED(5100)、TOOL_NOT_FOUND(5101)、TOOL_PARAM_INVALID(5102) |
 | 5200-5299 | 记忆/会话 | MEMORY_NOT_FOUND(5200)、SESSION_NOT_FOUND(5201)、SESSION_EXPIRED(5202) |
 | 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
@@ -1413,7 +1453,9 @@ flowchart LR
 | 新 Agent 实现 | `agent-demo-agent/.../single/SimpleAgent.java` |
 | 新工具 | `agent-demo-tools/.../builtin/HttpTool.java` |
 | 新配置类 | `agent-demo-llm/.../config/ArkProperties.java` |
-| 新工厂类 | `agent-demo-llm/.../factory/ModelFactory.java` |
+| 新工厂类 / 注册表路由 | `agent-demo-llm/.../registry/ModelFactory.java`（CR-002 重构后路径） |
+| 新 LLM 厂商策略实现 | `agent-demo-llm/.../provider/ArkLlmServiceProvider.java`（CR-002 新增，参考接入新厂商） |
+| 新能力接口（ISP 拆分） | `agent-demo-llm/.../capability/ChatModelProvider.java`（CR-002 新增） |
 | 新枚举 | `agent-demo-common/.../enums/AgentType.java` |
 | 新错误码 | `agent-demo-common/.../exception/ErrorCode.java` |
 | 新常量类 | `agent-demo-common/.../constant/ModelConstants.java` |
@@ -1471,6 +1513,8 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | 5002 | LLM 调用超时 | 调整 `ark.coding-plan.timeout`，或切换 Lite 模型 |
 | 5003 | LLM 调用被限流 | 降低调用频率，检查套餐额度 |
 | 5004 | LLM API Key 无效 | 重新配置 `ARK_API_KEY` 环境变量 |
+| 5006 | LLM 提供商未注册（CR-002 新增） | 检查 `llm.provider` 配置值是否在 providerRegistry 中，确认对应 `LlmServiceProvider` 实现类已标注 `@Component` |
+| 5007 | LLM 能力不支持（CR-002 新增） | 厂商未实现该能力接口，检查 Provider 类是否 `implements` 对应能力接口（如 `VisionChatModelProvider`） |
 | 5100 | 工具执行失败 | 查看日志堆栈，检查工具参数 |
 | 5101 | 工具不存在 | 检查工具类是否加 `@Component` + `@Tool` 注解 |
 | 5102 | 工具参数无效 | 检查工具方法参数校验逻辑 |
@@ -1592,6 +1636,7 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.0 | 2026-07-31 | CR-003 知识库动态 Tool 注册：新增 KnowledgeBaseToolFactory（CGLIB 动态代理生成 @Tool Bean）、KnowledgeBaseToolRegistrar（启动批量注册 + 生命周期管理）；KnowledgeRetrieverTool 从 @Tool 改为 @Component，新增 searchByKbId(kbId, query) 方法；ToolRegistry 新增 register/unregisterTool 方法支持动态 Tool；KnowledgeBaseService.create()/delete() 联动 Tool 注册/注销；新增 3 条 AC（AC-033/034/035）；更新 BR-RAG-011（动态 Tool 模式）、新增 BR-RAG-020（启动批量注册）；技术决策 1/9/10 更新；更新 RAG 模块描述为"动态 Tool 注册，每个知识库独立 Tool" |
 | v2.1 | 2026-07-31 | CR-003 实现细节修正：KnowledgeBaseToolFactory 从 CGLIB 改为 ByteBuddy 1.14.19，在生成方法上直接写入 @Tool 注解以被 LangChain4j ToolSpecifications 识别；SimpleAgent 增加 lastToolCount 检测，Tool 数量变化后重建 delegate 绑定最新工具；agent-demo-rag 新增对 agent-demo-tools 依赖；更新 KNOWLEDGE_BASE.md 技术栈与模块描述 |
 | v2.2 | 2026-08-03 | CR-003 文档同步：更新 6.2 节 Agent 开发范式代码示例（含 lastToolCount 检测逻辑）；更新 5.9.1 节懒加载机制表（SimpleAgent.delegate 增加 Tool 变化重建说明）；更新 BR-AGT-003（Tool 数量变化重建 delegate）、BR-TOOL-007（新增注销方法）；更新 4.2 节模块依赖方向（rag 新增 tools 依赖）；更新 4.3 节 agent-demo-tools 内部分层描述；同步更新 RAG/工具调用/Agent 编排模块业务说明书与技术架构文档 |
+| v2.3 | 2026-08-05 | CR-002 agent-demo-llm 模块重构（能力矩阵 + 提供商策略 + 注册表）：4.3 节 agent-demo-llm 内部分层从单一 factory 包重构为 6 个职责子包（config/capability/provider/thinking/registry/exception）；4.4 节包命名规范同步更新；5.6 节模型场景路由框架新增注册表路由架构图与扩展点说明；5.9.1 节懒加载机制表更新 ModelFactory.embeddingModel 持有者迁移；7.2 节核心内存数据结构补充 providerRegistry 新增项与缓存持有者变更；8.1 节安全措施矩阵更新 API Key 校验实现类位置；9.1 节新增 5 条 LLM 业务规则（BR-LLM-014~018，对应 AC-018~022），修正 BR-LLM-012（阿里百炼已支持深度思考）；9.9 节错误码区间新增 LLM_PROVIDER_NOT_FOUND(5006)/LLM_CAPABILITY_NOT_SUPPORTED(5007)；11.3 节 AI 参考范式新增厂商策略实现、能力接口、新工厂类路径；12.2 节运行时异常新增 5006/5007 排查方法；1.4 节能力矩阵 LLM 调用能力描述补充 |
 
 ---
 

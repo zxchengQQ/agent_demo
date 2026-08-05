@@ -1,9 +1,9 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.llm.factory.ThinkingStreamHandler;
-import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
-import com.agentdemo.llm.factory.ToolCall;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.tools.registry.ToolExecutor;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -22,7 +22,6 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 

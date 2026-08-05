@@ -1,7 +1,7 @@
 # AI Agent 示例项目 - 数据架构文档 (TOGAF Phase C-Data)
 
-> **文档版本**：v1.0
-> **基线日期**：2026-07-20
+> **文档版本**：v1.1
+> **基线日期**：2026-08-05
 > **TOGAF 适配**：Phase C - Information Systems Architecture (Data Architecture)
 > **适用范围**：agent-demo（后端，纯后端工程无前端）
 > **存储形态**：当前为内存存储，规划接入 Milvus（向量）+ MySQL（关系）
@@ -63,7 +63,7 @@ graph TB
         direction TB
         D1["会话数据域<br/>SessionManager<br/>ConcurrentHashMap"]
         D2["记忆数据域<br/>ChatMemoryManager<br/>ConcurrentHashMap"]
-        D3["模型缓存域<br/>ModelFactory<br/>ConcurrentHashMap"]
+        D3["模型缓存域<br/>ModelFactory 注册表 + LlmServiceProvider 缓存<br/>ConcurrentHashMap（CR-002）"]
     end
 
     subgraph "前端数据域（浏览器）"
@@ -154,9 +154,10 @@ ark:
 ```mermaid
 erDiagram
     SessionMetadata ||--o| ChatMemory : "1:1 会话记忆"
-    ModelFactory ||--o{ ChatModel : "1:N 模型缓存"
-    ModelFactory ||--o{ StreamingChatModel : "1:N 流式模型缓存"
-    ModelFactory ||--o| EmbeddingModel : "1:1 Embedding 单例"
+    ModelFactory ||--o{ LlmServiceProvider : "1:N 注册表路由（CR-002）"
+    LlmServiceProvider ||--o{ ChatModel : "1:N 模型缓存（Provider 内部）"
+    LlmServiceProvider ||--o{ StreamingChatModel : "1:N 流式模型缓存（Provider 内部）"
+    LlmServiceProvider ||--o| EmbeddingModel : "1:1 Embedding 单例（Provider 内部）"
     ToolRegistry ||--o{ Tool : "1:N 工具注册"
     SimpleAgent ||--|| BaseAgent : "实现接口"
     SimpleAgent }o--|| ModelFactory : "依赖"
@@ -237,7 +238,7 @@ erDiagram
 | `timeout` | Duration | NO | 超时时间（默认 60s） |
 | `maxRetries` | int | NO | 最大重试次数（默认 3） |
 
-**存储位置**：`ModelFactory.chatModelCache`（ConcurrentHashMap<String, ChatModel>）
+**存储位置**：`LlmServiceProvider` 实现类内部 `chatModelCache`（ConcurrentHashMap<String, ChatModel>，CR-002 重构后从 ModelFactory 迁移至 Provider 实例，按 providerCode 隔离）
 
 #### StreamingChatModel（流式对话模型缓存）
 
@@ -249,7 +250,7 @@ erDiagram
 | `temperature` | double | NO | 温度参数 |
 | `timeout` | Duration | NO | 超时时间 |
 
-**存储位置**：`ModelFactory.streamingModelCache`（ConcurrentHashMap<String, StreamingChatModel>）
+**存储位置**：`LlmServiceProvider` 实现类内部 `streamingModelCache`（ConcurrentHashMap<String, StreamingChatModel>，CR-002 重构后迁移至 Provider 实例）
 
 #### EmbeddingModel（向量化模型，单例）
 
@@ -260,7 +261,7 @@ erDiagram
 | `apiKey` | String | NO | API Key |
 | `timeout` | Duration | NO | 超时时间 |
 
-**存储位置**：`ModelFactory.embeddingModel`（volatile 单例，双重检查锁）
+**存储位置**：`LlmServiceProvider` 实现类内部 `embeddingModel`（volatile 单例，双重检查锁，CR-002 重构后迁移至 Provider 实例）
 
 ### 4.5 工具数据域
 
@@ -301,6 +302,29 @@ erDiagram
 | `timeout` | Duration | 60s | 调用超时 |
 | `maxRetries` | int | 3 | 最大重试次数 |
 | `temperature` | double | 0.7 | 温度参数 |
+| `thinkingDefaultEnabled` | boolean | false | 思考模式默认开关（CR-001 新增） |
+
+#### BailianProperties（阿里百炼配置，CR-002 新增）
+
+> 实现 `LlmProviderConfig` 接口，与 `ArkProperties` 共享统一配置访问契约。
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `baseUrl` | String | `https://dashscope.aliyuncs.com/compatible-mode/v1` | OpenAI 兼容协议地址 |
+| `apiKey` | String | - | 环境变量 `BAILIAN_API_KEY` 注入 |
+| `defaultModel` | String | `deepseek-v4-flash` | 默认模型 |
+| `models` | Map<String,String> | - | 场景->模型映射 |
+| `timeout` | Duration | 60s | 调用超时 |
+| `maxRetries` | int | 3 | 最大重试次数 |
+| `temperature` | double | 0.7 | 温度参数 |
+| `embeddingModel` | String | `text-embedding-v4` | 向量化模型 |
+| `visionModel` | String | - | 视觉对话模型（对称配置，CR-002） |
+
+#### LlmProperties（提供商切换配置，CR-002 新增）
+
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `provider` | String | `ark` | LLM 提供商代码（`ark` / `bailian`），通过 `getProviderCode()` 派生 |
 
 #### AgentConfig（Agent 配置）
 
@@ -341,9 +365,9 @@ erDiagram
 |---|---------|---------|--------|--------|------|
 | 1 | SessionMetadata | SessionManager.sessionMap | 会话域 | ✓ | ✅ |
 | 2 | ChatMemory | ChatMemoryManager.memoryMap | 记忆域 | ✓ | ✅ |
-| 3 | ChatModel | ModelFactory.chatModelCache | 模型域 | ✓ | ✅ |
-| 4 | StreamingChatModel | ModelFactory.streamingModelCache | 模型域 | | ✅ |
-| 5 | EmbeddingModel | ModelFactory.embeddingModel | 模型域 | | ✅ |
+| 3 | ChatModel | LlmServiceProvider.chatModelCache（CR-002 迁移） | 模型域 | ✓ | ✅ |
+| 4 | StreamingChatModel | LlmServiceProvider.streamingModelCache（CR-002 迁移） | 模型域 | | ✅ |
+| 5 | EmbeddingModel | LlmServiceProvider.embeddingModel（CR-002 迁移） | 模型域 | | ✅ |
 | 6 | Tool | ToolRegistry.tools | 工具域 | | ✅ |
 | 7 | ChatRequest | HTTP 请求体 | 接入域 | | ✅ |
 | 8 | ChatResponse | HTTP 响应体 | 接入域 | | ✅ |
@@ -381,9 +405,10 @@ erDiagram
 | 父实体 | 子实体 | 关联类型 | 关联字段 | 关联说明 |
 |--------|--------|---------|---------|---------|
 | SessionMetadata | ChatMemory | 1:1 | sessionId | 会话与记忆一一对应 |
-| ModelFactory | ChatModel | 1:N | modelName | 按模型名缓存多个实例 |
-| ModelFactory | StreamingChatModel | 1:N | modelName | 按模型名缓存流式实例 |
-| ModelFactory | EmbeddingModel | 1:1 | - | 单例 |
+| ModelFactory | LlmServiceProvider | 1:N | providerCode | 注册表路由，按厂商代码索引（CR-002） |
+| LlmServiceProvider | ChatModel | 1:N | modelName | 按模型名缓存多个实例（Provider 内部） |
+| LlmServiceProvider | StreamingChatModel | 1:N | modelName | 按模型名缓存流式实例（Provider 内部） |
+| LlmServiceProvider | EmbeddingModel | 1:1 | - | 单例（Provider 内部） |
 | ToolRegistry | Tool | 1:N | - | 注册多个工具 |
 | SimpleAgent | BaseAgent(delegate) | 1:1 | - | 委托模式 |
 
@@ -417,9 +442,10 @@ AgentType.WORKFLOW -> WorkflowAgent（规划中）
 |---------|------|---------|---------|
 | SessionManager.sessionMap | ConcurrentHashMap | 分段锁/CAS | 读多写多，会话管理 |
 | ChatMemoryManager.memoryMap | ConcurrentHashMap | 分段锁/CAS | 读多写多，记忆管理 |
-| ModelFactory.chatModelCache | ConcurrentHashMap | computeIfAbsent | 读多写极少，模型缓存 |
-| ModelFactory.streamingModelCache | ConcurrentHashMap | computeIfAbsent | 读多写极少，流式模型缓存 |
-| ModelFactory.embeddingModel | volatile + synchronized | 双重检查锁 | 单例，懒加载 |
+| ModelFactory.providerRegistry | ConcurrentHashMap(unmodifiable) | 不可变 Map | 注册表路由，启动时构建（CR-002） |
+| LlmServiceProvider.chatModelCache | ConcurrentHashMap | computeIfAbsent | 读多写极少，模型缓存（CR-002 迁移） |
+| LlmServiceProvider.streamingModelCache | ConcurrentHashMap | computeIfAbsent | 读多写极少，流式模型缓存（CR-002 迁移） |
+| LlmServiceProvider.embeddingModel | volatile + synchronized | 双重检查锁 | 单例，懒加载（CR-002 迁移） |
 | ToolRegistry.tools | CopyOnWriteArrayList | 写时复制 | 读多写极少，工具列表 |
 | SimpleAgent.delegate | volatile + synchronized | 双重检查锁 | 单例，懒加载 |
 
@@ -428,7 +454,7 @@ AgentType.WORKFLOW -> WorkflowAgent（规划中）
 | 编号 | 约束描述 | 级别 |
 |------|---------|------|
 | TC-CONCURRENCY-001 | `ChatMemoryManager.getMemory()` 使用 `computeIfAbsent`，回调内禁止修改同一 map | 🔴 强制 |
-| TC-CONCURRENCY-002 | `ModelFactory.getEmbeddingModel()` 必须使用双重检查锁 | 🔴 强制 |
+| TC-CONCURRENCY-002 | `LlmServiceProvider.getEmbeddingModel()` 必须使用双重检查锁（CR-002 重构后从 ModelFactory 迁移至 Provider） | 🔴 强制 |
 | TC-CONCURRENCY-003 | `SimpleAgent.getDelegate()` 必须使用双重检查锁 | 🔴 强制 |
 | TC-CONCURRENCY-004 | `ToolRegistry.ensureScanned()` 必须使用双重检查锁 | 🔴 强制 |
 | TC-CONCURRENCY-005 | 工具列表使用 CopyOnWriteArrayList，禁止使用 ArrayList | 🔴 强制 |

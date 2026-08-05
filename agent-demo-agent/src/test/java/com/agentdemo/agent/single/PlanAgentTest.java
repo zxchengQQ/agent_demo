@@ -2,7 +2,7 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.TaskBreakdownStream;
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;

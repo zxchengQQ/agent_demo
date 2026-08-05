@@ -1,27 +1,32 @@
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.registry;
 
 import com.agentdemo.llm.config.ArkProperties;
 import com.agentdemo.llm.config.BailianProperties;
 import com.agentdemo.llm.config.LlmProperties;
 import com.agentdemo.llm.config.LlmProvider;
+import com.agentdemo.llm.provider.ArkLlmServiceProvider;
+import com.agentdemo.llm.provider.BailianLlmServiceProvider;
+import com.agentdemo.llm.thinking.BailianThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * ModelFactory 百炼模式路由集成测试（CR-001 Task-15 端到端验证）
+ * ModelFactory 百炼模式路由集成测试（CR-002 Task-24 适配新构造器）
  * <p>
- * 验证标准来源：Task-15 验证标准
- * 关联 AC：AC-015, AC-017
+ * 验证标准来源：Task-24 验证标准（CR-001 Task-15 端到端验证的回归）
+ * 关联 AC：AC-015, AC-017, AC-022
  * </p>
  * <p>
- * 验证目标：百炼模式下 getThinkingStreamingChatModel 返回的实例能正确路由到 BailianThinkingStreamingChatModel，
- * 缓存复用机制有效。本测试为集成级别的端到端验证（不依赖真实 HTTP 调用，依赖单元测试已覆盖 HTTP 解析）。
+ * 验证目标：CR-002 重构后，百炼模式下 getThinkingStreamingChatModel 仍能正确路由到
+ * BailianThinkingStreamingChatModel，且缓存复用机制有效（缓存委托给 BailianLlmServiceProvider）。
  * </p>
  */
 class ModelFactoryBailianThinkingTest {
@@ -29,6 +34,8 @@ class ModelFactoryBailianThinkingTest {
     private ArkProperties arkProperties;
     private LlmProperties llmProperties;
     private BailianProperties bailianProperties;
+    private ArkLlmServiceProvider arkProvider;
+    private BailianLlmServiceProvider bailianProvider;
 
     @BeforeEach
     void setUp() {
@@ -51,15 +58,18 @@ class ModelFactoryBailianThinkingTest {
 
         llmProperties = new LlmProperties();
         llmProperties.setProvider(LlmProvider.BAILIAN);
+
+        arkProvider = new ArkLlmServiceProvider(arkProperties);
+        bailianProvider = new BailianLlmServiceProvider(bailianProperties);
     }
 
     /**
      * 验证标准 1：provider=BAILIAN 时，getThinkingStreamingChatModel 返回 BailianThinkingStreamingChatModel 实例
-     * 业务含义：CR-001 核心——百炼模式不再抛异常
+     * 业务含义：CR-002 重构后路由行为应保持一致（委托给 BailianLlmServiceProvider）
      */
     @Test
     void shouldReturnBailianThinkingModel() {
-        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+        ModelFactory factory = new ModelFactory(llmProperties, List.of(arkProvider, bailianProvider));
 
         ThinkingStreamingChatModel model = factory.getThinkingStreamingChatModel();
 
@@ -69,12 +79,12 @@ class ModelFactoryBailianThinkingTest {
     }
 
     /**
-     * 验证标准 2：缓存复用——多次调用返回同一实例
-     * 业务含义：遵循 BR-LLM-004 模型实例缓存复用
+     * 验证标准 2：缓存复用——多次调用返回同一实例（AC-022）
+     * 业务含义：缓存迁移到 BailianLlmServiceProvider 内部后，缓存语义保持不变
      */
     @Test
     void shouldCacheBailianThinkingModel() {
-        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+        ModelFactory factory = new ModelFactory(llmProperties, List.of(arkProvider, bailianProvider));
 
         ThinkingStreamingChatModel first = factory.getThinkingStreamingChatModel();
         ThinkingStreamingChatModel second = factory.getThinkingStreamingChatModel();
@@ -88,9 +98,10 @@ class ModelFactoryBailianThinkingTest {
      */
     @Test
     void shouldUseBailianBaseUrl() {
-        ModelFactory factory = new ModelFactory(arkProperties, llmProperties, bailianProperties);
+        ModelFactory factory = new ModelFactory(llmProperties, List.of(arkProvider, bailianProvider));
 
-        BailianThinkingStreamingChatModel model = (BailianThinkingStreamingChatModel) factory.getThinkingStreamingChatModel();
+        BailianThinkingStreamingChatModel model =
+                (BailianThinkingStreamingChatModel) factory.getThinkingStreamingChatModel();
 
         assertNotNull(model);
         assertTrue(model.getBaseUrl().contains("dashscope.aliyuncs.com"),

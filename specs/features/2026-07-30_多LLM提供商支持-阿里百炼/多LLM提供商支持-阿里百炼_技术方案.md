@@ -269,10 +269,10 @@ public class BailianProperties {
 
 #### 2.1.4 `ThinkingStreamingChatModel` 接口（CR-001 新增）
 
-**包路径**：`com.agentdemo.llm.factory.ThinkingStreamingChatModel`
+**包路径**：`com.agentdemo.llm.thinking.ThinkingStreamingChatModel`
 
 ```java
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.registry;
 
 import dev.langchain4j.data.message.ChatMessage;
 
@@ -292,28 +292,28 @@ import java.util.List;
  */
 public interface ThinkingStreamingChatModel {
 
-    /**
-     * 单轮思考流式对话（不带工具调用）
-     *
-     * @param messages 消息列表
-     * @param handler  流式回调处理器
-     */
-    void stream(List<ChatMessage> messages, ThinkingStreamHandler handler);
+  /**
+   * 单轮思考流式对话（不带工具调用）
+   *
+   * @param messages 消息列表
+   * @param handler  流式回调处理器
+   */
+  void stream(List<ChatMessage> messages, ThinkingStreamHandler handler);
 
-    /**
-     * ReAct 思考流式对话（带工具调用）
-     *
-     * @param messages  消息列表
-     * @param toolsJson 工具 JSON Schema 描述
-     * @param handler   流式回调处理器
-     */
-    void stream(List<ChatMessage> messages, String toolsJson, ThinkingStreamHandler handler);
+  /**
+   * ReAct 思考流式对话（带工具调用）
+   *
+   * @param messages  消息列表
+   * @param toolsJson 工具 JSON Schema 描述
+   * @param handler   流式回调处理器
+   */
+  void stream(List<ChatMessage> messages, String toolsJson, ThinkingStreamHandler handler);
 }
 ```
 
 #### 2.1.5 `BailianThinkingStreamingChatModel` 类（CR-001 新增）
 
-**包路径**：`com.agentdemo.llm.factory.BailianThinkingStreamingChatModel`
+**包路径**：`com.agentdemo.llm.thinking.BailianThinkingStreamingChatModel`
 
 **设计说明**：
 - 与 `ArkThinkingStreamingChatModel` 采用相同的实现策略：**原生 HTTP 直连**阿里百炼 OpenAI 兼容端点，手动解析 SSE 流
@@ -322,13 +322,12 @@ public interface ThinkingStreamingChatModel {
 - 请求体构建：与方舟保持一致（`model`、`stream`、`stream_options.include_usage`、`messages`、`tools`），**不发送 `thinking.type=enabled`**（阿里百炼 DeepSeek 模型通过模型名称自身触发思考能力，无需额外字段）
 
 ```java
-package com.agentdemo.llm.factory;
+package com.agentdemo.llm.registry;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.message.ChatMessage;
 
-import java.net.HttpURLConnection;
 import java.time.Duration;
 import java.util.List;
 
@@ -342,33 +341,140 @@ import java.util.List;
  */
 public class BailianThinkingStreamingChatModel implements ThinkingStreamingChatModel {
 
-    private final String baseUrl;
-    private final String apiKey;
-    private final String modelName;
-    private final Duration timeout;
-    private final ObjectMapper objectMapper = new ObjectMapper();
+  private final String baseUrl;
+  private final String apiKey;
+  private final String modelName;
+  private final Duration timeout;
+  private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public BailianThinkingStreamingChatModel(String baseUrl, String apiKey,
-                                              String modelName, Duration timeout) {
-        this.baseUrl = baseUrl;
-        this.apiKey = apiKey;
-        this.modelName = modelName;
-        this.timeout = timeout;
-    }
+  public BailianThinkingStreamingChatModel(String baseUrl, String apiKey,
+                                           String modelName, Duration timeout) {
+    this.baseUrl = baseUrl;
+    this.apiKey = apiKey;
+    this.modelName = modelName;
+    this.timeout = timeout;
+  }
 
+  @Override
+  public void stream(List<ChatMessage> messages, ThinkingStreamHandler handler) {
+    // 复用 ArkThinkingStreamingChatModel 的 SSE 解析逻辑
+    // 仅变更请求 URL 和认证信息来源
+  }
+
+  @Override
+  public void stream(List<ChatMessage> messages, String toolsJson, ThinkingStreamHandler handler) {
+    // 复用 ArkThinkingStreamingChatModel 的 ReAct SSE 解析逻辑
+    // 仅变更请求 URL 和认证信息来源
+  }
+}
+```
+
+#### 2.1.6 能力矩阵接口设计（CR-002 新增）
+
+**背景**：CR-001 完成后，`ModelFactory` 累积了 7 处 `if (provider == BAILIAN) {...} else {...}` 硬编码分支；`ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 代码重复度高达 95%。CR-002 引入能力矩阵 + 提供商策略 + 注册表模式，使新增厂商零核心改动。
+
+**设计原则**：
+- **接口隔离原则 (ISP)**：按能力拆分为多个独立接口，厂商按需实现，未实现的能力在运行时明确报错
+- **开闭原则 (OCP)**：`ModelFactory` 对扩展开放（新增 Provider）、对修改关闭（零 if-else 分支）
+- **批判性参考**：参考 `多LLM提供商设计模式.md` 中"能力矩阵 = 抽象基类"的建议，但本项目各厂商能力差异仅在配置值，抽象基类会退化为空壳，因此**仅对思考流式模型采用抽象基类**，其他能力采用接口 + 厂商直接实现
+
+**能力接口清单**：
+
+| 接口名 | 包路径 | 方法 | 说明 |
+|:---|:---|:---|:---|
+| `LlmProviderConfig` | `com.agentdemo.llm.registry` | `getBaseUrl/getApiKey/getTimeout/getMaxRetries/getTemperature/getModelName/getEmbeddingModel/getVisionModel` | 配置访问契约，`ArkProperties`/`BailianProperties` 实现 |
+| `ChatModelProvider` | `com.agentdemo.llm.registry` | `ChatModel getChatModel(String scene)` | 同步对话能力 |
+| `StreamingChatModelProvider` | `com.agentdemo.llm.registry` | `StreamingChatModel getStreamingChatModel(String scene)` | 流式对话能力 |
+| `ThinkingStreamingChatModelProvider` | `com.agentdemo.llm.registry` | 继承 `ThinkingStreamingChatModel` | 思考流式能力（保持调用方零改动） |
+| `EmbeddingModelProvider` | `com.agentdemo.llm.registry` | `EmbeddingModel getEmbeddingModel()` | 向量化能力 |
+| `VisionChatModelProvider` | `com.agentdemo.llm.registry` | `ChatModel getVisionChatModel()` | 视觉对话能力 |
+| `LlmServiceProvider` | `com.agentdemo.llm.registry` | `String getProviderCode()`；聚合上述 5 个能力接口 | 厂商策略聚合接口 |
+
+**关键代码示意**：
+
+```java
+// 配置访问契约
+public interface LlmProviderConfig {
+    String getBaseUrl();
+    String getApiKey();
+    Duration getTimeout();
+    int getMaxRetries();
+    double getTemperature();
+    String getModelName(String scene);
+    String getEmbeddingModel();
+    String getVisionModel();
+}
+
+// 厂商策略聚合接口（聚合所有能力，便于 Spring 一次注入 List<LlmServiceProvider>）
+public interface LlmServiceProvider extends ChatModelProvider, StreamingChatModelProvider,
+        ThinkingStreamingChatModelProvider, EmbeddingModelProvider, VisionChatModelProvider {
+    String getProviderCode();  // 如 "ark"、"bailian"，与 LlmProvider.code 匹配
+}
+```
+
+> **设计决策（ISP 落地）**：`LlmServiceProvider` 聚合所有能力接口。厂商按需实现：若某厂商不支持视觉能力，可不实现 `VisionChatModelProvider`，但 `LlmServiceProvider` 聚合接口要求全部实现。**取舍**：当前两家厂商（火山引擎、阿里百炼）均支持全部能力，因此实现聚合接口；未来若有厂商能力不全，可让该厂商不实现 `LlmServiceProvider`，而实现所需的能力子接口，由 `ModelFactory` 通过 `instanceof` 检测并降级处理（详见 2.2.4 节）。
+
+#### 2.1.7 AbstractThinkingStreamingChatModel 抽象基类（CR-002 新增）
+
+**包路径**：`com.agentdemo.llm.thinking.AbstractThinkingStreamingChatModel`
+
+**设计说明**：
+- 采用**模板方法模式**，上提 `ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 中重复度 95% 的通用逻辑（HTTP 调用、SSE 解析、回调分发、`ObjectMapper` 初始化等）
+- 子类仅需实现 `buildRequestBody(List<ChatMessage> messages, String toolsJson)` 差异化方法
+- 火山引擎子类发送 `thinking.type=enabled` 字段；阿里百炼子类不发送（通过模型名称触发思考能力）
+
+**关键代码示意**：
+
+```java
+public abstract class AbstractThinkingStreamingChatModel implements ThinkingStreamingChatModelProvider {
+    protected final String baseUrl;
+    protected final String apiKey;
+    protected final String modelName;
+    protected final Duration timeout;
+    protected final ObjectMapper objectMapper = new ObjectMapper();
+
+    protected AbstractThinkingStreamingChatModel(String baseUrl, String apiKey,
+                                                  String modelName, Duration timeout) { /* 赋值 */ }
+
+    // 模板方法：通用的流式调用流程
     @Override
     public void stream(List<ChatMessage> messages, ThinkingStreamHandler handler) {
-        // 复用 ArkThinkingStreamingChatModel 的 SSE 解析逻辑
-        // 仅变更请求 URL 和认证信息来源
+        String body = buildRequestBody(messages, null);
+        executeStream(body, handler);
     }
 
     @Override
     public void stream(List<ChatMessage> messages, String toolsJson, ThinkingStreamHandler handler) {
-        // 复用 ArkThinkingStreamingChatModel 的 ReAct SSE 解析逻辑
-        // 仅变更请求 URL 和认证信息来源
+        String body = buildRequestBody(messages, toolsJson);
+        executeStream(body, handler);
     }
+
+    // 子类差异化实现：请求体构建（如是否包含 thinking.type=enabled）
+    protected abstract String buildRequestBody(List<ChatMessage> messages, String toolsJson);
+
+    // 通用实现：HTTP 调用 + SSE 解析 + 回调分发（从原 ArkThinkingStreamingChatModel 上提）
+    private void executeStream(String body, ThinkingStreamHandler handler) { /* ... */ }
+
+    // 通用实现：SSE 行解析（从原 ArkThinkingStreamingChatModel 上提）
+    protected void parseSseLine(String line, ThinkingStreamHandler handler,
+                                 StringBuilder fullResponse,
+                                 Map<Integer, ToolCall> toolCallAccumulator) { /* ... */ }
 }
 ```
+
+> **预期效果**：`ArkThinkingStreamingChatModel` 和 `BailianThinkingStreamingChatModel` 各自约从 460/454 行降至 ≤ 180 行，行级重复率从 95% 降至 ≤ 30%（对应 AC-020）。
+
+#### 2.1.8 ArkLlmServiceProvider / BailianLlmServiceProvider 厂商策略实现（CR-002 新增）
+
+**包路径**：`com.agentdemo.llm.provider.ArkLlmServiceProvider` / `BailianLlmServiceProvider`
+
+**设计说明**：
+- 将原 `ModelFactory` 中的 `createArkXxx` / `createBailianXxx` 方法迁移到对应的 Provider 实现类
+- 每个 Provider 持有对应的 `LlmProviderConfig`（即 `ArkProperties` / `BailianProperties`）和**内部缓存 Map**
+- 标注 `@Component`，Spring 自动注入到 `ModelFactory` 的 `List<LlmServiceProvider>` 中
+- `getProviderCode()` 返回厂商代码（`"ark"` / `"bailian"`），与 `LlmProvider.code` 匹配
+
+**缓存迁移说明**：原 `ModelFactory` 中的 `chatModelCache`、`streamingModelCache`、`thinkingStreamingModelCache`、`visionModelCache` 迁移到各 Provider 内部。Provider 为 Spring 单例，缓存语义不变（对应 AC-022）。
 
 ### 2.2 修改类设计
 
@@ -575,6 +681,100 @@ public final class ModelConstants {
 }
 ```
 
+#### 2.2.4 `ModelFactory` 注册表重构（CR-002 新增）
+
+**背景**：CR-001 完成后，`ModelFactory` 内累积了 7 处 `if (provider == BAILIAN) {...} else {...}` 硬编码分支（`getModelName`、`createChatModel`、`createStreamingChatModel`、`createEmbeddingModel`、`createThinkingStreamingChatModel`、`getVisionModelName`、`createVisionChatModel`），新增厂商需修改全部 7 处，违反开闭原则。
+
+**重构核心**：
+1. 注入 `List<LlmServiceProvider>`，Spring 自动收集所有标注 `@Component` 的厂商策略实现
+2. 启动时构建 `Map<String, LlmServiceProvider>` 注册表（key = providerCode）
+3. 运行时通过 `llmProperties.getProvider().getCode()` 查找对应 Provider，委托调用
+4. 缓存（`chatModelCache` 等）迁移到各 Provider 内部，`ModelFactory` 不再持有任何缓存
+5. 能力检测：通过 `instanceof` 判断 Provider 是否实现某能力接口，未实现时抛 `UnsupportedCapabilityException`
+
+**关键代码结构**：
+
+```java
+@Component
+public class ModelFactory {
+    private final LlmProperties llmProperties;
+    private final Map<String, LlmServiceProvider> providerRegistry;  // 按 providerCode 索引
+
+    public ModelFactory(LlmProperties llmProperties, List<LlmServiceProvider> providers) {
+        this.llmProperties = llmProperties;
+        this.providerRegistry = providers.stream()
+            .collect(Collectors.toUnmodifiableMap(
+                LlmServiceProvider::getProviderCode, Function.identity()));
+    }
+
+    // ========== 对外公开方法（签名全部保持不变）==========
+
+    public ChatModel getChatModel(String scene) {
+        return getProvider().getChatModel(scene);
+    }
+
+    public ChatModel getDefaultChatModel() {
+        return getChatModel(null);
+    }
+
+    public StreamingChatModel getStreamingChatModel(String scene) {
+        return getProvider().getStreamingChatModel(scene);
+    }
+
+    public StreamingChatModel getDefaultStreamingChatModel() {
+        return getStreamingChatModel(null);
+    }
+
+    public ThinkingStreamingChatModel getThinkingStreamingChatModel() {
+        return getProvider();  // Provider 即 ThinkingStreamingChatModel 实例
+    }
+
+    public EmbeddingModel getEmbeddingModel() {
+        return getProvider().getEmbeddingModel();
+    }
+
+    public ChatModel getVisionChatModel() {
+        LlmServiceProvider provider = getProvider();
+        // ISP 检测：厂商未实现 VisionChatModelProvider 时抛出明确异常（对应 AC-021）
+        if (!(provider instanceof VisionChatModelProvider)) {
+            throw new UnsupportedCapabilityException(provider.getProviderCode(), "vision");
+        }
+        return ((VisionChatModelProvider) provider).getVisionChatModel();
+    }
+
+    // ========== 私有辅助方法 ==========
+
+    /**
+     * 根据当前激活的提供商 code 从注册表查找 Provider
+     * 业务含义：替代原 if-else 路由，新增厂商时仅需新增 Provider 实现并标注 @Component
+     */
+    private LlmServiceProvider getProvider() {
+        String code = llmProperties.getProvider().getCode();
+        LlmServiceProvider provider = providerRegistry.get(code);
+        if (provider == null) {
+            throw new BusinessException(ErrorCode.LLM_PROVIDER_NOT_FOUND,
+                "未找到 LLM 提供商: " + code + "，已注册: " + providerRegistry.keySet());
+        }
+        return provider;
+    }
+}
+```
+
+**重构前后对比**：
+
+| 维度 | 重构前（CR-001 后） | 重构后（CR-002） |
+|:---|:---|:---|
+| 文件行数 | 约 410 行 | 约 80 行 |
+| 厂商硬编码分支 | 7 处 `if (provider == BAILIAN) {...} else {...}` | 0 处 |
+| 新增厂商改动点 | 修改 7 处分支 + 新增 `createXxx` 方法 | 新增 1 个 `LlmServiceProvider` 实现类，零核心修改 |
+| 缓存持有者 | `ModelFactory` 内部 4 个 `ConcurrentHashMap` | 各 Provider 内部，对外行为不变 |
+| 构造器参数 | `(ArkProperties, LlmProperties, BailianProperties)` | `(LlmProperties, List<LlmServiceProvider>)` |
+| 公开方法签名 | — | 全部保持不变（向前兼容） |
+
+**风险与缓解**：
+- **构造器签名变更**：影响所有直接 new 的位置。**缓解**：项目内全部通过 Spring 注入，无直接 new；`ModelFactoryTest` 需重写（详见 CR-002 任务计划 Task-24）。
+- **缓存语义漂移**：缓存迁移到 Provider 后，若 Provider 非单例则缓存失效。**缓解**：Provider 标注 `@Component`，Spring 默认单例；Task-20/21/24 中通过多次调用断言验证。
+
 ### 2.3 配置设计
 
 #### application.yml 配置变更
@@ -635,10 +835,11 @@ bailian:
 
 | 决策项 | 选择 | 理由 |
 |--------|------|------|
-| 提供商路由方式 | ModelFactory 内 if-else 分支 | 仅 2 个提供商，逻辑简单；不引入策略模式避免过度工程；后续新增提供商时再考虑策略模式重构 |
-| API Key 校验 | 各自独立校验方法 | 每个创建方法只校验当前提供商，符合 BR-LLM-012 |
+| 提供商路由方式 | ~~ModelFactory 内 if-else 分支~~（v1.0）→ ~~抽象为 `ThinkingStreamingChatModel` 接口~~（CR-001）→ **注册表 + Provider 策略模式**（CR-002） | v1.0 仅 2 家厂商时简单；CR-001 后厂商扩展性低（7 处硬编码分支）；CR-002 引入注册表，新增厂商零核心改动（对应 AC-018/AC-019） |
+| API Key 校验 | 各自独立校验方法 | 每个创建方法只校验当前提供商，符合 BR-LLM-012（CR-002 后校验逻辑迁移到 Provider 内部） |
 | 阿里百炼配置前缀 | `bailian.*` | 独立前缀，与现有 `ark.coding-plan.*` 无冲突，扩展性好 |
-| 思考模式处理 | ~~阿里百炼模式抛出 UnsupportedOperationException~~ 抽象为 `ThinkingStreamingChatModel` 接口，百炼新增原生 HTTP 实现（CR-001） | 解除 Out of Scope 限制，通过接口抽象支持双提供商的思考模式，复用已有 SSE 解析逻辑 |
+| 思考模式处理 | ~~阿里百炼模式抛出 UnsupportedOperationException~~（v1.0）→ 抽象为 `ThinkingStreamingChatModel` 接口，百炼新增原生 HTTP 实现（CR-001）→ **抽取 `AbstractThinkingStreamingChatModel` 抽象基类，模板方法复用 SSE 解析逻辑**（CR-002） | CR-001 解决能力抽象问题；CR-002 解决代码重复问题（重复率从 95% 降至 ≤ 30%，对应 AC-020） |
+| 能力接口设计 | **按 ISP 拆分为 6 个独立接口**（CR-002） | 厂商按需实现，未实现的能力在运行时通过 `instanceof` 检测并抛 `UnsupportedCapabilityException`（对应 AC-021）；批判性参考设计模式文档"能力矩阵 = 抽象基类"，但本项目能力差异仅在配置值，抽象基类会退化为空壳 |
 | 环境变量 | `BAILIAN_API_KEY` | 与 `ARK_API_KEY` 命名一致，符合项目规范 |
 | 无需新增依赖 | 复用 `langchain4j-open-ai` | 阿里百炼提供 OpenAI 兼容协议，无需引入新依赖 |
 
@@ -663,6 +864,11 @@ bailian:
 | **AC-015**: 阿里百炼深度思考正常 | `ModelFactory.getThinkingStreamingChatModel()` → `createBailianThinkingStreamingChatModel()` → `BailianThinkingStreamingChatModel.stream()` | 集成测试：配置 `llm.provider=bailian`，启用 `enableThinking=true`，验证 SSE 流式输出包含 reasoning_content 和 content |
 | **AC-016**: 阿里百炼任务拆解完整可用 | `PlanAgent.chatTaskBreakdownStream()` → `TaskBreakdownStream` 三阶段均使用 `getThinkingStreamingChatModel()` 接口 | 集成测试：配置 `llm.provider=bailian`，启用 `enableTaskBreakdown=true`，验证 task_plan/task_start/task_complete 全流程 |
 | **AC-017**: 阿里百炼深度思考 ReAct 工具调用正常 | `BailianThinkingStreamingChatModel.stream(messages, toolsJson, handler)` 解析 tool_calls 并执行 ReAct 循环 | 集成测试：百炼模式下发送需要调用工具的消息，验证 tool_calls 解析、工具执行、结果回填完整 |
+| **AC-018**: 新增厂商零核心改动（CR-002） | `ModelFactory` 注入 `List<LlmServiceProvider>`，按 `providerCode` 路由，新增厂商仅需新增 `@Component` 实现 | 扩展性测试：新增 `MockLlmServiceProvider`，配置 `llm.provider=mock`，验证 `ModelFactory.java` 无修改 |
+| **AC-019**: ModelFactory 无厂商硬编码分支（CR-002） | 移除全部 7 处 `if (provider == BAILIAN) {...} else {...}` 分支 | 静态扫描：`ModelFactory.java` 中 `if.*provider.*==.*BAILIAN` 模式匹配数为 0 |
+| **AC-020**: 思考流式模型代码重复率 ≤ 30%（CR-002） | `AbstractThinkingStreamingChatModel` 上提通用逻辑，子类仅保留 `buildRequestBody` 差异 | 代码扫描：行级重复行检测，重复率 ≤ 30% |
+| **AC-021**: 能力缺失时明确报错（CR-002） | `ModelFactory.getVisionChatModel()` 通过 `instanceof VisionChatModelProvider` 检测，未实现抛 `UnsupportedCapabilityException` | 单元测试：Mock Provider 未实现某能力接口，验证异常抛出 |
+| **AC-022**: 缓存复用语义保持不变（CR-002） | 缓存迁移到 Provider 内部（Spring 单例），对外行为不变 | 单元测试：同一 provider + 同一 modelName 多次调用返回同一实例 |
 
 ## 5. 文件变更清单
 
@@ -680,6 +886,25 @@ bailian:
 | 修改（CR-001） | `agent-demo-llm/.../factory/ModelFactory.java` | `getThinkingStreamingChatModel()` 返回类型改为接口；新增百炼思考模型创建逻辑；缓存类型改为接口 |
 | 修改（CR-001） | `agent-demo-llm/.../factory/ArkThinkingStreamingChatModel.java` | 实现 `ThinkingStreamingChatModel` 接口 |
 | 修改（CR-001） | `agent-demo-agent/.../core/TaskBreakdownStream.java` | 局部变量类型从 `ArkThinkingStreamingChatModel` 改为 `ThinkingStreamingChatModel`（3 处） |
+| 新增（CR-002） | `agent-demo-llm/.../factory/LlmProviderConfig.java` | 配置访问契约接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/ChatModelProvider.java` | 同步对话能力接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/StreamingChatModelProvider.java` | 流式对话能力接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/ThinkingStreamingChatModelProvider.java` | 思考流式能力接口（继承 `ThinkingStreamingChatModel`） |
+| 新增（CR-002） | `agent-demo-llm/.../factory/EmbeddingModelProvider.java` | 向量化能力接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/VisionChatModelProvider.java` | 视觉对话能力接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/LlmServiceProvider.java` | 厂商策略聚合接口 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/AbstractThinkingStreamingChatModel.java` | 思考流式模型抽象基类（模板方法） |
+| 新增（CR-002） | `agent-demo-llm/.../factory/ArkLlmServiceProvider.java` | 火山引擎厂商策略实现 |
+| 新增（CR-002） | `agent-demo-llm/.../factory/BailianLlmServiceProvider.java` | 阿里百炼厂商策略实现 |
+| 修改（CR-002） | `agent-demo-llm/.../config/LlmProvider.java` | 新增 `code` 字段（如 `ARK("ark")`、`BAILIAN("bailian")`） |
+| 修改（CR-002） | `agent-demo-llm/.../config/LlmProperties.java` | 新增 `getProviderCode()` 派生方法 |
+| 修改（CR-002） | `agent-demo-llm/.../config/ArkProperties.java` | 实现 `LlmProviderConfig` 接口；新增 `getEmbeddingModel()` 方法 |
+| 修改（CR-002） | `agent-demo-llm/.../config/BailianProperties.java` | 实现 `LlmProviderConfig` 接口 |
+| 修改（CR-002） | `agent-demo-llm/.../factory/ModelFactory.java` | 重构为注册表路由；移除 7 处硬编码分支；构造器改为 `(LlmProperties, List<LlmServiceProvider>)` |
+| 修改（CR-002） | `agent-demo-llm/.../factory/ArkThinkingStreamingChatModel.java` | 改为继承 `AbstractThinkingStreamingChatModel`，仅保留 `buildRequestBody` |
+| 修改（CR-002） | `agent-demo-llm/.../factory/BailianThinkingStreamingChatModel.java` | 改为继承 `AbstractThinkingStreamingChatModel`，仅保留 `buildRequestBody` |
+| 新增（CR-002） | `agent-demo-llm/.../exception/UnsupportedCapabilityException.java` | 能力未支持异常（对应 AC-021） |
+| 修改（CR-002） | `agent-demo-common/.../exception/ErrorCode.java` | 新增 `LLM_PROVIDER_NOT_FOUND`、`LLM_CAPABILITY_NOT_SUPPORTED` 错误码 |
 
 ---
 
@@ -698,3 +923,29 @@ bailian:
 - [修改] `ModelFactory.thinkingStreamingModelCache`: 泛型类型从 `ArkThinkingStreamingChatModel` 改为 `ThinkingStreamingChatModel`
 - [修改] `TaskBreakdownStream`: `executeSubTaskWithReAct()`、`streamResponse()` 等方法的局部变量类型改为接口
 - [修改] `ArkThinkingStreamingChatModel`: 实现 `ThinkingStreamingChatModel` 接口
+
+### CR-002: agent-demo-llm 模块重构 —— 能力矩阵 + 提供商策略 + 注册表 (2026-08-04)
+**影响范围**: 契约层（能力接口）/ 抽象基类层（思考模型模板方法）/ 厂商实现层（Provider 策略）/ 编排层（ModelFactory 注册表重构）
+**变更原因**: CR-001 完成后，`ModelFactory` 累积 7 处 `if (provider == BAILIAN) {...} else {...}` 硬编码分支，新增厂商扩展性低；`ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 代码重复度高达 95%，维护成本高。
+**变更内容摘要**:
+- [新增] `LlmProviderConfig` 接口：统一 baseUrl/apiKey/timeout/maxRetries/temperature/getModelName 等配置访问方式（对应 2.1.6 节）
+- [新增] 能力接口（ISP 拆分）：`ChatModelProvider`、`StreamingChatModelProvider`、`ThinkingStreamingChatModelProvider`（继承 `ThinkingStreamingChatModel`）、`EmbeddingModelProvider`、`VisionChatModelProvider`
+- [新增] `LlmServiceProvider` 聚合接口：聚合上述 5 个能力接口 + `getProviderCode()`，便于 Spring 一次注入 `List<LlmServiceProvider>`
+- [新增] `AbstractThinkingStreamingChatModel` 抽象基类：模板方法模式，上提 HTTP 调用/SSE 解析/回调分发等通用逻辑，子类仅实现 `buildRequestBody` 差异（对应 2.1.7 节）
+- [新增] `ArkLlmServiceProvider`、`BailianLlmServiceProvider` 厂商策略实现：迁移原 `ModelFactory.createArkXxx` / `createBailianXxx` 逻辑，标注 `@Component` 自动注入（对应 2.1.8 节）
+- [新增] `UnsupportedCapabilityException`：能力未支持异常（对应 AC-021）
+- [修改] `LlmProvider` 枚举：新增 `code` 字段（如 `ARK("ark")`、`BAILIAN("bailian")`），用于与 `LlmServiceProvider.getProviderCode()` 匹配
+- [修改] `LlmProperties`：新增 `getProviderCode()` 派生方法
+- [修改] `ArkProperties`、`BailianProperties`：实现 `LlmProviderConfig` 接口（方法已存在，仅声明 implements）
+- [修改] `ModelFactory`：构造器改为 `(LlmProperties, List<LlmServiceProvider>)`；注入注册表 `Map<String, LlmServiceProvider>`；移除全部 7 处硬编码分支；缓存迁移到 Provider 内部；新增 `instanceof` 能力检测（对应 2.2.4 节）
+- [修改] `ArkThinkingStreamingChatModel`、`BailianThinkingStreamingChatModel`：改为继承 `AbstractThinkingStreamingChatModel`，仅保留 `buildRequestBody` 差异化实现，代码重复率从 95% 降至 ≤ 30%（对应 AC-020）
+- [新增] 错误码 `LLM_PROVIDER_NOT_FOUND`、`LLM_CAPABILITY_NOT_SUPPORTED`
+
+**新增验收标准**: AC-018（新增厂商零核心改动）、AC-019（无厂商硬编码分支）、AC-020（思考模型重复率 ≤ 30%）、AC-021（能力缺失明确报错）、AC-022（缓存复用语义不变）
+
+**关联任务计划**: [多LLM提供商支持-阿里百炼_变更任务_CR-002.md](多LLM提供商支持-阿里百炼_变更任务_CR-002.md)（Task-17 ~ Task-25，预计 380 分钟）
+
+**批判性参考说明**：本次设计参考 `多LLM提供商设计模式.md`，但根据本项目实际（进程内调用、2 家厂商、能力差异仅在配置值）做了以下裁剪：
+1. 五层架构裁剪为三层（契约/厂商实现/编排），不采纳独立部署与凭证加解密
+2. "能力矩阵 = 抽象基类"调整为"能力矩阵 = 接口（ISP）"，仅对思考流式模型采用抽象基类
+3. 注册表复用 Spring `List<LlmServiceProvider>` 自动注入，不自研注册表

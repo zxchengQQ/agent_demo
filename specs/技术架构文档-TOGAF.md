@@ -1,7 +1,7 @@
 # AI Agent 示例项目 - 技术架构文档 (TOGAF)
 
-> **文档版本**：v1.2
-> **基线日期**：2026-08-03
+> **文档版本**：v1.3
+> **基线日期**：2026-08-05
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **TOGAF 版本**：The Open Group Architecture Framework 10.0
 > **关联文档**：[业务架构文档 (Phase B)](./业务架构文档.md) | [数据架构文档 (Phase C-Data)](./数据架构文档-TOGAF.md) | [SDD-项目技术指南文档](./SDD-项目技术指南文档.md)
@@ -132,6 +132,7 @@ graph TB
 
     subgraph "外部服务"
         ARK["火山引擎方舟<br/>Coding Plan API"]
+        BL["阿里百炼<br/>OpenAI 兼容协议<br/>（CR-002 多厂商支持）"]
     end
 
     subgraph "基础设施 agent-demo-common"
@@ -149,6 +150,7 @@ graph TB
     AGT --> TOOL
     AGT --> MEM
     LLM --> ARK
+    LLM -->|llm.provider=bailian 时| BL
     CTL --> RES
     AGT --> ERR
 ```
@@ -167,7 +169,7 @@ graph TD
     end
 
     subgraph "能力层 Capability"
-        D["agent-demo-llm<br/>ModelFactory + ArkProperties"]
+        D["agent-demo-llm<br/>ModelFactory 注册表路由 + 能力矩阵 + 提供商策略（CR-002）"]
         E["agent-demo-tools<br/>ToolRegistry + 内置工具"]
         F["agent-demo-memory<br/>ChatMemoryManager + SessionManager"]
         G["agent-demo-rag<br/>知识库管理 + 向量化 + 检索 + 动态 Tool 注册（CR-003）"]
@@ -260,10 +262,28 @@ agent-demo-agent/
 
 #### 3.3.3 agent-demo-llm 内部分层
 
+> **CR-002 重构**：模块由原「config + factory」两层扁平结构重构为「能力矩阵 + 提供商策略 + 注册表」六层架构，新增 LLM 厂商仅需在 `provider/` 包新增 `@Component` 实现类，`ModelFactory` 核心代码零修改。
+
 ```
 agent-demo-llm/
-├── config/                # ArkProperties / LlmConfig
-└── factory/               # ModelFactory（模型工厂）
+├── config/                # 配置层：属性绑定 + 配置访问契约
+│                          # - LlmProviderConfig（配置访问契约接口）/ LlmProvider（厂商枚举，含 code 字段）
+│                          # - LlmProperties（llm.provider 切换）/ ArkProperties / BailianProperties（实现 LlmProviderConfig）
+│                          # - LlmConfig（Spring @Configuration）
+├── capability/            # 能力契约层（ISP 接口）：定义"有什么能力"
+│                          # - ChatModelProvider / StreamingChatModelProvider / EmbeddingModelProvider
+│                          # - ThinkingStreamingChatModelProvider（工厂方法模式）/ VisionChatModelProvider（可选能力）
+├── provider/              # 厂商策略层：定义"谁来提供"，新增厂商仅在此包加文件
+│                          # - LlmServiceProvider（聚合接口，继承 4 个核心能力 + getProviderCode()）
+│                          # - ArkLlmServiceProvider / BailianLlmServiceProvider（显式 implements VisionChatModelProvider）
+├── thinking/              # 思考流式模型层：模板方法基类 + 厂商子类
+│                          # - ThinkingStreamingChatModel（接口）/ AbstractThinkingStreamingChatModel（模板方法基类）
+│                          # - ArkThinkingStreamingChatModel / BailianThinkingStreamingChatModel（仅实现差异化钩子）
+│                          # - ThinkingStreamHandler（回调接口）/ ToolCall（数据结构）
+├── registry/              # 编排层：注册表路由，对外门面
+│                          # - ModelFactory（注入 List<LlmServiceProvider>，按 providerCode 路由，无厂商硬编码分支）
+└── exception/             # 异常层
+                           # - UnsupportedCapabilityException（能力缺失时抛出，错误码 5007）
 ```
 
 #### 3.3.4 agent-demo-tools 内部分层
@@ -328,11 +348,12 @@ flowchart LR
     subgraph "内存数据层"
         SM["SessionManager<br/>ConcurrentHashMap<String, SessionMetadata>"]
         CMM["ChatMemoryManager<br/>ConcurrentHashMap<String, ChatMemory>"]
-        MF["ModelFactory<br/>ConcurrentHashMap<String, ChatModel>"]
+        MF["ModelFactory<br/>providerRegistry: Map<String, LlmServiceProvider><br/>（CR-002：缓存迁移至 Provider 内部）"]
     end
 
     subgraph "外部存储"
         ARK[(火山引擎<br/>LLM 服务)]
+        BL[(阿里百炼<br/>LLM 服务<br/>CR-002)]
         YML[(application.yml<br/>配置文件)]
     end
 
@@ -343,6 +364,7 @@ flowchart LR
     AGT --> ARK
     SM -.->|定时清理| SM
     MF --> ARK
+    MF -->|provider=bailian| BL
     CTL -.->|启动加载| YML
 ```
 
@@ -420,7 +442,8 @@ graph TB
 | Vite | 5.4+ | 前端构建/HMR 开发服务器 | npm 依赖 |
 | Vitest | 1.6+ | 前端单元测试 | npm 依赖 |
 | Playwright | 1.58+ | 浏览器端 E2E 测试 | npm 依赖 |
-| 火山引擎方舟 | Coding Plan | LLM 服务 | 云服务 |
+| 火山引擎方舟 | Coding Plan | LLM 服务（默认） | 云服务 |
+| 阿里百炼 | OpenAI 兼容协议 | LLM 服务（可选，CR-002 多厂商支持） | 云服务 |
 | Milvus（规划中） | 2.4.3 | 向量数据库 | Docker 部署 |
 | MySQL（规划中） | 8.x | 关系数据库 | 独立部署 |
 | Swagger UI | 2.5.0 | 接口文档 | 应用内嵌 |
@@ -540,6 +563,7 @@ flowchart LR
 | 安全机制完备 | SSRF 防护 + 目录白名单 + 响应截断三重工具安全 |
 | 低成本运行 | Coding Plan 按次计费 + 模型实例缓存复用 |
 | 强类型契约 | Java 强类型直观呈现 Agent 接口，编译期检查 |
+| **多厂商高扩展** | **CR-002 重构：能力矩阵 + 提供商策略 + 注册表架构，新增 LLM 厂商仅需在 `provider/` 包加 `@Component` 实现类，`ModelFactory` 核心代码零修改，无厂商硬编码分支** |
 
 ### 6.2 当前约束
 
@@ -643,7 +667,8 @@ flowchart LR
 
 | 服务 | 用途 |
 |------|------|
-| 火山引擎方舟 Coding Plan | LLM 服务（doubao-seed-2.0 系列 + Embedding） |
+| 火山引擎方舟 Coding Plan | LLM 服务（默认，doubao-seed-2.0 系列 + Embedding） |
+| 阿里百炼 | LLM 服务（可选，CR-002 多厂商支持，deepseek-v4-flash + text-embedding-v4） |
 
 ---
 
@@ -670,3 +695,8 @@ flowchart LR
 - 技术栈升级时，同步更新版本号和架构图
 - 新增模块时，更新模块拓扑和依赖矩阵
 - 部署架构变更时，更新部署图
+
+**版本变更记录**：
+- v1.3 (2026-08-05)：同步 CR-002 多 LLM 提供商重构 — 更新 3.1/3.2/3.3.3 节 agent-demo-llm 内部分层（config/capability/provider/thinking/registry/exception 六层架构）、4.2 节内存数据架构（ModelFactory 持有 providerRegistry，缓存迁移至 Provider 内部）、5.2/附录 A 外部服务（新增阿里百炼）、6.1 现有架构优势（多厂商高扩展）
+- v1.2 (2026-08-03)：同步前端知识库管理 + RAG 模块动态 Tool 注册（CR-003）
+- v1.1 (2026-07-31)：初始版本，TOGAF Phase B/C/D 架构文档

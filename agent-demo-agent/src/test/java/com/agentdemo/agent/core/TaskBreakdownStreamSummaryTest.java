@@ -1,9 +1,9 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
-import com.agentdemo.llm.factory.ThinkingStreamingChatModel;
-import com.agentdemo.llm.factory.ModelFactory;
-import com.agentdemo.llm.factory.ThinkingStreamHandler;
+import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.registry.ModelFactory;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;

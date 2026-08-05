@@ -2,7 +2,7 @@ package com.agentdemo.rag.service;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.DocumentChunk;
 import com.agentdemo.rag.entity.DocumentInfo;

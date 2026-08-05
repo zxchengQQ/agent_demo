@@ -2,7 +2,7 @@ package com.agentdemo.rag.store;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.rag.config.RagProperties;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.store.embedding.EmbeddingStore;

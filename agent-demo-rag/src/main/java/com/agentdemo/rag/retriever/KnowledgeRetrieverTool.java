@@ -1,6 +1,6 @@
 package com.agentdemo.rag.retriever;
 
-import com.agentdemo.llm.factory.ModelFactory;
+import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
@@ -10,7 +10,6 @@ import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
-import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
