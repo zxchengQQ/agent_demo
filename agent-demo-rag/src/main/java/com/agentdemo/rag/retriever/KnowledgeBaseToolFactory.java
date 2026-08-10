@@ -98,8 +98,10 @@ public class KnowledgeBaseToolFactory {
      */
     public String buildToolDescription(KnowledgeBase kb) {
         return "从知识库「" + kb.getName() + "」中检索与用户问题相关的文档片段。" +
-                "当用户的问题涉及「" + kb.getName() + "」相关内容时调用此工具。" +
-                "参数 query 为检索问题。";
+                "适用场景：用户的问题涉及「" + kb.getName() + "」相关内容，需要基于知识库回答时调用。" +
+                "不适用场景：读取本地原始文件用 readFile。" +
+                "参数 query 为检索问题或关键词。" +
+                "返回最相关的文档片段（含来源信息），最多 5 条。";
     }
 
     /**

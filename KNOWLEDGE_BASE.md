@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.3
-> **基线日期**：2026-08-05
+> **文档版本**：v2.5
+> **基线日期**：2026-08-07
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -69,7 +69,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 前端对话 | ✅ 已实现（v1） | Vue 3 对话框、SSE 流式逐字显示、localStorage 持久化、会话管理 UI |
 | 前端知识库管理 | ✅ 已实现 | 知识库 CRUD、文档上传/轮询/删除、对话知识库选择器、左右分栏管理页面 |
 | RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
-| MCP 协议 | 🚧 规划中 | MCP 工具集成、A2A 通信 |
+| MCP 协议 | ✅ 已实现 | MCP 客户端、双传输（stdio+SSE+Streamable HTTP）、动态/静态 Server 管理、ByteBuddy 工具代理 |
 | 多 Agent 协作 | 🚧 规划中 | Sequential/Hierarchical 模式 |
 | 工作流编排 | 🚧 规划中 | 状态机、分支重试、Human-in-the-loop |
 
@@ -100,6 +100,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | Web 接口模块 | `specs/modules/Web接口模块-业务说明书.md` |
 | 公共组件模块 | `specs/modules/公共组件模块-业务说明书.md` |
 | RAG 知识库模块 | `specs/modules/RAG模块-业务说明书.md` |
+| MCP 协议模块 | `specs/modules/MCP协议模块-业务说明书.md` |
 
 ### 2.3 前端模块目录
 
@@ -158,7 +159,7 @@ langchain4j.version=1.0.0
 # AI 框架全家桶
 langchain4j-open-ai=1.0.0          # 火山引擎接入适配器
 langchain4j-milvus=1.0.0           # 向量数据库（规划中）
-langchain4j-mcp=1.0.0              # MCP 协议（规划中）
+langchain4j-mcp=1.17.2-beta27       # MCP 协议（已实现，客户端 + 三种传输方式）
 
 # 数据访问
 mybatis-plus.version=3.5.7         # ORM（规划中）
@@ -283,7 +284,7 @@ agent-demo/
 ├── agent-demo-memory/                   # 记忆模块（短期记忆 + 会话管理）
 ├── agent-demo-rag/                      # RAG 模块（知识库问答：向量化、检索、CR-003 动态 Tool 注册，解析/分割已迁移至 splitter 模块）
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
-├── agent-demo-mcp/                      # MCP 协议模块（规划中，空模块）
+├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
 ├── agent-demo-app/                      # 应用编排层（规划中，空模块）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
@@ -319,10 +320,10 @@ agent-demo/
 | `agent-demo-memory` | common, llm |
 | `agent-demo-rag` | common, llm, splitter, tools（CR-003 新增） |
 | `agent-demo-splitter` | common |
-| `agent-demo-mcp` | common, tools（规划中） |
+| `agent-demo-mcp` | common, tools |
 | `agent-demo-agent` | common, llm, tools, memory |
 | `agent-demo-app` | agent, rag, mcp（规划中） |
-| `agent-demo-web` | app, agent, memory, rag |
+| `agent-demo-web` | app, agent, memory, rag, mcp |
 | `agent-demo-bootstrap` | web（聚合全部） |
 | `agent-demo-frontend` | 独立运行，通过 HTTP 调用后端 API（无 Maven 依赖） |
 
@@ -332,9 +333,10 @@ agent-demo/
 
 ```
 agent-demo-agent/
-├── config/                # AgentConfig（配置属性绑定，含 thinkingSystemPrompt/thinkingReactSystemPrompt，后者工具描述由 convertToDescriptionText() 动态追加）
-├── core/                  # BaseAgent（Agent 抽象接口）+ ThinkingTokenStream（思考流式接口，CR-001 新增）
-└── single/                # SimpleAgent（单 Agent 实现，含 chatStream/chatThinkingStream CR-001 扩展，buildReActMessagesWithMemory 动态拼接工具描述）
+├── config/                # AgentConfig（配置属性绑定，含 defaultRole + 提示词默认值作为模板回退）
+├── core/                  # BaseAgent（Agent 抽象接口）+ ThinkingTokenStream（思考流式接口）+ TaskBreakdownStream（任务拆解三阶段编排流）
+├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词）
+└── single/                # SimpleAgent（单 Agent 实现）+ PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
 ```
 
 **agent-demo-llm**（LLM 接入，CR-002 重构为能力矩阵 + 提供商策略 + 注册表架构）：
@@ -416,13 +418,31 @@ agent-demo-splitter/
 └── tokenizer/             # SplitterTokenEstimator（分割用 Token 估算器，委托 SimpleTokenEstimator）
 ```
 
+**agent-demo-mcp**（MCP 协议）：
+
+```
+agent-demo-mcp/
+├── config/                # McpProperties（@ConfigurationProperties(prefix="mcp")，含 ServerConfig 内部类）
+├── entity/                # McpServer（Server 元数据+运行时状态）/ McpServerStatus（4 状态枚举）
+│                          # McpTransportType（3 传输方式枚举：STDIO/SSE/HTTP）/ McpToolInfo（工具元数据）
+├── client/                # McpTransportFactory（传输工厂：按 transport 创建 Stdio/Http/StreamableHttp 传输）
+│                          # McpClientEntry（McpClient+Transport+状态聚合，AutoCloseable）
+│                          # McpClientRegistry（Server 注册表，ConcurrentHashMap 按 name 索引）
+├── tool/                  # McpToolFactory（ByteBuddy 生成 @Tool 代理类，含 parseParametersSchema 结构化参数描述）
+│                          # McpToolInterceptor（ByteBuddy 方法拦截器，委托 McpToolExecutor）
+│                          # McpContentParser（内容类型策略分发器：统一解析 MCP 协议 6 种内容类型 text/image/audio/resource/structuredContent/unknown，CR-002 新增）
+│                          # McpToolExecutor（工具执行器：统一从 Wrapper 缓存通过 McpContentParser 解析，删除 extractResultText/extractFromRawResponse 双重路径，CR-002 重构）
+│                          # McpToolRegistrar（接口）/ McpToolRegistrarImpl（启动加载器 ApplicationRunner + 生命周期管理）
+└── service/               # McpServerManager（核心服务：CRUD + 连接 + 状态机 + serializeParameters 手动提取 JsonObjectSchema）
+```
+
 **agent-demo-web**（Web 接口）：
 
 ```
 agent-demo-web/
 ├── config/                # OpenApiConfig / TraceIdInterceptor / WebConfig
-├── controller/            # AgentController
-├── dto/                   # ChatRequest / ChatResponse
+├── controller/            # AgentController / McpController（MCP Server 管理 REST API）/ RagController
+├── dto/                   # ChatRequest / ChatResponse / CreateMcpServerRequest / McpServerResponse / McpToolResponse / McpServerConfigValidator（MCP 配置条件校验）
 └── handler/               # GlobalExceptionHandler
 ```
 
@@ -445,6 +465,7 @@ com.agentdemo
 ├── llm.{config,capability,provider,thinking,registry,exception}    # CR-002 重构：从单一 factory 包拆为 6 个职责清晰的子包
 ├── tools.{builtin,registry}
 ├── memory.{longterm,session,shortterm,store}
+├── mcp.{config,entity,client,tool,service}
 ├── agent.{config,core,single}
 ├── web.{config,controller,dto,handler}
 └── AgentDemoApplication                 # 启动类位于 com.agentdemo 根包
@@ -941,6 +962,7 @@ public class GlobalExceptionHandler {
 | embeddingModel | volatile EmbeddingModel | ArkLlmServiceProvider / BailianLlmServiceProvider | Embedding 单例（CR-002 迁移到 Provider） |
 | providerRegistry | Map<String, LlmServiceProvider> | ModelFactory | 厂商注册表（CR-002 新增，按 providerCode 索引） |
 | tools | CopyOnWriteArrayList<Object> | ToolRegistry | 工具列表 |
+| servers | ConcurrentHashMap<String, McpClientEntry> | McpClientRegistry | MCP Server 注册表（按 name 索引） |
 | delegate | volatile BaseAgent | SimpleAgent | AiServices 代理 |
 
 ### 7.3 规划数据库（未来接入）
@@ -1071,10 +1093,12 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 8 | BR-AGT-002 | ReAct 循环最大迭代次数默认 10 | Agent 编排 | 🔴 强制 |
 | 9 | BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖；Tool 数量变化时必须重建 delegate 绑定最新工具列表（CR-003 新增） | Agent 编排 | 🔴 强制 |
 | 10 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | Agent 编排 | 🔴 强制 |
-| 11 | BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | Agent 编排 | 🟡 尽量 |
+| 11 | BR-AGT-005 | 系统提示词通过 `PromptTemplateLoader.composeSystemPrompt(role, scenario)` 动态组合（角色模板 + "\n\n" + 场景模板），`systemMessageProvider` 调用此方法 | Agent 编排 | 🔴 强制 |
 | 12 | BR-AGT-006 | Agent 调用日志默认开启 | Agent 编排 | ⚪ 可覆盖 |
-| 13 | BR-AGT-007 | 思考模式必须使用专用系统提示词（thinkingSystemPrompt），不提及工具调用能力；正常模式使用 defaultSystemPrompt（含工具引导语） | Agent 编排 | 🔴 强制 |
-| 14 | BR-THINK-002 | 深度思考 ReAct 模式系统提示词（thinkingReactSystemPrompt）必须包含 ReAct 格式引导，工具能力描述通过运行时动态生成（ToolSchemaConverter.convertToDescriptionText() 反射扫描 @Tool 方法），不硬编码在提示词配置中（深度思考 CR-001） | Agent 编排 | 🔴 强制 |
+| 13 | BR-AGT-007 | 思考模式使用场景模板 "thinking"（声明"此模式不可调用工具"）；正常模式使用场景模板 "chat"（含工具引导语） | Agent 编排 | 🔴 强制 |
+| 14 | BR-THINK-002 | ReAct 模式使用场景模板 "react"（含 ReAct 格式引导 + {{tools}} 占位符），工具描述通过 `convertToDescriptionText()` 在运行时替换占位符，不硬编码在提示词中 | Agent 编排 | 🔴 强制 |
+| 15 | BR-AGT-008 | 系统提示词外部化为模板文件（`prompts/roles/*.txt` + `prompts/scenarios/*.txt`），AgentConfig 中的旧提示词默认值仅作为模板缺失时的最终回退 | Agent 编排 | 🔴 强制 |
+| 16 | BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方通过 `String.replace("{{tools}}", convertToDescriptionText())` 在运行时替换 | Agent 编排 | 🔴 强制 |
 
 ### 9.3 工具调用规则
 
@@ -1133,7 +1157,34 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 48 | BR-RAG-019 | 分块数据携带来源元数据（fileName、format、pageNumber/headerText），检索结果中包含来源信息，Agent 回答时可引用文档来源（CR-002） | RAG 知识库 | 🔴 强制 |
 | 49 | BR-RAG-020 | 系统启动时自动批量注册所有已有知识库的动态 Tool，确保 Agent 在首次对话前所有知识库工具已就绪（CR-003） | RAG 知识库 | 🔴 强制 |
 
-### 9.7 前端对话模块规则
+### 9.7 MCP 协议规则
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 50 | BR-MCP-001 | MCP 模块总开关为 `mcp.enabled`（默认 true），false 时模块完全禁用，所有 REST API 返回 MCP_MODULE_DISABLED(5405) | MCP 协议 | 🔴 强制 |
+| 51 | BR-MCP-002 | MCP Server 名称 1-50 字符，仅允许中英文、数字、下划线和连字符 | MCP 协议 | 🔴 强制 |
+| 52 | BR-MCP-003 | MCP Server 名称全局唯一，重复返回 MCP_SERVER_NAME_EXISTS(5402) | MCP 协议 | 🔴 强制 |
+| 53 | BR-MCP-004 | MCP Server 必须指定 transport，取值仅限 stdio / sse / http，其他值返回 MCP_TRANSPORT_UNSUPPORTED(5404) | MCP 协议 | 🔴 强制 |
+| 54 | BR-MCP-005 | stdio 传输必须配置 command 字段，args 和 env 可选 | MCP 协议 | 🔴 强制 |
+| 55 | BR-MCP-006 | sse/http 传输必须配置 url 字段（合法 HTTP/HTTPS URL），headers 可选 | MCP 协议 | 🔴 强制 |
+| 56 | BR-MCP-007 | MCP 工具名采用 `mcp_{serverName}_{toolName}` 前缀注册到 ToolRegistry，保证全局唯一 | MCP 协议 | 🔴 强制 |
+| 57 | BR-MCP-008 | MCP 工具调用超时默认 60s，可被单 Server 的 tool-timeout 覆盖 | MCP 协议 | ⚪ 可覆盖 |
+| 58 | BR-MCP-009 | 静态 Server 启动失败记录 ERROR 日志并跳过，不阻塞应用启动 | MCP 协议 | 🔴 强制 |
+| 59 | BR-MCP-010 | 动态添加 Server 连接失败返回 MCP_CONNECTION_FAILED(5400)，不污染 ToolRegistry | MCP 协议 | 🔴 强制 |
+| 60 | BR-MCP-011 | MCP Server 断线时自动注销其所有工具，触发 SimpleAgent delegate 重建 | MCP 协议 | 🔴 强制 |
+| 61 | BR-MCP-012 | Server 状态枚举：CONNECTED / DISCONNECTED / ERROR / DISABLED | MCP 协议 | 🔴 强制 |
+| 62 | BR-MCP-013 | 动态添加的 Server 仅存内存，重启后丢失（不持久化） | MCP 协议 | 🔴 强制 |
+| 63 | BR-MCP-014 | Server enabled=false 时跳过连接，标记 DISABLED，可通过重连接口启用 | MCP 协议 | 🔴 强制 |
+| 64 | BR-MCP-015 | 重连已 CONNECTED 状态的 Server 返回 MCP_SERVER_ALREADY_CONNECTED(5406) | MCP 协议 | 🔴 强制 |
+| 65 | BR-MCP-016 | MCP 工具参数 Schema 必须手动提取 JsonObjectSchema properties 序列化，禁止直接用 Jackson 序列化 JsonSchemaElement 多态接口 | MCP 协议 | 🔴 强制 |
+| 66 | BR-MCP-017 | MCP 工具描述必须包含结构化参数列表和调用示例（parseParametersSchema 生成），帮助 LLM 正确理解参数名 | MCP 协议 | 🔴 强制 |
+| 67 | BR-MCP-018 | McpClient 创建时必须配置 initializationTimeout（默认 60s），确保 stdio 模式下 npx 首次下载不超时 | MCP 协议 | 🔴 强制 |
+| 68 | BR-MCP-019 | ~~McpToolExecutor 必须捕获 LangChain4j ToolExecutionHelper 的 Unsupported content type 异常，返回友好提示~~ **CR-002 更新**：McpToolExecutor 必须将 Unsupported content type 异常视为预期行为（非文本内容正常返回），继续到统一解析路径，不作为错误处理 | MCP 协议 | 🔴 强制 |
+| 69 | BR-MCP-023 | MCP 工具输出统一从 McpTransportWrapper 缓存的原始 JSON-RPC 响应通过 McpContentParser 解析，executeTool 返回值被丢弃（CR-002 新增，对应 AC-041） | MCP 协议 | 🔴 强制 |
+| 70 | BR-MCP-024 | McpContentParser 按内容类型策略分发处理：text->提取文本，image URL->Markdown 图片语法，image/audio base64->文本描述，resource text->提取文本，resource blob->文本描述，structuredContent->JSON 序列化，unknown->WARNING 日志+静默跳过（CR-002 新增，对应 AC-042~044） | MCP 协议 | 🔴 强制 |
+| 71 | BR-MCP-025 | McpContentParser 对未知内容类型必须静默跳过（记录 WARNING 日志），不得导致工具调用失败（CR-002 新增，对应 AC-045） | MCP 协议 | 🔴 强制 |
+
+### 9.8 前端对话模块规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1152,7 +1203,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 46 | BR-FE-013 | 助手正式回复按 Markdown 格式渲染（marked + DOMPurify），用户消息保持纯文本（CR-001） | 前端对话 | 🔴 强制 |
 | 47 | BR-FE-014 | 推理内容随消息持久化到 localStorage（Message.reasoning 字段），刷新页面后仍可展开回看（CR-001） | 前端对话 | 🔴 强制 |
 
-### 9.8 错误码规则
+### 9.9 错误码规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1161,7 +1212,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 32 | BR-ERR-003 | 错误码编号区间按业务域划分，不可重叠 | 公共组件 | 🔴 强制 |
 | 33 | BR-ERR-004 | 新增错误码必须在 `ErrorCode` 枚举中分配编号并补充注释 | 公共组件 | 🔴 强制 |
 
-### 9.9 错误码区间速查
+### 9.10 错误码区间速查
 
 | 区间 | 业务域 | 示例 |
 |------|--------|------|
@@ -1172,9 +1223,9 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5100-5199 | 工具相关 | TOOL_EXECUTION_FAILED(5100)、TOOL_NOT_FOUND(5101)、TOOL_PARAM_INVALID(5102) |
 | 5200-5299 | 记忆/会话 | MEMORY_NOT_FOUND(5200)、SESSION_NOT_FOUND(5201)、SESSION_EXPIRED(5202) |
 | 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
-| 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401) |
+| 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401)、MCP_SERVER_NAME_EXISTS(5402)、MCP_SERVER_NOT_FOUND(5403)、MCP_TRANSPORT_UNSUPPORTED(5404)、MCP_MODULE_DISABLED(5405)、MCP_SERVER_ALREADY_CONNECTED(5406) |
 
-### 9.10 约束分级标准
+### 9.11 约束分级标准
 
 | 级别 | 标签 | 含义 | 违反后果 |
 |------|------|------|---------|
@@ -1183,7 +1234,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 🟢 建议 | `RECOMMENDED` | 推荐遵守，提升业务质量 | 体验下降、效率降低 |
 | ⚪ 可覆盖 | `CONFIGURABLE` | 可由管理员配置 | 依赖管理员决策 |
 
-### 9.11 前端知识库管理规则
+### 9.12 前端知识库管理规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1198,7 +1249,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 56 | BR-RAG-FE-009 | 知识库选择按消息维度控制（发送消息时使用当前选择器的知识库配置，不影响历史消息） | 前端知识库 | 🔴 强制 |
 | 57 | BR-RAG-FE-010 | 文档状态轮询使用 setInterval 每 3 秒一次，仅对 PENDING/PROCESSING 文档发起请求，全部终态后自动停止，组件卸载时清理定时器 | 前端知识库 | 🔴 强制 |
 
-> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节、`ErrorCode.java`、`specs/features/2026-07-27/RAG知识库前端/RAG知识库前端.md`（BR-RAG-FE-001~010）、`specs/features/2026-07-24/RAG知识库问答/RAG知识库问答.md`（BR-RAG-013~014）
+> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节、`ErrorCode.java`、`specs/features/2026-07-27/RAG知识库前端/RAG知识库前端.md`（BR-RAG-FE-001~010）、`specs/features/2026-07-24/RAG知识库问答/RAG知识库问答.md`（BR-RAG-013~014）、`specs/features/2026-08-05/MCP协议模块/MCP协议模块.md`（BR-MCP-001~019）
 
 ---
 
@@ -1245,7 +1296,9 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 agent:
   max-iterations: 10                    # ReAct 循环最大迭代
   chat-memory-window-size: 20           # 短期记忆窗口大小
-  default-system-prompt: "你是一个有用的 AI 助手..."
+  default-role: general                 # 默认角色（对应 prompts/roles/ 目录下的模板文件名）
+  # 系统提示词已外部化到 prompts/roles/ 和 prompts/scenarios/ 模板文件
+  # AgentConfig 中的默认值作为模板缺失时的最终回退
   enable-logging: true                  # 调用日志开关
   file-allowed-dir: ./data              # 文件读取白名单目录
 
@@ -1316,6 +1369,24 @@ bailian:
   max-retries: 3
   temperature: 0.7
   embedding-model: text-embedding-v4
+
+# MCP 协议模块配置
+mcp:
+  enabled: true                    # 模块总开关，false 时完全不加载
+  default-tool-timeout: 60s        # 全局默认工具调用超时
+  servers:                         # 静态预配置 Server 列表
+    - name: mermaid-mcp            # Server 唯一标识
+      transport: http              # 传输方式：stdio | sse | http
+      enabled: true
+      url: https://mcp.mermaid.ai/mcp
+      tool-timeout: 60s
+    - name: fetch
+      transport: stdio
+      enabled: true
+      command: npx.cmd             # Windows 需 .cmd 后缀
+      args:
+        - mcp-fetch-server
+      tool-timeout: 60s
 
 # 服务器配置
 server:
@@ -1520,6 +1591,11 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | 5102 | 工具参数无效 | 检查工具方法参数校验逻辑 |
 | 5201 | 会话不存在 | 传入无效 sessionId 会自动新建，无需处理 |
 | 5202 | 会话已过期 | 会话超时自动清理，传入无效 sessionId 会自动新建 |
+| 5400 | MCP 连接失败 | 检查 MCP Server URL/命令是否正确、网络是否可达 |
+| 5401 | MCP 工具调用失败 | 查看日志堆栈，检查 MCP Server 是否在线、参数是否正确、是否超时 |
+| 5402 | MCP Server 名称已存在 | 检查是否已有同名 Server，先删除再添加 |
+| 5404 | 不支持的传输方式 | transport 字段仅支持 stdio / sse / http |
+| 5405 | MCP 模块已禁用 | 检查 application.yml 中 mcp.enabled 是否为 true |
 | 5000 | 系统异常 | 查看日志完整堆栈定位问题 |
 
 ### 12.3 必须遵守的技术规范
@@ -1571,12 +1647,16 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | 场景 | 技巧 |
 |------|------|
 | Agent 不调用工具 | 检查工具类是否有 `@Component` + `@Tool` 注解，ToolRegistry 是否扫描到 |
-| Agent 回复不准确 | 调整 `agent.default-system-prompt` 系统提示词 |
+| Agent 回复不准确 | 调整 `prompts/roles/` 或 `prompts/scenarios/` 模板文件内容，或通过 `agent.default-role` 切换角色 |
 | Token 消耗过大 | 降低 `agent.chat-memory-window-size`，或切换 Lite 模型 |
 | 会话记忆丢失 | 检查 sessionId 是否正确传递，记忆窗口是否过小 |
 | HTTP 工具被拦截 | 检查 SSRF 防护规则，确认 URL 不含内网地址 |
 | 文件读取失败 | 检查文件是否在 `agent.file-allowed-dir` 白名单目录内 |
 | 日志无 traceId | 检查 `TraceIdInterceptor` 是否注册到 `WebConfig` |
+| MCP Server 连接失败 | 检查 URL/命令是否正确；stdio 模式 Windows 下用 `npx.cmd` 而非 `npx`；npx 首次下载依赖可能需要更长的 initializationTimeout |
+| MCP 工具返回 image 类型报错 | CR-002 后：McpToolExecutor 将 Unsupported content type 异常视为预期行为，统一从 Wrapper 缓存通过 McpContentParser 解析所有内容类型（text/image/audio/resource/structuredContent/unknown）。确认 McpContentParser 已注入 McpToolExecutor 构造器 |
+| LLM 调用 MCP 工具时参数名错误 | 检查 McpServerManager.serializeParameters 是否正确序列化 JsonObjectSchema；确认 McpToolFactory.parseParametersSchema 生成了结构化参数描述 |
+| MCP Server 启动超时 | 确认 DefaultMcpClient.Builder 配置了 initializationTimeout(60s)；npx 首次运行需下载依赖，可能需要更长超时 |
 
 ### 12.5 Git 仓库
 
@@ -1637,6 +1717,9 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.1 | 2026-07-31 | CR-003 实现细节修正：KnowledgeBaseToolFactory 从 CGLIB 改为 ByteBuddy 1.14.19，在生成方法上直接写入 @Tool 注解以被 LangChain4j ToolSpecifications 识别；SimpleAgent 增加 lastToolCount 检测，Tool 数量变化后重建 delegate 绑定最新工具；agent-demo-rag 新增对 agent-demo-tools 依赖；更新 KNOWLEDGE_BASE.md 技术栈与模块描述 |
 | v2.2 | 2026-08-03 | CR-003 文档同步：更新 6.2 节 Agent 开发范式代码示例（含 lastToolCount 检测逻辑）；更新 5.9.1 节懒加载机制表（SimpleAgent.delegate 增加 Tool 变化重建说明）；更新 BR-AGT-003（Tool 数量变化重建 delegate）、BR-TOOL-007（新增注销方法）；更新 4.2 节模块依赖方向（rag 新增 tools 依赖）；更新 4.3 节 agent-demo-tools 内部分层描述；同步更新 RAG/工具调用/Agent 编排模块业务说明书与技术架构文档 |
 | v2.3 | 2026-08-05 | CR-002 agent-demo-llm 模块重构（能力矩阵 + 提供商策略 + 注册表）：4.3 节 agent-demo-llm 内部分层从单一 factory 包重构为 6 个职责子包（config/capability/provider/thinking/registry/exception）；4.4 节包命名规范同步更新；5.6 节模型场景路由框架新增注册表路由架构图与扩展点说明；5.9.1 节懒加载机制表更新 ModelFactory.embeddingModel 持有者迁移；7.2 节核心内存数据结构补充 providerRegistry 新增项与缓存持有者变更；8.1 节安全措施矩阵更新 API Key 校验实现类位置；9.1 节新增 5 条 LLM 业务规则（BR-LLM-014~018，对应 AC-018~022），修正 BR-LLM-012（阿里百炼已支持深度思考）；9.9 节错误码区间新增 LLM_PROVIDER_NOT_FOUND(5006)/LLM_CAPABILITY_NOT_SUPPORTED(5007)；11.3 节 AI 参考范式新增厂商策略实现、能力接口、新工厂类路径；12.2 节运行时异常新增 5006/5007 排查方法；1.4 节能力矩阵 LLM 调用能力描述补充 |
+| v2.4 | 2026-08-07 | MCP 协议模块完整实现 + 运行时调试修复：1.4 节能力矩阵 MCP 状态从 🚧 规划中 更新为 ✅ 已实现；2.2 节文档地图新增 MCP 协议模块业务说明书；3.1 节技术栈 langchain4j-mcp 从规划中更新为 1.17.2-beta27 已实现；4.1 节工程结构 MCP 模块从空模块更新为完整实现；4.2 节模块依赖更新（mcp 不再标记规划中，web 新增 mcp 依赖）；4.3 节新增 agent-demo-mcp 内部分层（config/entity/client/tool/service），更新 agent-demo-web 分层（新增 McpController/McpDTO）；4.4 节包命名新增 mcp 子包；7.2 节新增 MCP Server 注册表数据结构；9.7 节新增 19 条 MCP 业务规则（BR-MCP-001~019，含运行时调试新增的 BR-MCP-016~019：参数 Schema 手动序列化、结构化参数描述、初始化超时、Unsupported content type 异常捕获）；9.10 节错误码区间更新 MCP 完整 7 个错误码（5400-5406）；9.8~9.12 节编号顺延；10.4 节新增 mcp.* 配置段（含 mermaid-mcp HTTP 传输 + fetch stdio 传输示例）；12.2 节运行时异常新增 5400/5401/5402/5404/5405 排查方法；12.4 节调试技巧新增 MCP 连接失败/图片类型报错/参数名错误/启动超时 4 条排障 |
+| v2.5 | 2026-08-07 | CR-002 MCP 输出解析结构化重构：4.3 节 agent-demo-mcp tool 包新增 McpContentParser（内容类型策略分发器），McpToolExecutor 描述更新为统一从 Wrapper 缓存通过 McpContentParser 解析；9.7 节 BR-MCP-019 更新（从异常捕获改为统一解析预期行为），新增 BR-MCP-023（统一解析路径）、BR-MCP-024（内容类型策略分发矩阵）、BR-MCP-025（未知类型静默跳过）；12.4 节调试技巧更新 MCP 图片类型排障条目（从异常捕获改为 McpContentParser 统一解析） |
+| v2.6 | 2026-08-07 | Prompt 优化（角色×场景模板矩阵）：4.3 节 agent-demo-agent 新增 prompt 包（PromptTemplateLoader）；9.2 节 BR-AGT-005 更新为 PromptTemplateLoader 组合机制，BR-AGT-007 更新为场景模板引用，新增 BR-AGT-008（提示词外部化到模板文件）和 BR-AGT-009（{{tools}} 占位符运行时替换）；10.4 节移除 default-system-prompt/thinking-system-prompt/thinking-react-system-prompt 配置项，新增 default-role: general；数据架构文档 5.3 节提示词模板从 3 个旧文件更新为 4 角色 + 6 场景模板矩阵 |
 
 ---
 

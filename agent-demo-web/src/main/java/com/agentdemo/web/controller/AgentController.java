@@ -148,7 +148,7 @@ public class AgentController {
         List<String> knowledgeBases = request.getKnowledgeBases();
         if (knowledgeBases != null && !knowledgeBases.isEmpty()) {
             effectiveMessage = request.getMessage()
-                + "\n\n[系统提示：请优先使用以下知识库检索相关信息："
+                + "\n\n[系统提示：用户指定了以下知识库，请调用对应的知识库检索工具获取相关信息后再回答："
                 + String.join("、", knowledgeBases) + "]";
         } else {
             effectiveMessage = request.getMessage();

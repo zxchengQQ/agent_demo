@@ -13,7 +13,7 @@
 
     <artifactId>agent-demo-mcp</artifactId>
     <name>agent-demo-mcp</name>
-    <description>MCP 协议模块 - 客户端/服务端、传输层（阶段十实现，mcp 依赖待确认版本后添加）</description>
+    <description>MCP 协议模块 - 客户端角色，集成 stdio/SSE 双传输方式，连接外部 MCP Server 并将其工具注册到 ToolRegistry</description>
 
     <dependencies>
         <!-- 内部模块 -->
@@ -26,10 +26,34 @@
             <artifactId>agent-demo-tools</artifactId>
         </dependency>
 
-        <!-- LangChain4j 核心（阶段十实现 MCP 时添加 langchain4j-mcp 依赖） -->
+        <!-- LangChain4j 核心 -->
         <dependency>
             <groupId>dev.langchain4j</groupId>
             <artifactId>langchain4j</artifactId>
+        </dependency>
+
+        <!-- LangChain4j MCP 集成（beta 版，独立版本线） -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-mcp</artifactId>
+        </dependency>
+
+        <!-- ByteBuddy - 运行时动态生成带 @Tool 注解的 MCP 工具代理类（参考 CR-003 KnowledgeBaseToolFactory） -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+        </dependency>
+
+        <!-- Spring Boot（McpProperties 需要 @ConfigurationProperties） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter</artifactId>
+        </dependency>
+
+        <!-- Bean Validation（DTO 参数校验） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
 
         <!-- Lombok -->

@@ -1,6 +1,7 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.agent.core.TaskBreakdownStream;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
@@ -35,7 +36,7 @@ class PlanAgentTest {
         agentConfig = new AgentConfig();
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
-        planAgent = new PlanAgent(modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor);
+        planAgent = new PlanAgent(modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
     }
 
     /**

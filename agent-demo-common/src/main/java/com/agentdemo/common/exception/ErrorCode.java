@@ -64,6 +64,16 @@ public enum ErrorCode {
     // MCP 相关错误（5400-5499）
     MCP_CONNECTION_FAILED(5400, "MCP 连接失败"),
     MCP_TOOL_CALL_FAILED(5401, "MCP 工具调用失败"),
+    /** MCP Server 名称已存在（重复添加同名 Server 时抛出） */
+    MCP_SERVER_NAME_EXISTS(5402, "MCP Server 名称已存在"),
+    /** MCP Server 不存在（操作不存在的 Server 时抛出） */
+    MCP_SERVER_NOT_FOUND(5403, "MCP Server 不存在"),
+    /** MCP 传输方式不支持（transport 非 stdio/sse 时抛出） */
+    MCP_TRANSPORT_UNSUPPORTED(5404, "MCP 传输方式不支持"),
+    /** MCP 模块已禁用（mcp.enabled=false 时所有 MCP API 调用抛出） */
+    MCP_MODULE_DISABLED(5405, "MCP 模块已禁用"),
+    /** MCP Server 已连接（重连已 CONNECTED 状态的 Server 时抛出） */
+    MCP_SERVER_ALREADY_CONNECTED(5406, "MCP Server 已连接"),
 
     // 系统错误
     SYSTEM_ERROR(5000, "系统异常");

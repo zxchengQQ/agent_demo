@@ -76,7 +76,11 @@ public class HttpTool {
      * @return 响应内容
      * @throws BusinessException SSRF 防护拦截或请求失败时抛出
      */
-    @Tool("发起 HTTP POST 请求，参数 url 为完整 URL，body 为 JSON 字符串请求体")
+    @Tool("发起 HTTP POST 请求向 API 提交数据。"
+            + "适用场景：需要向服务器发送数据（如表单提交、API 调用）时调用。"
+            + "不适用场景：仅需要获取网页内容时用 httpGet。"
+            + "参数 url 为完整 URL，body 为 JSON 格式字符串请求体。"
+            + "返回响应正文（超过 10KB 自动截断）。禁止访问内网地址，违规时返回错误。")
     public String httpPost(String url, String body) {
         validateUrl(url);
         log.info("HTTP POST 请求: {}, body 长度: {}", url, body != null ? body.length() : 0);

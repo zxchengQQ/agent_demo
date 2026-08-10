@@ -17,6 +17,7 @@ const ALLOWED_TAGS = [
   'a', 'blockquote',
   'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
   'hr',
+  'img', // CR-001: 支持 Markdown 图片渲染（AC-039）
 ];
 
 /** 允许的 HTML 属性白名单 */

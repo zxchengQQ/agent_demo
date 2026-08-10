@@ -93,6 +93,15 @@ public class AgentConfig {
      */
     private String fileAllowedDir = "./data";
 
+    /**
+     * 默认角色名称
+     * <p>
+     * 业务含义：对应 prompts/roles/ 目录下的模板文件名（不含 .txt 扩展名）。
+     * 运行时与场景模板组合为最终系统提示词。默认 "general"（通用助手）。
+     * </p>
+     */
+    private String defaultRole = "general";
+
     // ==================== CR-002: 复杂任务拆解配置 ====================
 
     /**

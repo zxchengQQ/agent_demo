@@ -1,6 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ThinkingStreamHandler;
@@ -69,7 +70,7 @@ class TaskBreakdownStreamExecutionTest {
         return new TaskBreakdownStream(
                 "test-session", message, enableThinking,
                 modelFactory, memoryManager, agentConfig,
-                toolSchemaConverter, toolExecutor);
+                toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
     }
 
     private void mockPlanResponse(String json) {

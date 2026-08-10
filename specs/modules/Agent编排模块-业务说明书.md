@@ -52,7 +52,7 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
   1. 调用 `buildMessagesWithMemory(sessionId, message)` 手动组装消息列表（系统提示词 + 历史消息 + 当前用户消息）
   2. 委托 `ArkThinkingStreamingChatModel` 直连方舟 API（stream=true, thinking.enabled）
   3. 通过 `ThinkingTokenStream` 回调暴露推理内容（onPartialThinking）与正式回复（onPartialResponse）
-- **业务规则**：思考模式使用专用系统提示词（`thinkingSystemPrompt`），不提及工具调用能力（BR-AGT-007）
+- **业务规则**：思考模式使用场景模板 "thinking"（声明"此模式不可调用工具"），通过 PromptTemplateLoader 组合提示词（BR-AGT-007）
 - **前置条件**：ARK_API_KEY 已配置，方舟 Coding Plan 地址支持 thinking 参数。
 - **后置结果**：SSE 流推送顺序为 reasoning（可选）-> token（多个）-> done。
 
@@ -101,7 +101,8 @@ flowchart TD
 - **BaseAgent**：Agent 抽象接口，定义 `chat(sessionId, message)` 和 `chatStream(sessionId, message)` 入口，使用 `@MemoryId` + `@UserMessage` 注解。
 - **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。CR-003 新增 `lastToolCount` 字段检测 Tool 数量变化，Tool 增减时自动重建 delegate 绑定最新工具列表。
 - **ThinkingTokenStream**：思考流式接口（CR-001 新增），定义 `onPartialThinking`/`onPartialResponse`/`onComplete`/`onError` 四个回调 + `start()` 方法，区别于 LangChain4j TokenStream 仅回调 content。
-- **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultSystemPrompt/thinkingSystemPrompt/thinkingReactSystemPrompt/enableLogging/fileAllowedDir。thinkingReactSystemPrompt 仅含 ReAct 格式引导和约束规则，工具描述由 ToolSchemaConverter.convertToDescriptionText() 动态追加（深度思考 CR-001）。
+- **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultRole/enableLogging/fileAllowedDir。`defaultRole` 指定默认角色模板（对应 `prompts/roles/` 目录文件名）。旧提示词字段（defaultSystemPrompt 等）保留为模板缺失时的最终回退。
+- **PromptTemplateLoader**：提示词模板加载器，从 classpath 加载 `prompts/roles/{role}.txt` + `prompts/scenarios/{scenario}.txt`，组合为最终系统提示词（角色 + "\n\n" + 场景）。模板缺失时三级回退：指定角色 -> general 角色 -> AgentConfig 默认值。
 
 ## 8. API 接口清单
 
@@ -121,10 +122,12 @@ flowchart TD
 | BR-AGT-002 | ReAct 循环最大迭代次数默认 10 | 🔴 强制 |
 | BR-AGT-003 | Agent delegate 必须懒加载，避免构造时触发循环依赖；Tool 数量变化时必须重建 delegate 绑定最新工具列表（CR-003 新增） | 🔴 强制 |
 | BR-AGT-004 | 会话记忆按 sessionId 隔离，禁止跨会话读取记忆 | 🔴 强制 |
-| BR-AGT-005 | 系统提示词通过 `systemMessageProvider` 动态提供 | 🟡 尽量 |
+| BR-AGT-005 | 系统提示词通过 `PromptTemplateLoader.composeSystemPrompt(role, scenario)` 动态组合（角色模板 + 场景模板） | 🔴 强制 |
 | BR-AGT-006 | Agent 调用日志默认开启，记录 sessionId/耗时/回复长度 | ⚪ 可覆盖 |
-| BR-AGT-007 | 思考模式必须使用专用系统提示词（thinkingSystemPrompt），不提及工具调用能力；正常模式使用 defaultSystemPrompt（含工具引导语）（CR-001 新增） | 🔴 强制 |
-| BR-THINK-002 | 深度思考 ReAct 模式系统提示词（thinkingReactSystemPrompt）必须包含 ReAct 格式引导，工具能力描述通过运行时动态生成（ToolSchemaConverter.convertToDescriptionText() 反射扫描 @Tool 方法），不硬编码在提示词配置中（深度思考 CR-001） | 🔴 强制 |
+| BR-AGT-007 | 思考模式使用场景模板 "thinking"（声明"此模式不可调用工具"）；正常模式使用场景模板 "chat"（含工具引导语） | 🔴 强制 |
+| BR-THINK-002 | ReAct 模式使用场景模板 "react"（含 ReAct 格式引导 + {{tools}} 占位符），工具描述通过 `convertToDescriptionText()` 运行时替换占位符 | 🔴 强制 |
+| BR-AGT-008 | 系统提示词外部化为模板文件（`prompts/roles/*.txt` + `prompts/scenarios/*.txt`），AgentConfig 旧提示词仅作回退 | 🔴 强制 |
+| BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方运行时替换 | 🔴 强制 |
 
 ## 10. 异常处理
 

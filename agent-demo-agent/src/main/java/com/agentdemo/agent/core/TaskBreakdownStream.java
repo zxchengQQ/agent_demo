@@ -1,6 +1,7 @@
 package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ThinkingStreamHandler;
@@ -59,6 +60,7 @@ public class TaskBreakdownStream {
     private final AgentConfig agentConfig;
     private final ToolSchemaConverter toolSchemaConverter;
     private final ToolExecutor toolExecutor;
+    private final PromptTemplateLoader promptTemplateLoader;
 
     // ==================== 回调消费者 ====================
     // 规划阶段
@@ -89,7 +91,7 @@ public class TaskBreakdownStream {
     public TaskBreakdownStream(String sessionId, String message, boolean enableThinking,
                                ModelFactory modelFactory, ChatMemoryManager memoryManager,
                                AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
-                               ToolExecutor toolExecutor) {
+                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader) {
         this.sessionId = sessionId;
         this.message = message;
         this.enableThinking = enableThinking;
@@ -98,6 +100,7 @@ public class TaskBreakdownStream {
         this.agentConfig = agentConfig;
         this.toolSchemaConverter = toolSchemaConverter;
         this.toolExecutor = toolExecutor;
+        this.promptTemplateLoader = promptTemplateLoader;
     }
 
     // ==================== 链式 Setter ====================
@@ -249,7 +252,7 @@ public class TaskBreakdownStream {
         ChatModel chatModel = modelFactory.getDefaultChatModel();
 
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(agentConfig.getTaskBreakdownPlanPrompt()));
+        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_PLAN)));
         messages.add(UserMessage.from(message));
 
         ChatResponse response = chatModel.chat(messages);
@@ -419,9 +422,9 @@ public class TaskBreakdownStream {
     private String executeSubTaskWithReAct(SubTask task, List<String> previousResults) {
         ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
 
-        // 构造系统提示词：执行提示词 + 动态工具描述
-        String systemPrompt = agentConfig.getTaskExecutionSystemPrompt()
-                + "\n" + toolSchemaConverter.convertToDescriptionText();
+        // 构造系统提示词：执行提示词 + 动态工具描述（{{tools}} 占位符运行时替换）
+        String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_EXECUTE)
+                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText());
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(systemPrompt));
@@ -594,7 +597,7 @@ public class TaskBreakdownStream {
      */
     private void streamSummary(List<SubTask> tasks) {
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(agentConfig.getTaskSummaryPrompt()));
+        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_SUMMARY)));
         // 历史记忆中已包含用户消息和各子任务执行结果
         messages.addAll(memoryManager.getMemory(sessionId).messages());
 
@@ -610,7 +613,7 @@ public class TaskBreakdownStream {
      */
     private void streamDirectAnswer() {
         List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(agentConfig.getThinkingSystemPrompt()));
+        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_THINKING)));
         messages.addAll(memoryManager.getMemory(sessionId).messages());
         messages.add(UserMessage.from(message));
 

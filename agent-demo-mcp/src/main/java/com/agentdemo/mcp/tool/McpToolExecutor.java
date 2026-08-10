@@ -1,0 +1,203 @@
+package com.agentdemo.mcp.tool;
+
+import com.agentdemo.common.exception.BusinessException;
+import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.mcp.client.McpClientEntry;
+import com.agentdemo.mcp.client.McpClientRegistry;
+import com.agentdemo.mcp.client.McpTransportWrapper;
+import com.agentdemo.mcp.entity.McpServerStatus;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.mcp.client.McpClient;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+
+/**
+ * MCP 工具执行器
+ * <p>
+ * 业务含义：作为 ByteBuddy 动态生成工具方法的"中转站"，将 Agent 的工具调用请求
+ * 翻译为 MCP 协议调用，并把 MCP Server 返回的结果翻译回来；同时统一处理超时、
+ * 断线、连接异常等边界情况。
+ * </p>
+ * <p>
+ * 设计原则：
+ * 1. 依赖解耦：仅依赖 McpClientRegistry（纯存储层），不依赖 McpServerManager，避免循环依赖
+ * 2. 异常统一：所有异常包装为 BusinessException(MCP_TOOL_CALL_FAILED)，便于上层统一处理
+ * 3. 断线检测：检测到 IOException 时主动标记 entry 状态为 DISCONNECTED，便于后续状态查询
+ * 4. 统一解析（CR-002）：所有内容类型从 McpTransportWrapper 缓存的原始 JSON-RPC 响应
+ *    通过 McpContentParser 统一解析，不依赖 ToolExecutionResult 的内容提取路径
+ * </p>
+ */
+@Slf4j
+@Component
+public class McpToolExecutor {
+
+    private final McpClientRegistry clientRegistry;
+    private final McpContentParser contentParser;
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /**
+     * 降级提示：Wrapper 缓存为空或解析失败时返回
+     */
+    private static final String FALLBACK_MESSAGE =
+            "工具调用已成功执行，但返回结果包含图片、音频或其他非文本内容，当前环境无法直接展示。" +
+            "请告知用户：1. 工具已执行成功 2. 返回内容为非文本格式 " +
+            "3. 建议重新描述需求或使用其他工具获取文本信息。";
+
+    public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser) {
+        this.clientRegistry = clientRegistry;
+        this.contentParser = contentParser;
+    }
+
+    /**
+     * 执行 MCP 工具调用
+     * <p>
+     * 业务含义：ByteBuddy 生成的代理方法委托到此，统一处理工具调用与异常。
+     * </p>
+     *
+     * @param serverName MCP Server 名称
+     * @param toolName   工具原始名称（不带 mcp_ 前缀）
+     * @param argsJson   参数 JSON 字符串（LLM 通过 @Tool 描述理解格式后构造）
+     * @return 工具执行结果文本
+     * @throws BusinessException Server 不存在/状态异常/参数格式错误/调用失败时抛出
+     */
+    public String execute(String serverName, String toolName, String argsJson) {
+        // 1. 查找 entry
+        McpClientEntry entry = clientRegistry.get(serverName);
+        if (entry == null) {
+            throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
+                    "MCP Server 不存在: " + serverName);
+        }
+
+        // 2. 校验状态
+        if (entry.getStatus() != McpServerStatus.CONNECTED) {
+            throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
+                    "MCP Server " + serverName + " 当前状态为 " + entry.getStatus() + "，不可用");
+        }
+
+        // 3. 校验并规范化 argsJson
+        String normalizedArgs = normalizeArgsJson(serverName, toolName, argsJson);
+
+        // 4. 构造 ToolExecutionRequest
+        ToolExecutionRequest request = ToolExecutionRequest.builder()
+                .name(toolName)
+                .arguments(normalizedArgs)
+                .build();
+
+        // 5. 调用 McpClient.executeTool
+        // CR-002: executeTool 返回值被有意丢弃，仅用于触发 MCP 协议交换
+        // 所有内容类型统一从 Wrapper 缓存的原始响应通过 McpContentParser 解析
+        McpClient mcpClient = entry.getMcpClient();
+        try {
+            mcpClient.executeTool(request);
+        } catch (RuntimeException e) {
+            // 检测 IOException 包装：McpClient 内部 IO 异常会以 RuntimeException 形式抛出
+            if (isIOExceptionCause(e)) {
+                markDisconnected(entry, serverName, e.getMessage());
+                throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
+                        "MCP Server " + serverName + " 已断开: " + e.getMessage(), e);
+            }
+            // CR-002: Unsupported content type 视为预期行为（非文本内容的正常返回）
+            // 不作为错误处理，继续到统一解析路径
+            if (!isUnsupportedContentTypeException(e)) {
+                throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
+                        "MCP 工具调用失败 [" + serverName + "/" + toolName + "]: " + e.getMessage(), e);
+            }
+        }
+
+        // 6. 统一从 Wrapper 缓存解析原始响应（CR-002）
+        return parseFromWrapper(entry);
+    }
+
+    /**
+     * 从 Wrapper 缓存的原始 JSON-RPC 响应统一解析（CR-002）
+     * <p>
+     * 业务含义：取代 CR-001 的 extractResultText + extractFromRawResponse 双重解析路径，
+     * 所有内容类型（text/image/audio/resource/structuredContent/unknown）统一委托
+     * McpContentParser 解析。Wrapper 缓存为空或解析失败时返回降级提示。
+     * </p>
+     *
+     * @param entry MCP 客户端聚合对象
+     * @return 解析后的文本，或降级提示
+     */
+    private String parseFromWrapper(McpClientEntry entry) {
+        McpTransportWrapper wrapper = entry.getTransportWrapper();
+        if (wrapper == null) {
+            log.warn("parseFromWrapper: entry 无 McpTransportWrapper");
+            return FALLBACK_MESSAGE;
+        }
+        String rawResponse = wrapper.getLastRawResponse();
+        wrapper.clearCachedResponse();
+        if (rawResponse == null || rawResponse.isBlank()) {
+            log.warn("parseFromWrapper: Wrapper 缓存为空");
+            return FALLBACK_MESSAGE;
+        }
+        String parsed = contentParser.parse(rawResponse);
+        if (parsed != null) {
+            return parsed;
+        }
+        // 解析失败时回退到降级提示
+        return FALLBACK_MESSAGE;
+    }
+
+    /**
+     * 检测异常是否为 LangChain4j ToolExecutionHelper 的 Unsupported content type 异常
+     * <p>
+     * 业务含义：MCP Server 返回非文本内容（image/audio 等）时，LangChain4j 内部
+     * ToolExecutionHelper.extractResult() 会抛出此异常。这是预期行为，不是真正的错误。
+     * </p>
+     */
+    private boolean isUnsupportedContentTypeException(RuntimeException e) {
+        return e.getMessage() != null && e.getMessage().contains("Unsupported content type");
+    }
+
+    /**
+     * 规范化 argsJson
+     * <p>
+     * 业务含义：null/空字符串视为 "{}"；非空字符串必须为合法 JSON。
+     * </p>
+     */
+    private String normalizeArgsJson(String serverName, String toolName, String argsJson) {
+        if (argsJson == null || argsJson.isBlank()) {
+            return "{}";
+        }
+        try {
+            // 校验 JSON 格式：解析为 Map 验证合法性
+            objectMapper.readTree(argsJson);
+            return argsJson;
+        } catch (JsonProcessingException e) {
+            throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
+                    "MCP 工具参数 JSON 格式错误 [" + serverName + "/" + toolName + "]: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * 检测异常链中是否包含 IOException
+     */
+    private boolean isIOExceptionCause(Throwable e) {
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof IOException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    /**
+     * 标记 entry 为 DISCONNECTED 状态
+     * <p>
+     * 业务含义：检测到 IO 异常时主动更新状态，便于 REST API 状态查询反映真实情况。
+     * 注意：此处仅更新状态，不触发工具注销（由用户 reconnect 或 deleteServer 触发）。
+     * </p>
+     */
+    private void markDisconnected(McpClientEntry entry, String serverName, String error) {
+        entry.setStatus(McpServerStatus.DISCONNECTED);
+        entry.setLastError("IO 异常导致断线: " + error);
+        log.warn("MCP Server {} 检测到 IO 异常，已标记为 DISCONNECTED: {}", serverName, error);
+    }
+}

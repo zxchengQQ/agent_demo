@@ -2,6 +2,7 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.TaskBreakdownStream;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
@@ -34,6 +35,7 @@ public class PlanAgent {
     private final AgentConfig agentConfig;
     private final ToolSchemaConverter toolSchemaConverter;
     private final ToolExecutor toolExecutor;
+    private final PromptTemplateLoader promptTemplateLoader;
 
     /**
      * 构造器注入（禁止 @Autowired 字段注入）
@@ -43,17 +45,20 @@ public class PlanAgent {
      * @param agentConfig         Agent 配置（提示词、迭代次数等）
      * @param toolSchemaConverter 工具 Schema 转换器（工具描述和 JSON Schema）
      * @param toolExecutor        工具执行器（ReAct 循环中执行工具调用）
+     * @param promptTemplateLoader 提示词模板加载器（角色+场景模板组合）
      */
     public PlanAgent(ModelFactory modelFactory,
                      ChatMemoryManager memoryManager,
                      AgentConfig agentConfig,
                      ToolSchemaConverter toolSchemaConverter,
-                     ToolExecutor toolExecutor) {
+                     ToolExecutor toolExecutor,
+                     PromptTemplateLoader promptTemplateLoader) {
         this.modelFactory = modelFactory;
         this.memoryManager = memoryManager;
         this.agentConfig = agentConfig;
         this.toolSchemaConverter = toolSchemaConverter;
         this.toolExecutor = toolExecutor;
+        this.promptTemplateLoader = promptTemplateLoader;
         log.info("PlanAgent 构造完成");
     }
 
@@ -75,6 +80,7 @@ public class PlanAgent {
 
         return new TaskBreakdownStream(
                 sessionId, message, enableThinking,
-                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor);
+                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                promptTemplateLoader);
     }
 }

@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue';
 import type { Message, SubTaskStatus } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
+import { useMermaid } from '@/composables/useMermaid';
 import KnowledgeSourceBar from './KnowledgeSourceBar.vue';
 
 const props = defineProps<{ message: Message }>();
@@ -79,6 +80,23 @@ const renderedContent = computed(() => {
   if (!props.message.content) return '';
   return renderMarkdown(props.message.content);
 });
+
+/** Markdown 容器 ref（用于 Mermaid 渲染增强） */
+const markdownBodyRef = ref<HTMLElement | null>(null);
+
+/** Mermaid 渲染 composable：消息非流式时自动增强 Mermaid 代码块 */
+const { triggerEnhance } = useMermaid(
+  markdownBodyRef,
+  () => props.message.status === 'incomplete'
+);
+
+/** 监听内容变化和状态变化，触发 Mermaid 渲染 */
+watch(
+  [renderedContent, () => props.message.status],
+  () => {
+    triggerEnhance();
+  }
+);
 
 // ===== CR-002 新增：任务拆解折叠区块（AC-003, AC-005, AC-015, AC-016）=====
 
@@ -327,6 +345,7 @@ function statusIcon(status: SubTaskStatus): string {
         <!-- 助手消息：Markdown 渲染（AC-023），content 为空时不渲染 -->
         <div
           v-if="props.message.role === 'assistant' && props.message.content"
+          ref="markdownBodyRef"
           class="markdown-body"
           v-html="renderedContent"
         ></div>
@@ -715,4 +734,97 @@ function statusIcon(status: SubTaskStatus): string {
   border-top: 1px solid var(--border);
   margin: var(--spacing-sm) 0;
 }
+
+/* CR-001: 图片渲染样式约束（AC-039）*/
+.markdown-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  margin: var(--spacing-xs) 0;
+}
+
+/* Mermaid 图表渲染区块 */
+.markdown-body :deep(.mermaid-block) {
+  margin: var(--spacing-sm) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.markdown-body :deep(.mermaid-toolbar) {
+  display: flex;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border);
+}
+
+.markdown-body :deep(.mermaid-btn) {
+  padding: 2px 10px;
+  font-size: 0.8em;
+  font-family: var(--font-body);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.markdown-body :deep(.mermaid-btn:hover) {
+  color: var(--text-primary);
+  border-color: var(--accent);
+}
+
+.markdown-body :deep(.mermaid-btn--active) {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+.markdown-body :deep(.mermaid-content) {
+  padding: var(--spacing-md);
+  background: var(--bg-input);
+  overflow-x: auto;
+}
+
+.markdown-body :deep(.mermaid-diagram) {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 40px;
+}
+
+.markdown-body :deep(.mermaid-diagram svg) {
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-body :deep(.mermaid-loading) {
+  color: var(--text-muted);
+  font-size: 0.85em;
+  padding: var(--spacing-sm);
+}
+
+.markdown-body :deep(.mermaid-error) {
+  color: var(--danger);
+  font-size: 0.85em;
+  padding: var(--spacing-sm);
+  text-align: center;
+}
+
+.markdown-body :deep(.mermaid-source) {
+  margin: 0;
+  background: var(--bg-sidebar);
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.markdown-body :deep(.mermaid-source code) {
+  font-family: var(--font-display, monospace);
+  font-size: 0.85em;
+  color: var(--text-primary);
+}
+
 </style>

@@ -349,11 +349,23 @@ erDiagram
 
 ### 5.3 提示词模板
 
-| 文件 | 用途 |
-|------|------|
-| `prompts/default.txt` | 默认系统提示词 |
-| `prompts/code-assistant.txt` | 编程助手提示词 |
-| `prompts/general-assistant.txt` | 通用助手提示词 |
+> 提示词模板采用"角色×场景"二维矩阵架构，由 PromptTemplateLoader 运行时组合为最终系统提示词。
+
+| 目录 | 文件 | 用途 |
+|------|------|------|
+| `prompts/roles/` | `general.txt` | 通用助手角色模板 |
+| `prompts/roles/` | `code.txt` | 代码助手角色模板 |
+| `prompts/roles/` | `data-analyst.txt` | 数据分析助手角色模板 |
+| `prompts/roles/` | `doc-writer.txt` | 文档助手角色模板 |
+| `prompts/scenarios/` | `chat.txt` | 普通对话场景（含工具引导） |
+| `prompts/scenarios/` | `thinking.txt` | 深度思考场景（无工具） |
+| `prompts/scenarios/` | `react.txt` | ReAct 场景（含 {{tools}} 占位符） |
+| `prompts/scenarios/` | `task-plan.txt` | 任务规划场景（JSON 输出约束） |
+| `prompts/scenarios/` | `task-execute.txt` | 任务执行场景（含 {{tools}} 占位符） |
+| `prompts/scenarios/` | `task-summary.txt` | 任务总结场景 |
+
+> **组合规则**：`最终提示词 = 角色模板 + "\n\n" + 场景模板`。模板缺失时回退到 AgentConfig 默认值。
+> **占位符**：`{{tools}}` 由调用方通过 `ToolSchemaConverter.convertToDescriptionText()` 在运行时替换。
 
 ---
 

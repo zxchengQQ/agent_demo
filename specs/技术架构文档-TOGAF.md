@@ -1,7 +1,7 @@
 # AI Agent 示例项目 - 技术架构文档 (TOGAF)
 
-> **文档版本**：v1.3
-> **基线日期**：2026-08-05
+> **文档版本**：v1.4
+> **基线日期**：2026-08-07
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **TOGAF 版本**：The Open Group Architecture Framework 10.0
 > **关联文档**：[业务架构文档 (Phase B)](./业务架构文档.md) | [数据架构文档 (Phase C-Data)](./数据架构文档-TOGAF.md) | [SDD-项目技术指南文档](./SDD-项目技术指南文档.md)
@@ -173,7 +173,7 @@ graph TD
         E["agent-demo-tools<br/>ToolRegistry + 内置工具"]
         F["agent-demo-memory<br/>ChatMemoryManager + SessionManager"]
         G["agent-demo-rag<br/>知识库管理 + 向量化 + 检索 + 动态 Tool 注册（CR-003）"]
-        H["agent-demo-mcp（规划中）<br/>MCP 客户端/服务端"]
+        H["agent-demo-mcp<br/>MCP 客户端（三传输方式 + 动态/静态 Server 管理）"]
     end
 
     subgraph "基础设施层 Infrastructure"
@@ -214,7 +214,7 @@ graph TB
         M_TOOLS["agent-demo-tools<br/>工具系统"]
         M_MEM["agent-demo-memory<br/>记忆系统"]
         M_RAG["agent-demo-rag<br/>RAG 检索"]
-        M_MCP["agent-demo-mcp<br/>MCP 协议 规划中"]
+        M_MCP["agent-demo-mcp<br/>MCP 协议（已实现）"]
     end
 
     subgraph "应用层"
@@ -579,8 +579,8 @@ flowchart LR
 
 | 阶段 | 重点 | 时间范围 |
 |------|------|---------|
-| 短期 | ~~前端对话模块~~、~~RAG 检索模块~~、长期记忆（Milvus） | 2026 Q3（前端对话 + RAG 已实现） |
-| 中期 | MCP 客户端集成、多 Agent 协作、Spring Security 接入 | 2026 Q4 |
+| 短期 | ~~前端对话模块~~、~~RAG 检索模块~~、~~MCP 客户端集成~~、长期记忆（Milvus） | 2026 Q3（前端对话 + RAG + MCP 客户端已实现） |
+| 中期 | 多 Agent 协作、Spring Security 接入、MCP 服务端 | 2026 Q4 |
 | 长期 | 工作流编排、Guardrails、LangSmith 可观测性、MySQL 持久化 | 2027 Q1 |
 
 ---
@@ -651,13 +651,13 @@ flowchart LR
 | Spring Boot | 3.2.5 | 应用框架 |
 | LangChain4j | 1.17.2 (GA) | AI Agent 框架（核心模块） |
 | langchain4j-open-ai | 1.17.2 (GA) | 火山引擎接入适配器 |
-| langchain4j-mcp | 1.17.2-beta27 | MCP 协议支持（规划中） |
+| langchain4j-mcp | 1.17.2-beta27 | MCP 协议客户端（三传输方式：stdio/SSE/Streamable HTTP） |
 | langchain4j-milvus | 1.17.2-beta27 | 向量数据库集成（规划中） |
 | milvus-sdk-java | 2.4.3 | Milvus 客户端（规划中） |
 | MyBatis-Plus | 3.5.7 | ORM（规划中） |
 | springdoc-openapi | 2.5.0 | 接口文档 |
 | Hutool | 5.8.27 | 通用工具库 |
-| ByteBuddy | 1.14.19 | 运行时字节码生成（RAG 模块 CR-003 动态 Tool 生成） |
+| ByteBuddy | 1.14.19 | 运行时字节码生成（RAG 模块 CR-003 动态 Tool 生成 + MCP 模块工具代理生成） |
 | Jackson | Spring Boot 内置 | JSON 序列化 |
 | Logback | Spring Boot 内置 | 日志框架 |
 | Lombok | Spring Boot 内置 | 代码简化 |
@@ -684,7 +684,7 @@ flowchart LR
 | **agent-demo-mcp** | ✅ | | ✅ | | | - | | | | |
 | **agent-demo-agent** | ✅ | ✅ | ✅ | ✅ | - | | | | | |
 | **agent-demo-app** | ✅ | | | | ✅ | ✅ | ✅ | - | | |
-| **agent-demo-web** | ✅ | | | ✅ | ✅ | | | ✅ | - | |
+| **agent-demo-web** | ✅ | | | ✅ | ✅ | | ✅ | ✅ | - | |
 | **agent-demo-bootstrap** | | | | | | | | | ✅ | - |
 
 > 所有业务模块依赖 `agent-demo-common`，跨模块调用仅通过接口。`agent-demo-bom` 独立存在，不参与依赖矩阵（pom-only）。
@@ -697,6 +697,7 @@ flowchart LR
 - 部署架构变更时，更新部署图
 
 **版本变更记录**：
-- v1.3 (2026-08-05)：同步 CR-002 多 LLM 提供商重构 — 更新 3.1/3.2/3.3.3 节 agent-demo-llm 内部分层（config/capability/provider/thinking/registry/exception 六层架构）、4.2 节内存数据架构（ModelFactory 持有 providerRegistry，缓存迁移至 Provider 内部）、5.2/附录 A 外部服务（新增阿里百炼）、6.1 现有架构优势（多厂商高扩展）
+- v1.4 (2026-08-07)：同步 MCP 协议模块完整实现 - 更新 3.2 节应用架构图（MCP 模块从"规划中"更新为已实现）、3.3.1 节模块列表（MCP 状态更新）、附录 A 技术栈清单（langchain4j-mcp 状态更新 + ByteBuddy 用途补充 MCP 模块）、附录 B 模块依赖矩阵（web 新增 mcp 依赖）
+- v1.3 (2026-08-05)：同步 CR-002 多 LLM 提供商重构 - 更新 3.1/3.2/3.3.3 节 agent-demo-llm 内部分层（config/capability/provider/thinking/registry/exception 六层架构）、4.2 节内存数据架构（ModelFactory 持有 providerRegistry，缓存迁移至 Provider 内部）、5.2/附录 A 外部服务（新增阿里百炼）、6.1 现有架构优势（多厂商高扩展）
 - v1.2 (2026-08-03)：同步前端知识库管理 + RAG 模块动态 Tool 注册（CR-003）
 - v1.1 (2026-07-31)：初始版本，TOGAF Phase B/C/D 架构文档

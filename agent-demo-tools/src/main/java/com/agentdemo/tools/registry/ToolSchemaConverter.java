@@ -65,7 +65,7 @@ public class ToolSchemaConverter {
      */
     public String convertToDescriptionText() {
         StringBuilder sb = new StringBuilder();
-        sb.append("你可以调用以下工具来获取信息：\n");
+        sb.append("你可以调用以下工具来辅助回答：\n");
         for (Object tool : toolRegistry.listTools()) {
             for (Method method : tool.getClass().getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Tool.class)) {
@@ -76,7 +76,8 @@ public class ToolSchemaConverter {
                 }
             }
         }
-        sb.append("当问题需要实时信息或计算时，请主动调用工具。");
+        sb.append("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具。");
+        sb.append("调用工具后，在回答中简要提及使用了哪个工具及获取的关键信息。");
         return sb.toString();
     }
 

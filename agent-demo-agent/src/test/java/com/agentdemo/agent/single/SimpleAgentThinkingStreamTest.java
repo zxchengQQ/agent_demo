@@ -1,6 +1,7 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
@@ -61,7 +62,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
 
         // when: 调用 chatThinkingStream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "你好");
@@ -99,7 +100,7 @@ class SimpleAgentThinkingStreamTest {
         String systemPrompt = "你是测试助手";
         agentConfig.setThinkingSystemPrompt(systemPrompt);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
 
         // when: 调用 chatThinkingStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "你好");
@@ -111,10 +112,10 @@ class SimpleAgentThinkingStreamTest {
 
         List<ChatMessage> messages = messagesCaptor.getValue();
 
-        // 验证包含思考模式系统提示词（来自 agentConfig.getThinkingSystemPrompt()）
+        // 验证包含思考模式系统提示词（来自 PromptTemplateLoader 组合的角色+场景模板）
         assertTrue(messages.stream().anyMatch(m -> m instanceof SystemMessage
-                        && ((SystemMessage) m).text().equals(systemPrompt)),
-                "消息列表应包含思考模式系统提示词: " + systemPrompt);
+                        && ((SystemMessage) m).text().contains("深度推理")),
+                "消息列表应包含思考模式场景模板内容（深度推理）");
 
         // 验证包含历史用户消息
         assertTrue(messages.stream().anyMatch(m -> m instanceof UserMessage
@@ -155,7 +156,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
 
         // when: 调用原有 chatStream（不调用 start 避免触发真实 LLM）
         TokenStream tokenStream = agent.chatStream("test-session", "你好");
@@ -195,7 +196,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
 
         // when: 调用 chatThinkingStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "帮我查一下今天的新闻");
@@ -216,12 +217,12 @@ class SimpleAgentThinkingStreamTest {
         assertNotNull(sysMsg, "消息列表应包含 SystemMessage");
 
         String promptText = sysMsg.text();
-        // 验证：使用的是 thinkingSystemPrompt 而非 defaultSystemPrompt
-        assertTrue(promptText.equals(agentConfig.getThinkingSystemPrompt()),
-                "应使用 thinkingSystemPrompt，实际值: " + promptText);
-        // 验证：提示词不包含"可以调用工具"等工具调用引导语（"无需调用任何工具"是允许的）
-        assertTrue(!promptText.contains("可以调用工具") && !promptText.contains("请主动调用"),
-                "思考模式系统提示词不应引导模型调用工具，实际值: " + promptText);
+        // 验证：使用的是 PromptTemplateLoader 组合的提示词（含角色模板+思考场景模板）
+        assertTrue(promptText.contains("深度推理"),
+                "应使用思考场景模板，实际值: " + promptText);
+        // 验证：思考场景模板明确声明"此模式不可调用工具"
+        assertTrue(promptText.contains("此模式不可调用工具"),
+                "思考场景模板应声明不可调用工具，实际值: " + promptText);
     }
 
     /**
@@ -273,7 +274,7 @@ class SimpleAgentThinkingStreamTest {
 
         ToolExecutor toolExecutor = mock(ToolExecutor.class);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor);
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
 
         // when: 调用 chatThinkingReActStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingReActStream("test-session", "你好");

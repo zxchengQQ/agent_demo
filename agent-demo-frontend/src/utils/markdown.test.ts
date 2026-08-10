@@ -29,8 +29,21 @@ describe('renderMarkdown', () => {
     expect(html).not.toContain('<script>');
   });
 
-  it('XSS 防护：事件处理器属性被清除（AC-023）', () => {
+  it('XSS 防护：img 标签保留但 onerror 属性被清除（AC-039）', () => {
     const html = renderMarkdown('<img src=x onerror=alert(1)>');
     expect(html).not.toContain('onerror');
+    expect(html).toContain('<img');
+  });
+
+  it('Markdown 图片语法渲染为 img 标签（AC-039）', () => {
+    const html = renderMarkdown('![图片](https://example.com/a.png)');
+    expect(html).toContain('<img');
+    expect(html).toContain('src="https://example.com/a.png"');
+    expect(html).toContain('alt="图片"');
+  });
+
+  it('XSS 防护：javascript 协议的图片链接被拦截（AC-039）', () => {
+    const html = renderMarkdown('![图片](javascript:alert(1))');
+    expect(html).not.toContain('javascript:');
   });
 });

@@ -1,6 +1,7 @@
 package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
@@ -102,7 +103,8 @@ class SimpleAgentTest {
         agentConfig.setEnableLogging(false);
 
         return new TestableSimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig,
-                mock(ToolSchemaConverter.class), mock(ToolExecutor.class));
+                mock(ToolSchemaConverter.class), mock(ToolExecutor.class),
+                new PromptTemplateLoader(agentConfig));
     }
 
     /**
@@ -117,8 +119,9 @@ class SimpleAgentTest {
                             ChatMemoryManager memoryManager,
                             AgentConfig agentConfig,
                             ToolSchemaConverter toolSchemaConverter,
-                            ToolExecutor toolExecutor) {
-            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor);
+                            ToolExecutor toolExecutor,
+                            PromptTemplateLoader promptTemplateLoader) {
+            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader);
             this.toolRegistry = toolRegistry;
         }
 

@@ -3,6 +3,7 @@ package com.agentdemo.agent.single;
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.BaseAgent;
 import com.agentdemo.agent.core.ThinkingTokenStream;
+import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.common.enums.AgentType;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
@@ -50,6 +51,7 @@ public class SimpleAgent implements BaseAgent {
     private final AgentConfig agentConfig;
     private final ToolSchemaConverter toolSchemaConverter;
     private final ToolExecutor toolExecutor;
+    private final PromptTemplateLoader promptTemplateLoader;
 
     /**
      * AiServices 创建的代理（懒加载，首次调用 chat 时创建）
@@ -69,13 +71,15 @@ public class SimpleAgent implements BaseAgent {
                        ChatMemoryManager memoryManager,
                        AgentConfig agentConfig,
                        ToolSchemaConverter toolSchemaConverter,
-                       ToolExecutor toolExecutor) {
+                       ToolExecutor toolExecutor,
+                       PromptTemplateLoader promptTemplateLoader) {
         this.modelFactory = modelFactory;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;
         this.agentConfig = agentConfig;
         this.toolSchemaConverter = toolSchemaConverter;
         this.toolExecutor = toolExecutor;
+        this.promptTemplateLoader = promptTemplateLoader;
         log.info("SimpleAgent 构造完成（delegate 懒加载）");
     }
 
@@ -103,7 +107,7 @@ public class SimpleAgent implements BaseAgent {
                             .streamingChatModel(modelFactory.getDefaultStreamingChatModel())
                             .chatMemoryProvider(memoryId -> memoryManager.getMemory((String) memoryId))
                             .tools(toolRegistry.listTools().toArray())
-                            .systemMessageProvider(memoryId -> agentConfig.getDefaultSystemPrompt())
+                            .systemMessageProvider(memoryId -> promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_CHAT))
                             .build();
                     lastToolCount = currentToolCount;
                     log.info("Agent delegate 初始化完成");
@@ -224,9 +228,9 @@ public class SimpleAgent implements BaseAgent {
      */
     private List<ChatMessage> buildReActMessagesWithMemory(String sessionId, String message) {
         List<ChatMessage> messages = new ArrayList<>();
-        // ReAct 专用系统提示词（含 ReAct 引导）+ 动态工具描述（CR-001：工具描述不再硬编码在提示词中）
-        String systemPrompt = agentConfig.getThinkingReactSystemPrompt()
-                + "\n" + toolSchemaConverter.convertToDescriptionText();
+        // ReAct 专用系统提示词（含 ReAct 引导）+ 动态工具描述（{{tools}} 占位符运行时替换）
+        String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_REACT)
+                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText());
         messages.add(SystemMessage.from(systemPrompt));
         // 历史消息（多轮上下文）
         messages.addAll(memoryManager.getMemory(sessionId).messages());
@@ -247,7 +251,7 @@ public class SimpleAgent implements BaseAgent {
     private List<ChatMessage> buildMessagesWithMemory(String sessionId, String message) {
         List<ChatMessage> messages = new ArrayList<>();
         // 系统提示词（思考模式专用，不提及工具调用，避免模型尝试调用不存在的工具）
-        messages.add(SystemMessage.from(agentConfig.getThinkingSystemPrompt()));
+        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_THINKING)));
         // 历史消息（多轮上下文，由 ChatMemoryManager 维护窗口）
         messages.addAll(memoryManager.getMemory(sessionId).messages());
         // 当前用户消息

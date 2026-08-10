@@ -45,7 +45,11 @@ public class FileReadTool {
      * @return 文件内容字符串
      * @throws BusinessException 路径越界、文件过大、读取失败时抛出
      */
-    @Tool("读取指定路径的文件内容，参数 path 为相对路径（相对于允许目录），仅支持只读")
+    @Tool("读取本地文件内容。"
+            + "适用场景：需要查看本地文件（如配置文件、代码文件、数据文件）时调用。"
+            + "不适用场景：检索知识库内容用知识库检索工具。"
+            + "参数 path 为相对路径（相对于允许目录 ./data）。仅支持只读，文件大小限制 1MB。"
+            + "路径越界或文件不存在时返回错误。")
     public String readFile(String path) {
         try {
             Path resolvedPath = resolveAndValidate(path);

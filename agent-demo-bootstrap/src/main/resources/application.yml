@@ -39,14 +39,14 @@ ark:
 # 业务含义：通过 provider 切换当前使用的 LLM 提供商，支持 ark（火山引擎方舟）和 bailian（阿里百炼）
 # 默认值为 ark，确保不配置时不影响现有功能
 llm:
-  provider: ark  # ark | bailian（默认 ark，向后兼容）
+  provider: bailian  # ark | bailian（默认 ark，向后兼容）
 
 # 阿里百炼 OpenAI 兼容协议配置
 # 业务含义：使用阿里百炼 /compatible-mode/v1 路径，兼容 OpenAI 协议格式
 bailian:
   base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api-key: ${BAILIAN_API_KEY}  # 从环境变量注入，禁止硬编码
-  default-model: deepseek-v4-flash
+  default-model: glm-5.2
   models:
     chat: deepseek-v4-flash
     code: deepseek-v4-flash
@@ -61,10 +61,10 @@ bailian:
 agent:
   max-iterations: 10
   chat-memory-window-size: 20
-  default-system-prompt: "你是一个有用的 AI 助手，可以调用工具帮助用户解决问题。当问题需要计算、查询时间、获取网络信息时，请主动调用相应工具。"
-  thinking-system-prompt: "你是一个有用的 AI 助手。请基于你的知识直接回答用户的问题，无需调用任何工具。"
+  default-role: general  # 默认角色（对应 prompts/roles/ 目录下的模板文件名）
+  # 系统提示词已外部化到 prompts/roles/ 和 prompts/scenarios/ 模板文件
+  # AgentConfig 中的默认值作为模板缺失时的最终回退
   thinking-max-iterations: 8  # 深度思考 ReAct 模式最大迭代次数
-  thinking-react-system-prompt: "你是一个深度思考的 AI Agent，具备工具调用能力。请在回答前按照以下 ReAct 格式输出推理过程：\nThought: 分析用户需求，思考下一步行动\nAction: 描述你打算调用的工具及原因（实际调用由系统处理）\nObservation: （系统填入工具返回结果）\nThought: 基于观察结果继续思考\n...（可多轮 Thought-Action-Observation）\nFinal Answer: 最终回答\n\n重要约束：\n1. 只能使用系统提供的工具（通过 tools 参数传入），不要编造或猜测工具名。\n2. 如果用户的问题超出已有工具的能力范围（如天气查询、股票行情等），不要反复尝试调用不存在的工具，直接基于自身知识回答或告知用户该功能暂不支持。\n3. 当工具返回错误信息时，分析原因后决定下一步，不要盲目重试同一个失败的工具调用。"
   enable-logging: true
   file-allowed-dir: ./data
 
@@ -110,6 +110,51 @@ rag:
       size: 1000
       overlap: 200
       min-size: 500
+
+# MCP 协议模块配置
+# 业务含义：MCP 客户端模块，连接外部 MCP Server 并将其工具注册到 ToolRegistry 供 Agent 使用
+# 启用开关：mcp.enabled=false 时整个 MCP 模块不加载，所有 MCP API 返回 MCP_MODULE_DISABLED(5405)
+mcp:
+  enabled: true  # MCP 模块总开关，false 时跳过启动加载并禁用所有 MCP API
+  default-tool-timeout: 60s  # 全局默认工具调用超时（可被单 Server 的 tool-timeout 覆盖）
+  # 静态预配置 Server 列表（启动时自动加载；动态添加的 Server 仅存内存，重启丢失）
+  servers:
+    # === mermaid-mcp（远程 Streamable HTTP MCP Server） ===
+    # 业务含义：Mermaid 图表生成服务，提供通过自然语言描述生成流程图/时序图等能力
+    - name: mermaid-mcp
+      transport: http  # Streamable HTTP（新版 MCP 2025-06-18 规范）
+      enabled: true
+      url: https://mcp.mermaid.ai/mcp
+      tool-timeout: 60s
+
+    # === fetch（本地 stdio MCP Server） ===
+    # 业务含义：网页抓取服务，通过 npx 启动 mcp-fetch-server 子进程，提供 URL 内容获取能力
+    - name: fetch
+      transport: stdio
+      enabled: true
+      command: npx.cmd  # Windows 需 .cmd 后缀，Linux/Mac 用 npx
+      args:
+        - mcp-fetch-server
+      tool-timeout: 60s
+
+    # === stdio 传输示例（本地子进程） ===
+    # - name: weather  # 唯一标识（与知识库"名称全局唯一"风格一致）
+    #   transport: stdio  # stdio | sse
+    #   enabled: true  # 是否启用（false 时跳过该 Server）
+    #   command: node  # 启动 MCP Server 的命令
+    #   args:
+    #     - /path/to/weather-server.js
+    #   env:
+    #     API_KEY: xxx
+    #   tool-timeout: 60s  # 单 Server 超时（覆盖 default-tool-timeout）
+    # === HTTP+SSE 传输示例（远程） ===
+    # - name: remote-fetch
+    #   transport: sse
+    #   enabled: true
+    #   url: https://mcp.example.com/sse  # MCP Server SSE 端点
+    #   headers:
+    #     Authorization: Bearer xxx
+    #   tool-timeout: 60s
 
 # Springdoc Swagger
 springdoc:
