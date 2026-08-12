@@ -2,7 +2,8 @@
 import { ref, computed, nextTick } from 'vue';
 import { useSessionStore } from '@/stores/session';
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
-import type { KnowledgeBase, TokenUsage } from '@/types';
+import ModelSelector from './ModelSelector.vue';
+import type { KnowledgeBase, TokenUsage, LlmModel } from '@/types';
 
 const props = withDefaults(defineProps<{
   isStreaming: boolean;
@@ -14,11 +15,20 @@ const props = withDefaults(defineProps<{
   knowledgeBases?: KnowledgeBase[];
   /** 选中的知识库名称列表（Task-08，AC-029），默认空数组 */
   selectedKnowledgeBases?: string[];
+  /** 当前选中的模型 ID（Task-22 模型选择集成） */
+  selectedModel?: string;
+  /** chat 模型列表（Task-22），默认空数组 */
+  models?: LlmModel[];
+  /** 是否已配置 LLM（Task-22），默认 true 向前兼容 */
+  hasConfig?: boolean;
 }>(), {
   enableThinking: false,
   enableTaskBreakdown: false,
   knowledgeBases: () => [],
   selectedKnowledgeBases: () => [],
+  selectedModel: '',
+  models: () => [],
+  hasConfig: true,
 });
 
 const emit = defineEmits<{
@@ -30,6 +40,10 @@ const emit = defineEmits<{
   toggleTaskBreakdown: [];
   /** 知识库选择变更（Task-08，AC-029） */
   'update:selectedKnowledgeBases': [value: string[]];
+  /** 模型选择变更（Task-22） */
+  'update:selectedModel': [value: string];
+  /** 跳转到 LLM 配置视图（Task-22 空状态引导） */
+  'navigate-to-config': [];
 }>();
 
 const inputText = ref('');
@@ -38,9 +52,15 @@ const textareaRef = ref<HTMLTextAreaElement | null>(null);
 /** 消息长度上限（AC-015） */
 const MAX_LENGTH = 4000;
 
-/** 是否可发送（非空且未超长且未在流式中） */
+/**
+ * 是否具备可用的 chat 模型（Task-22）
+ * 业务含义：未配置 LLM 或无 chat 类型模型时，输入区禁用并展示引导。
+ */
+const hasModels = computed(() => props.hasConfig && props.models.length > 0);
+
+/** 是否可发送（非空且未超长且未在流式中且具备可用模型） */
 const canSend = computed(
-  () => inputText.value.trim().length > 0 && inputText.value.length <= MAX_LENGTH && !props.isStreaming,
+  () => hasModels.value && inputText.value.trim().length > 0 && inputText.value.length <= MAX_LENGTH && !props.isStreaming,
 );
 
 /** 是否超长 */
@@ -92,13 +112,25 @@ function handleKeydown(e: KeyboardEvent) {
 
 <template>
   <div class="message-input">
+    <!-- 未配置 LLM 空状态引导（Task-22） -->
+    <div v-if="!props.hasConfig" class="config-empty-state">
+      <span class="empty-text">请先配置 LLM 模型</span>
+      <button class="btn-go-config" @click="emit('navigate-to-config')">去配置</button>
+    </div>
+
+    <!-- 无 chat 类型模型引导（Task-22）：输入区禁用 -->
+    <div v-else-if="props.models.length === 0" class="config-empty-state">
+      <span class="empty-text">请先配置 chat 类型模型</span>
+      <button class="btn-go-config" @click="emit('navigate-to-config')">去配置</button>
+    </div>
+
     <div class="input-wrapper" :class="{ disabled: isStreaming }">
       <textarea
         ref="textareaRef"
         v-model="inputText"
         class="textarea"
         :placeholder="isStreaming ? '生成中...' : '输入消息，Enter 发送，Shift+Enter 换行'"
-        :disabled="isStreaming"
+        :disabled="isStreaming || !hasModels"
         rows="1"
         @input="autoResize"
         @keydown="handleKeydown"
@@ -124,6 +156,13 @@ function handleKeydown(e: KeyboardEvent) {
 
     <!-- 字符计数 + 超长提示 -->
     <div class="input-footer">
+      <!-- 模型选择器（Task-22）：流式或无可选模型时禁用 -->
+      <ModelSelector
+        :model-value="props.selectedModel"
+        :models="props.models"
+        :disabled="props.isStreaming || !hasModels"
+        @update:model-value="emit('update:selectedModel', $event)"
+      />
       <!-- 知识库选择器（Task-08，AC-029）：流式时禁用 -->
       <KnowledgeBaseSelector
         :model-value="props.selectedKnowledgeBases"
@@ -168,6 +207,40 @@ function handleKeydown(e: KeyboardEvent) {
   border-top: 1px solid var(--border);
   background: var(--bg-sidebar);
 }
+
+/* 未配置模型/LLM 空状态引导（Task-22） */
+.config-empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.empty-text {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.btn-go-config {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--accent);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-go-config:hover {
+  background: var(--accent-dim);
+}
+
 
 .input-wrapper {
   display: flex;

@@ -50,7 +50,7 @@ class SimpleAgentThinkingStreamTest {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
         ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
@@ -82,7 +82,7 @@ class SimpleAgentThinkingStreamTest {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
         ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
@@ -144,7 +144,7 @@ class SimpleAgentThinkingStreamTest {
         when(modelFactory.getDefaultChatModel()).thenReturn(mock(dev.langchain4j.model.chat.ChatModel.class));
         when(modelFactory.getDefaultStreamingChatModel()).thenReturn(mock(dev.langchain4j.model.chat.StreamingChatModel.class));
         ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
@@ -183,7 +183,7 @@ class SimpleAgentThinkingStreamTest {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
         ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
@@ -253,7 +253,7 @@ class SimpleAgentThinkingStreamTest {
         // given: mock 依赖
         ModelFactory modelFactory = mock(ModelFactory.class);
         ThinkingStreamingChatModel thinkingModel = mock(ThinkingStreamingChatModel.class);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());

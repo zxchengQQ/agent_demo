@@ -5,6 +5,7 @@ import com.agentdemo.mcp.config.McpTransportType;
 import lombok.Data;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * MCP Server 响应 DTO
@@ -30,6 +31,15 @@ public class McpServerResponse {
 
     /** 工具数量 */
     private int toolCount;
+
+    /** sse/http Server 的连接 URL（stdio 类型为 null，AC-036 前端地址显示用） */
+    private String url;
+
+    /** stdio Server 的执行命令（sse/http 类型为 null，AC-036 前端地址显示用） */
+    private String command;
+
+    /** stdio Server 的命令参数（sse/http 类型为 null，AC-036 前端地址显示用） */
+    private List<String> args;
 
     /** 最近错误信息（ERROR/DISCONNECTED 状态时填充） */
     private String lastError;

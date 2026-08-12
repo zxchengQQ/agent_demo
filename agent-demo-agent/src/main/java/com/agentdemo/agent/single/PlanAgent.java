@@ -75,11 +75,29 @@ public class PlanAgent {
      * @return TaskBreakdownStream 实例（需调用 start() 启动）
      */
     public TaskBreakdownStream chatTaskBreakdownStream(String sessionId, String message, boolean enableThinking) {
-        log.info("Agent 任务拆解流式对话: sessionId={}, message={}, enableThinking={}",
-                sessionId, message, enableThinking);
+        return chatTaskBreakdownStream(sessionId, message, enableThinking, null);
+    }
+
+    /**
+     * 任务拆解流式对话（支持指定模型）
+     * <p>
+     * 业务含义：按 modelId 选择思考流式模型，null 时使用默认模型。
+     * 内部将 modelId 传递给 TaskBreakdownStream，使其在各阶段使用指定模型。
+     * </p>
+     *
+     * @param sessionId      会话 ID
+     * @param message        用户消息
+     * @param enableThinking 是否开启深度思考（与任务拆解独立共存，AC-011）
+     * @param modelId        模型 ID（null 使用默认模型）
+     * @return TaskBreakdownStream 实例（需调用 start() 启动）
+     */
+    public TaskBreakdownStream chatTaskBreakdownStream(String sessionId, String message,
+                                                       boolean enableThinking, String modelId) {
+        log.info("Agent 任务拆解流式对话: sessionId={}, message={}, enableThinking={}, modelId={}",
+                sessionId, message, enableThinking, modelId);
 
         return new TaskBreakdownStream(
-                sessionId, message, enableThinking,
+                sessionId, message, enableThinking, modelId,
                 modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
                 promptTemplateLoader);
     }

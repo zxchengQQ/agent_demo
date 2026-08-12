@@ -2,13 +2,12 @@ package com.agentdemo.llm.exception;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
-import com.agentdemo.llm.capability.VisionChatModelProvider;
 
 /**
  * LLM 厂商能力不支持异常（CR-002 Task-24 新增）
  * <p>
  * 业务含义：当编排层（{@link com.agentdemo.llm.registry.ModelFactory}）检测到当前激活的厂商
- * 未实现某能力接口（如 {@link VisionChatModelProvider}）时抛出此异常，
+ * 未实现某能力接口时抛出此异常，
  * 错误信息明确包含厂商代码和缺失的能力名，避免隐式失败（对应 AC-021）。
  * </p>
  * <p>

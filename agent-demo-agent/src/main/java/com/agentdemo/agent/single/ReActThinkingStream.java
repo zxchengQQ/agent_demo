@@ -44,9 +44,13 @@ public class ReActThinkingStream implements ThinkingTokenStream {
     private static final int MAX_CONSECUTIVE_TOOL_FAILURES = 3;
     private int consecutiveToolFailures = 0;
 
+    // BUG 修复：cancel 标志位，emitter 超时/断开时通知异步线程停止后续 ReAct 迭代
+    private volatile boolean cancelled = false;
+
     // 回调消费者
     private ThinkingConsumer thinkingConsumer;
     private ThoughtConsumer thoughtConsumer;
+    private ResponseConsumer responseConsumer;
     private ActionConsumer actionConsumer;
     private ObservationConsumer observationConsumer;
     private FinalAnswerConsumer finalAnswerConsumer;
@@ -73,7 +77,8 @@ public class ReActThinkingStream implements ThinkingTokenStream {
 
     @Override
     public ThinkingTokenStream onPartialResponse(ResponseConsumer consumer) {
-        // ReAct 模式不使用 responseConsumer，content 通过 onPartialThought 推送
+        // BUG 修复：保存 responseConsumer，用于将最终答案（stop 轮 content）流式推送到主回复区
+        this.responseConsumer = consumer;
         return this;
     }
 
@@ -130,6 +135,19 @@ public class ReActThinkingStream implements ThinkingTokenStream {
     }
 
     /**
+     * 取消流式（BUG 修复）
+     * <p>
+     * 业务含义：emitter 超时或客户端断开时，由 AgentController 调用此方法，
+     * 通知异步线程停止后续 ReAct 迭代。正在进行的 LLM 调用无法中途打断，
+     * 但会在当前 LLM 调用返回后立即退出循环。
+     * </p>
+     */
+    @Override
+    public void cancel() {
+        cancelled = true;
+    }
+
+    /**
      * ReAct 循环核心逻辑
      * <p>
      * 业务含义：循环调用 LLM，根据 finish_reason 决定继续还是终止。
@@ -144,6 +162,11 @@ public class ReActThinkingStream implements ThinkingTokenStream {
         String finalResponse = "";
 
         while (shouldContinue && iteration < maxIterations) {
+            // BUG 修复：emitter 超时/断开时退出 ReAct 循环
+            if (cancelled) {
+                log.info("ReAct 循环已取消: iteration={}", iteration);
+                return;
+            }
             iteration++;
             final int currentIteration = iteration;
 
@@ -188,6 +211,11 @@ public class ReActThinkingStream implements ThinkingTokenStream {
 
         // 业务含义：达到 maxIterations 仍未得出最终回答，强制总结（AC-011）
         if (shouldContinue) {
+            // BUG 修复：emitter 超时/断开时跳过强制总结
+            if (cancelled) {
+                log.info("ReAct 循环已取消，跳过强制总结");
+                return;
+            }
             iteration++;
             final int currentIteration = iteration;
             IterationResult result = new IterationResult();
@@ -234,6 +262,8 @@ public class ReActThinkingStream implements ThinkingTokenStream {
                     thoughtConsumer.accept(token, iteration);
                 }
                 result.content.append(token);
+                // BUG 修复：收集该轮 token，stop 轮回放到主回复区（仅最终答案流式）
+                result.roundTokens.add(token);
             }
 
             @Override
@@ -244,6 +274,13 @@ public class ReActThinkingStream implements ThinkingTokenStream {
             @Override
             public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
                 result.finishReason = finishReason;
+                // BUG 修复：仅 stop 轮（最终答案）将 content 逐 token 回放到主回复区。
+                // 工具调用轮 content 仅作为 thought 显示在推理过程区，不进入主回复区。
+                if ("stop".equals(finishReason) && responseConsumer != null) {
+                    for (String token : result.roundTokens) {
+                        responseConsumer.accept(token);
+                    }
+                }
             }
 
             @Override
@@ -306,6 +343,8 @@ public class ReActThinkingStream implements ThinkingTokenStream {
         String finishReason;
         final List<ToolCall> toolCalls = new ArrayList<>();
         final StringBuilder content = new StringBuilder();
+        /** BUG 修复：该轮 content 的逐 token 列表，stop 轮回放到主回复区 */
+        final List<String> roundTokens = new ArrayList<>();
         Throwable error;
     }
 }

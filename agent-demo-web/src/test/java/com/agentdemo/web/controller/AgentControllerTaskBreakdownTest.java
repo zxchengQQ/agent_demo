@@ -84,7 +84,7 @@ class AgentControllerTaskBreakdownTest {
         when(sessionManager.createSession()).thenReturn("test-session-id");
 
         TaskBreakdownStream taskStream = mockTaskBreakdownStream();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
@@ -94,10 +94,10 @@ class AgentControllerTaskBreakdownTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了任务拆解路径
-        verify(planAgent).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean());
+        verify(planAgent).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
         // 验证没走原路径
-        verify(simpleAgent, never()).chatStream(anyString(), anyString());
-        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString());
+        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any());
+        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any());
         // 验证 start() 被调用（异步执行，需 timeout 等待）
         verify(taskStream, timeout(2000)).start();
     }
@@ -114,7 +114,7 @@ class AgentControllerTaskBreakdownTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -123,9 +123,9 @@ class AgentControllerTaskBreakdownTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了原路径
-        verify(simpleAgent).chatStream(anyString(), anyString());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any());
         // 验证没走任务拆解路径
-        verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean());
+        verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
     }
 
     /**
@@ -140,15 +140,15 @@ class AgentControllerTaskBreakdownTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"message\":\"你好\"}"))
             .andExpect(status().isOk());
 
-        verify(simpleAgent).chatStream(anyString(), anyString());
-        verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any());
+        verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
     }
 
     /**
@@ -160,7 +160,7 @@ class AgentControllerTaskBreakdownTest {
         when(sessionManager.createSession()).thenReturn("test-session-id");
 
         TaskBreakdownStream taskStream = mockTaskBreakdownStream();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
@@ -168,8 +168,10 @@ class AgentControllerTaskBreakdownTest {
                 .content("{\"message\":\"复杂任务\",\"enableTaskBreakdown\":true,\"enableThinking\":true}"))
             .andExpect(status().isOk());
 
+        // 等待异步线程执行到 start()，确保 planAgent 已被调用（避免异步竞态）
+        verify(taskStream, timeout(2000)).start();
         // 验证 enableThinking=true 被传递给 PlanAgent
-        verify(planAgent).chatTaskBreakdownStream(anyString(), anyString(), eq(true));
+        verify(planAgent).chatTaskBreakdownStream(anyString(), anyString(), eq(true), any());
     }
 
     /**
@@ -191,7 +193,7 @@ class AgentControllerTaskBreakdownTest {
             startThreadName.set(Thread.currentThread().getName());
             return null;
         }).when(taskStream).start();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
@@ -226,7 +228,7 @@ class AgentControllerTaskBreakdownTest {
             releaseLatch.await();
             return null;
         }).when(taskStream).start();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         long startTime = System.currentTimeMillis();
@@ -258,7 +260,7 @@ class AgentControllerTaskBreakdownTest {
         when(sessionManager.createSession()).thenReturn("test-session-id");
 
         TaskBreakdownStream taskStream = mockTaskBreakdownStream();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
@@ -298,7 +300,7 @@ class AgentControllerTaskBreakdownTest {
         when(sessionManager.createSession()).thenReturn("test-session-id");
 
         TaskBreakdownStream taskStream = mockTaskBreakdownStream();
-        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean()))
+        when(planAgent.chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any()))
                 .thenReturn(taskStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")

@@ -18,10 +18,13 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -365,5 +368,195 @@ class ReActThinkingStreamTest {
         verify(actionConsumer).accept("calculate", "{}", 1);
         verify(actionConsumer).accept("calculate", "{}", 2);
         verify(finalAnswerConsumer).accept(3);
+    }
+
+    // ========== BUG 修复：cancel 机制 ==========
+
+    /**
+     * 验证 cancel 后退出 ReAct 循环，不再调用 LLM
+     * <p>
+     * Bug1 场景：emitter 超时后异步线程应停止后续 ReAct 迭代，
+     * 避免继续向已 complete 的 emitter 发送事件导致 IllegalStateException
+     * </p>
+     */
+    @Test
+    void cancelShouldStopReActLoop() {
+        // 第一轮返回 tool_calls，第二轮返回 stop（但第二轮不应被执行）
+        int[] callCount = {0};
+        doAnswer(invocation -> {
+            callCount[0]++;
+            if (callCount[0] == 1) {
+                mockSingleRoundToolCalls(invocation, "calculate", "{}");
+            } else {
+                mockSingleRoundStop(invocation);
+            }
+            return null;
+        }).when(model).stream(any(), any(), any());
+
+        when(toolExecutor.execute("calculate", "{}")).thenReturn("结果");
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("多轮任务"));
+
+        ReActThinkingStream stream = new ReActThinkingStream(model, messages, "[tools]", toolExecutor, 5);
+
+        ThinkingTokenStream.ActionConsumer actionConsumer = mock(ThinkingTokenStream.ActionConsumer.class);
+        // 在第一轮 action 回调中 cancel
+        doAnswer(invocation -> {
+            stream.cancel();
+            return null;
+        }).when(actionConsumer).accept(anyString(), anyString(), anyInt());
+
+        ThinkingTokenStream.CompleteConsumer completeConsumer = mock(ThinkingTokenStream.CompleteConsumer.class);
+
+        stream.onAction(actionConsumer);
+        stream.onObservation(mock(ThinkingTokenStream.ObservationConsumer.class));
+        stream.onFinalAnswer(mock(ThinkingTokenStream.FinalAnswerConsumer.class));
+        stream.onComplete(completeConsumer);
+        stream.start();
+
+        // 验证 model.stream 只被调用 1 次（第二轮因 cancel 退出）
+        verify(model, times(1)).stream(any(), any(), any());
+        // 验证 onComplete 不被调用（cancel 后直接 return）
+        verify(completeConsumer, never()).accept(anyString());
+    }
+
+    /**
+     * 验证 cancel 后跳过强制总结
+     * <p>
+     * Bug1 场景：emitter 超时后不应继续调用 LLM 生成强制总结
+     * </p>
+     */
+    @Test
+    void cancelShouldSkipForcedSummarize() {
+        // 每轮都返回 tool_calls，不带 tools 时返回 stop
+        doAnswer(invocation -> {
+            String toolsJson = invocation.getArgument(1);
+            if (toolsJson != null) {
+                mockSingleRoundToolCalls(invocation, "calculate", "{}");
+            } else {
+                mockSingleRoundStop(invocation);
+            }
+            return null;
+        }).when(model).stream(any(), any(), any());
+
+        when(toolExecutor.execute("calculate", "{}")).thenReturn("结果");
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("无限循环"));
+
+        // maxIterations=2，正常情况第3轮强制总结
+        ReActThinkingStream stream = new ReActThinkingStream(model, messages, "[tools]", toolExecutor, 2);
+
+        ThinkingTokenStream.ActionConsumer actionConsumer = mock(ThinkingTokenStream.ActionConsumer.class);
+        // 在第二轮 action 回调中 cancel
+        int[] actionCount = {0};
+        doAnswer(invocation -> {
+            actionCount[0]++;
+            if (actionCount[0] == 2) {
+                stream.cancel();
+            }
+            return null;
+        }).when(actionConsumer).accept(anyString(), anyString(), anyInt());
+
+        ThinkingTokenStream.CompleteConsumer completeConsumer = mock(ThinkingTokenStream.CompleteConsumer.class);
+
+        stream.onAction(actionConsumer);
+        stream.onObservation(mock(ThinkingTokenStream.ObservationConsumer.class));
+        stream.onFinalAnswer(mock(ThinkingTokenStream.FinalAnswerConsumer.class));
+        stream.onComplete(completeConsumer);
+        stream.start();
+
+        // 验证 model.stream 只被调用 2 次（第3轮强制总结因 cancel 跳过）
+        verify(model, times(2)).stream(any(), any(), any());
+        // 验证 onComplete 不被调用
+        verify(completeConsumer, never()).accept(anyString());
+    }
+
+    // ========== BUG 修复：仅最终答案流式（主回复区正式内容流式输出）==========
+
+    /**
+     * 验证单轮 stop：最终答案 content 逐 token 回放到 responseConsumer
+     * <p>
+     * BUG 场景：ReAct 深度思考模式下正式内容（主回复区）无流式输出。
+     * 修复后 stop 轮 content 应通过 onPartialResponse 逐 token 推送。
+     * </p>
+     */
+    @Test
+    void stopRoundShouldStreamFinalAnswerToResponseConsumer() {
+        doAnswer(invocation -> {
+            ThinkingStreamHandler handler = invocation.getArgument(2);
+            handler.onPartialResponse("你好");
+            handler.onPartialResponse("，世界");
+            handler.onComplete("你好，世界", "stop", null);
+            return null;
+        }).when(model).stream(any(), any(), any());
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("打招呼"));
+
+        ReActThinkingStream stream = new ReActThinkingStream(model, messages, "[tools]", toolExecutor, 8);
+
+        ThinkingTokenStream.ResponseConsumer responseConsumer = mock(ThinkingTokenStream.ResponseConsumer.class);
+        stream.onPartialResponse(responseConsumer);
+        stream.onComplete(mock(ThinkingTokenStream.CompleteConsumer.class));
+        stream.start();
+
+        // 验证最终答案逐 token 回放到主回复区
+        verify(responseConsumer).accept("你好");
+        verify(responseConsumer).accept("，世界");
+    }
+
+    /**
+     * 验证多轮：仅 stop 轮 content 回放，tool_calls 轮 content 不回放
+     * <p>
+     * BUG 场景：工具调用轮的思考不应进入主回复区（仅最终答案流式），
+     * 避免主回复区被工具调用思考污染。
+     * </p>
+     */
+    @Test
+    void onlyFinalAnswerShouldStreamToolCallsRoundSkipped() {
+        int[] callCount = {0};
+        doAnswer(invocation -> {
+            callCount[0]++;
+            ThinkingStreamHandler handler = invocation.getArgument(2);
+            if (callCount[0] == 1) {
+                // 工具调用轮：content 为思考文本
+                handler.onPartialResponse("需要查时间");
+                handler.onToolCalls(Collections.singletonList(createToolCall("getCurrentTime")));
+                handler.onComplete("需要查时间", "tool_calls", null);
+            } else {
+                // 最终答案轮
+                handler.onPartialResponse("当前时间");
+                handler.onComplete("当前时间", "stop", null);
+            }
+            return null;
+        }).when(model).stream(any(), any(), any());
+
+        when(toolExecutor.execute("getCurrentTime", "{}")).thenReturn("12:00");
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("几点了"));
+
+        ReActThinkingStream stream = new ReActThinkingStream(model, messages, "[tools]", toolExecutor, 8);
+
+        ThinkingTokenStream.ResponseConsumer responseConsumer = mock(ThinkingTokenStream.ResponseConsumer.class);
+        stream.onPartialResponse(responseConsumer);
+        stream.onAction(mock(ThinkingTokenStream.ActionConsumer.class));
+        stream.onObservation(mock(ThinkingTokenStream.ObservationConsumer.class));
+        stream.onComplete(mock(ThinkingTokenStream.CompleteConsumer.class));
+        stream.start();
+
+        // 验证主回复区只收到最终答案（stop 轮），不包含工具调用轮思考
+        verify(responseConsumer).accept("当前时间");
+        verify(responseConsumer, never()).accept("需要查时间");
+    }
+
+    private ToolCall createToolCall(String name) {
+        ToolCall tc = new ToolCall();
+        tc.setId("call_" + name);
+        tc.setFunctionName(name);
+        tc.setArguments("{}");
+        return tc;
     }
 }

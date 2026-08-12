@@ -2,7 +2,7 @@
 
 ## 1. 模块概述
 
-Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层，负责通过 REST API 暴露 Agent 对话能力与会话管理能力。模块基于 Spring Boot Web MVC 提供 RESTful 接口，支持同步对话、会话创建/查询/清空，集成 Springdoc OpenAPI 3 自动生成接口文档，通过 GlobalExceptionHandler 统一异常处理，TraceIdInterceptor 注入链路追踪 ID。
+Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层，负责通过 REST API 暴露 Agent 对话能力、会话管理与 LLM 厂商/模型配置管理能力。模块基于 Spring Boot Web MVC 提供 RESTful 接口，支持同步对话、会话创建/查询/清空，集成 Springdoc OpenAPI 3 自动生成接口文档，通过 GlobalExceptionHandler 统一异常处理，TraceIdInterceptor 注入链路追踪 ID。v2.0 新增 LlmConfigController 提供 LLM 厂商动态配置管理（厂商 CRUD、API Key 连接测试、模型查询、配置状态与批量同步）。
 
 ## 2. 用户角色与权限
 
@@ -87,6 +87,43 @@ Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层�
 - **前置条件**：message 不能为空（`@NotBlank`）。
 - **后置结果**：SSE 事件流，客户端逐字接收。
 - **异常处理**：SSE 响应一旦开始写入，异常无法走 `@RestControllerAdvice`，需内部捕获并通过 `error` 事件通知前端。
+- **v2.0 扩展**：AgentController 读取 `ChatRequest.model` 作为 modelId 透传给 SimpleAgent/PlanAgent（chat/chatStream/chatThinkingReActStream/chatTaskBreakdownStream），为空时使用默认模型。
+
+### 3.9 厂商配置管理（CRUD，v2.0 新增）
+
+- **触发场景**：管理 LLM 厂商及模型的动态配置。
+- **操作步骤**：
+  - `GET /api/llm/config/predefined`：获取系统内置的预定义厂商目录（前端"添加厂商"页面选项来源）。
+  - `GET /api/llm/config/vendors`：获取已配置厂商列表（API Key 脱敏，保留前 3 位 + **** + 后 4 位）。
+  - `POST /api/llm/config/vendors`：添加厂商（含模型列表），添加后清除模型工厂全部缓存。
+  - `PUT /api/llm/config/vendors/{vendorId}`：编辑厂商（API Key 为空时保留原值），更新后清除该厂商模型缓存。
+  - `DELETE /api/llm/config/vendors/{vendorId}`：删除厂商及其所有模型，删除后清除该厂商模型缓存。
+- **业务规则**：厂商配置变更后必须清除模型工厂缓存（`modelFactory.clearAllCache/clearCacheForVendor`），确保新配置即时生效。
+
+### 3.10 API Key 连接测试（v2.0 新增）
+
+- **触发场景**：添加/编辑厂商前验证 API Key 与连通性。
+- **操作步骤**：`POST /api/llm/config/test`，请求体含 baseUrl + apiKey。
+- **系统行为**：使用 Java HttpClient 向 `{baseUrl}/models` 发送 GET（`Authorization: Bearer {apiKey}`，10s 超时），按响应状态码返回结果：
+  - 200：连接成功
+  - 401：API Key 无效（认证失败）
+  - 404：服务端点不存在
+  - 其他：服务端返回状态码
+  - 异常：连接失败（含原因）
+- **后置结果**：返回 `TestConnectionResponse`（success/message/latency）。
+
+### 3.11 模型查询与配置状态（v2.0 新增）
+
+- **触发场景**：查询已配置模型或获取 LLM 配置整体状态。
+- **操作步骤**：
+  - `GET /api/llm/config/models?type=`：遍历所有厂商模型，可选按 type（chat/embedding）过滤，返回含所属厂商信息的模型列表。
+  - `GET /api/llm/config/status`：返回配置状态（hasConfig/vendorCount/hasChatModel/hasEmbeddingModel/chatModelCount），前端据此判断系统是否可用。
+
+### 3.12 配置同步（v2.0 新增）
+
+- **触发场景**：配置导入、批量更新。
+- **操作步骤**：`POST /api/llm/config/sync`，请求体为完整的厂商配置列表。
+- **系统行为**：`configStore.replaceAll()` 替换所有现有配置，同步后清除模型工厂全部缓存。
 
 ## 4. 业务流程串联
 
@@ -134,9 +171,18 @@ flowchart TD
 
 ## 7. 核心数据实体
 
-- **AgentController**：Agent 对话 Controller，提供 chat/session 接口，CR-001 扩展 chatStream 方法支持 enableThinking 分流 + reasoning 事件推送。
-- **ChatRequest**：对话请求 DTO，含 sessionId/message/enableThinking（CR-001 新增，Boolean 可选，默认 false）。
+- **AgentController**：Agent 对话 Controller，提供 chat/session 接口，CR-001 扩展 chatStream 方法支持 enableThinking 分流 + reasoning 事件推送，v2.0 透传 modelId 给 SimpleAgent/PlanAgent。
+- **LlmConfigController**（v2.0 新增）：LLM 配置管理 Controller（`@RequestMapping("/api/llm/config")`），提供厂商 CRUD、预定义厂商查询、API Key 连接测试、模型列表查询、配置状态查询与批量同步 9 个 API，依赖 `LlmConfigStore`/`PredefinedVendorCatalog`/`ModelFactory`。
+- **ChatRequest**：对话请求 DTO，含 sessionId/message/enableThinking（CR-001 新增，Boolean 可选，默认 false）/model（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型）。
 - **ChatResponse**：对话响应 DTO，含 sessionId/response/toolCalls/duration/usage。
+- **VendorRequest**（v2.0 新增）：厂商配置请求 DTO（添加/编辑），含 name/type/baseUrl/apiKey/thinkingTrigger/timeout/maxRetries/temperature/models。
+- **VendorResponse**（v2.0 新增）：厂商响应 DTO，含 id/name/type/baseUrl/apiKeyMasked/apiKeyConfigured/thinkingTrigger/timeout/maxRetries/temperature/models。
+- **ModelResponse**（v2.0 新增）：模型响应 DTO，含 id/vendorId/vendorName/modelName/displayName/type/supportsVision。
+- **PredefinedVendorResponse**（v2.0 新增）：预定义厂商响应 DTO，含 code/name/baseUrl/thinkingTrigger/models。
+- **TestConnectionRequest**（v2.0 新增）：连接测试请求 DTO，含 baseUrl/apiKey。
+- **TestConnectionResponse**（v2.0 新增）：连接测试响应 DTO，含 success/message/latency。
+- **SyncConfigRequest**（v2.0 新增）：同步配置请求 DTO，含 vendors 列表。
+- **ConfigStatusResponse**（v2.0 新增）：配置状态响应 DTO，含 hasConfig/vendorCount/hasChatModel/hasEmbeddingModel/chatModelCount。
 - **GlobalExceptionHandler**：全局异常处理器，统一异常转换。
 - **TraceIdInterceptor**：链路追踪拦截器，注入 traceId 到 MDC。
 - **WebConfig**：Web 配置，注册拦截器、CORS 等。
@@ -151,6 +197,15 @@ flowchart TD
 | `/api/agent/session` | POST | 创建会话 | 无 | 无 | `Result<String>` |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 | path: sessionId | `Result<Boolean>` |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 | path: sessionId | `Result<Void>` |
+| `/api/llm/config/predefined` | GET | 获取预定义厂商目录（v2.0） | 无 | 无 | `Result<List<PredefinedVendorResponse>>` |
+| `/api/llm/config/vendors` | GET | 获取已配置厂商列表（API Key 脱敏）（v2.0） | 无 | 无 | `Result<List<VendorResponse>>` |
+| `/api/llm/config/vendors` | POST | 添加厂商（v2.0） | 无 | VendorRequest | `Result<VendorResponse>` |
+| `/api/llm/config/vendors/{vendorId}` | PUT | 编辑厂商（v2.0） | 无 | path: vendorId + VendorRequest | `Result<VendorResponse>` |
+| `/api/llm/config/vendors/{vendorId}` | DELETE | 删除厂商（v2.0） | 无 | path: vendorId | `Result<Void>` |
+| `/api/llm/config/test` | POST | 测试 API Key 连接（v2.0） | 无 | TestConnectionRequest | `Result<TestConnectionResponse>` |
+| `/api/llm/config/models` | GET | 获取模型列表（按类型过滤）（v2.0） | 无 | query: type（可选） | `Result<List<ModelResponse>>` |
+| `/api/llm/config/status` | GET | 获取配置状态（v2.0） | 无 | 无 | `Result<ConfigStatusResponse>` |
+| `/api/llm/config/sync` | POST | 批量同步配置（v2.0） | 无 | SyncConfigRequest | `Result<Void>` |
 
 **ChatRequest 字段**：
 
@@ -159,6 +214,7 @@ flowchart TD
 | sessionId | String | 否 | - | 为空则新建 |
 | message | String | 是 | `@NotBlank`、`@Size(max=4000)` | 用户消息，上限 4000 字符（AC-015） |
 | enableThinking | Boolean | 否 | - | 是否开启深度思考（CR-001 新增，默认 false） |
+| model | String | 否 | - | 模型 ID（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型） |
 
 **ChatResponse 字段**：
 
@@ -184,6 +240,10 @@ flowchart TD
 | BR-WEB-008 | 传入无效 sessionId 时自动新建，不抛错 | 🔴 强制 |
 | BR-WEB-009 | `NoResourceFoundException` 必须专门处理返回 404，禁止落入兜底 `Exception` 处理器导致 500 + 堆栈污染 | 🔴 强制 |
 | BR-WEB-010 | SSE 流式响应一旦开始写入，内部异常必须通过 `error` 事件通知前端，无法走 `@RestControllerAdvice`（CR-001 新增） | 🔴 强制 |
+| BR-WEB-011 | LLM 配置管理 API 路径统一前缀 `/api/llm/config/`（v2.0 新增） | 🔴 强制 |
+| BR-WEB-012 | 厂商查询响应中 API Key 必须脱敏（保留前 3 位 + **** + 后 4 位），禁止明文泄露（v2.0 新增） | 🔴 强制 |
+| BR-WEB-013 | 厂商配置变更（添加/编辑/删除/同步）后必须清除模型工厂缓存（`clearAllCache`/`clearCacheForVendor`），确保新配置即时生效（v2.0 新增） | 🔴 强制 |
+| BR-WEB-014 | 对话请求 model 字段透传为 modelId，为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 
@@ -195,6 +255,14 @@ flowchart TD
 | LLM 调用失败 | 5001 | LLM 调用失败 | BusinessException 转换 |
 | LLM 超时 | 5002 | LLM 调用超时 | BusinessException 转换 |
 | API Key 无效 | 5004 | LLM API Key 无效 | BusinessException 转换 |
+| LLM 配置不存在 | 5008 | LLM 配置不存在 | BusinessException 转换（v2.0） |
+| LLM 厂商不存在 | 5009 | LLM 厂商不存在 | BusinessException 转换（v2.0） |
+| LLM 模型不存在 | 5010 | LLM 模型不存在 | BusinessException 转换（v2.0） |
+| LLM 厂商名称已存在 | 5011 | LLM 厂商名称已存在 | BusinessException 转换（v2.0） |
+| LLM 模型名称已存在 | 5012 | LLM 模型名称已存在 | BusinessException 转换（v2.0） |
+| LLM 连接测试失败 | 5013 | LLM 连接测试失败 | BusinessException 转换（v2.0） |
+| 无可用 chat 模型 | 5014 | 无可用 chat 模型 | BusinessException 转换（v2.0） |
+| 无可用 embedding 模型 | 5015 | 无可用 embedding 模型 | BusinessException 转换（v2.0） |
 | 工具执行失败 | 5100 | 工具执行失败 | BusinessException 转换 |
 | 会话不存在 | 5201 | 会话不存在 | 自动新建会话 |
 | 系统未知异常 | 5000 | 系统异常 | GlobalExceptionHandler 兜底 |
@@ -263,3 +331,6 @@ curl -X DELETE http://localhost:8080/api/agent/session/a1b2c3d4e5f6/memory
 - 新增接口时，补充到第 3 节业务功能点与第 8 节接口清单
 - DTO 字段变更时，更新第 8 节字段说明
 - 异常场景新增时，更新第 10 节异常处理
+
+**变更日志**：
+- v2.0（2026-08-11）：LLM 厂商模型配置迭代 — 新增 LlmConfigController（/api/llm/config 9 个 API）与 8 个 DTO（VendorRequest/VendorResponse/ModelResponse/PredefinedVendorResponse/TestConnectionRequest/TestConnectionResponse/SyncConfigRequest/ConfigStatusResponse）；ChatRequest.model 启用为 modelId 透传给 Agent 层；新增 4 条业务规则（BR-WEB-011~014）；补充 8 个错误码（5008-5015）

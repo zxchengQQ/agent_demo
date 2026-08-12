@@ -4,7 +4,7 @@
 
 MCP 协议模块（agent-demo-mcp）是 AI Agent 示例项目的 MCP（Model Context Protocol）客户端能力模块，负责连接外部 MCP Server、自动发现工具并注册到 ToolRegistry 供 Agent 使用。模块基于 LangChain4j langchain4j-mcp（1.17.2-beta27）实现，支持三种传输方式：stdio（本地子进程）、SSE（旧版 HTTP+SSE 规范）、HTTP（Streamable HTTP，新版 MCP 2025-06-18 规范）。通过 ByteBuddy 动态生成带 `@Tool` 注解的代理类，将 MCP Server 暴露的工具以 `mcp_{serverName}_{toolName}` 前缀注册到 ToolRegistry，与本地工具一视同仁参与 ReAct 循环的 Function Calling。
 
-模块支持静态配置（application.yml 预配置，启动时批量加载）和动态管理（REST API 运行时增删查重连），并提供分场景容错策略（静态失败不阻塞启动、动态失败返回错误码、运行中断线自动注销工具）。
+模块支持静态配置（application.yml 预配置，启动时批量加载）和动态管理（REST API + 前端「设置 → MCP 服务」页面运行时增删查重连），并提供分场景容错策略（静态失败不阻塞启动、动态失败返回错误码、运行中断线自动注销工具）。前端支持通过业界通用的 `mcpServers` JSON 配置（与 Claude Desktop / Cursor 一致）一次性添加 stdio/sse/http 全类型 Server。
 
 ## 2. 用户角色与权限
 
@@ -78,8 +78,17 @@ MCP 协议模块（agent-demo-mcp）是 AI Agent 示例项目的 MCP（Model Con
 | HTTP | `HTTP` | url + headers | 远程 Streamable HTTP（新版 2025-06-18 规范） | `StreamableHttpMcpTransport`（url） |
 
 - **HTTP 传输**：新增于运行时调试阶段，用于连接 mermaid-mcp 等采用新版 MCP 2025-06-18 规范的 Server。`McpTransportFactory.createHttpTransport()` 使用 `StreamableHttpMcpTransport.Builder().url()` 创建传输通道。
-- **Windows 适配**：stdio 模式在 Windows 下需使用 `npx.cmd`（而非 `npx`），因 Java ProcessBuilder 不会自动解析 `.cmd` 后缀。
+- **Windows 适配**：stdio 模式在 Windows 下需使用 `npx.cmd`（而非 `npx`），因 Java ProcessBuilder 不会自动解析 `.cmd` 后缀。系统已实现自动适配：`McpTransportFactory.resolveWindowsCommand()` 在 Windows 下对无扩展名裸命令（如 npx）自动补全 PATH 中存在的 `.cmd`/`.bat`/`.exe` 扩展名（BUG-20260811 修复），用户直接配置 `npx` 即可，无需手动改为 `npx.cmd`。
+- **错误提示**：`McpServerManager` 连接失败时错误消息包含底层根因（`rootCauseMessage` 提取异常链最深层 cause），便于用户定位 stdio 配置问题（BUG-20260811 修复）。
 - **初始化超时**：`DefaultMcpClient.Builder` 配置 `initializationTimeout(60s)`，确保 npx 首次下载依赖时不超时。
+
+### 3.8 前端 MCP 服务管理（设置页面）
+
+- **触发场景**：用户在前端「设置 → MCP 服务」页面管理 MCP Server。
+- **页面入口**：NavBar 导航栏「设置」入口，`SettingsPage` 标签页容器包含「LLM 配置」和「MCP 服务」两个标签页（KeepAlive 保持状态）。
+- **JSON 配置添加**：`McpJsonConfigEditor` 弹窗允许粘贴业界通用 `mcpServers` JSON 配置（`utils/mcp-config.ts` 解析，按字段自动推断传输方式：command->STDIO，url->HTTP，transport:"sse"->SSE），支持一次性添加多个 Server、部分失败独立处理。
+- **服务列表**：`McpServicePage` + `McpServerCard` 展示 Server 名称/传输方式/地址/状态徽章/工具数，支持删除（二次确认）、重连（仅 DISCONNECTED/ERROR）、展开工具详情。
+- **业务规则**：BR-MCP-FE-001~012（前端 MCP 服务管理规则）。
 
 ## 4. 业务流程串联
 
@@ -158,6 +167,7 @@ flowchart TD
 | Server 删除 | `DELETE /api/mcp/servers/{name}` | 断开连接并注销工具 |
 | Server 重连 | `POST /api/mcp/servers/{name}/reconnect` | 重新连接断线 Server |
 | 工具列表查询 | `GET /api/mcp/servers/{name}/tools` | 查询 Server 暴露的工具 |
+| 前端 Server 管理 | 「设置 → MCP 服务」页面 | 前端 JSON 配置添加/删除/重连/查看工具（McpServicePage） |
 | Agent 工具调用 | ReAct Function Calling | Agent 自主选择 MCP 工具调用 |
 
 ## 8. 业务规则
@@ -186,6 +196,8 @@ flowchart TD
 | 20 | BR-MCP-023 | MCP 工具输出统一从 McpTransportWrapper 缓存的原始 JSON-RPC 响应通过 McpContentParser 解析，executeTool 返回值被丢弃（CR-002 新增，对应 AC-041） | 🔴 强制 |
 | 21 | BR-MCP-024 | McpContentParser 按内容类型策略分发处理：text->提取文本，image URL->Markdown 图片语法，image/audio base64->文本描述，resource text->提取文本，resource blob->文本描述，structuredContent->JSON 序列化，unknown->WARNING 日志+静默跳过（CR-002 新增，对应 AC-042~044） | 🔴 强制 |
 | 22 | BR-MCP-025 | McpContentParser 对未知内容类型必须静默跳过（记录 WARNING 日志），不得导致工具调用失败（CR-002 新增，对应 AC-045） | 🔴 强制 |
+| 23 | BR-MCP-026 | Windows 下 stdio 传输的 command 若为无扩展名裸命令（如 npx），必须自动补全 PATH 中存在的 .cmd/.bat/.exe 扩展名（resolveWindowsCommand，npx→npx.cmd），否则 ProcessBuilder 无法启动子进程（BUG-20260811 修复） | 🔴 强制 |
+| 24 | BR-MCP-027 | MCP Server 连接失败的错误消息必须包含底层根因（rootCauseMessage 提取异常链最深层 cause），避免仅返回笼统"连接失败"（BUG-20260811 修复） | 🔴 强制 |
 
 ## 9. 错误码
 

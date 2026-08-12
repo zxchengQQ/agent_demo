@@ -61,6 +61,9 @@ class McpControllerTest {
         server.setTransport(McpTransportType.STDIO);
         server.setEnabled(true);
         server.setStatus(McpServerStatus.CONNECTED);
+        server.setCommand("npx");
+        server.setUrl("https://example.com/mcp");
+        server.setArgs(List.of("mcp-fetch-server"));
         server.setConnectTime(LocalDateTime.now());
         // 添加 toolCount 个工具
         for (int i = 0; i < toolCount; i++) {
@@ -100,6 +103,9 @@ class McpControllerTest {
             assertEquals("weather", result.getData().get(0).getName());
             assertEquals(2, result.getData().get(0).getToolCount());
             assertEquals(McpServerStatus.CONNECTED, result.getData().get(0).getStatus());
+            assertEquals("npx", result.getData().get(0).getCommand());
+            assertEquals("https://example.com/mcp", result.getData().get(0).getUrl());
+            assertEquals(List.of("mcp-fetch-server"), result.getData().get(0).getArgs());
         }
 
         @Test

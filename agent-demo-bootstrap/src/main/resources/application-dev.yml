@@ -6,10 +6,6 @@ spring:
     restart:
       enabled: true
 
-ark:
-  coding-plan:
-    default-model: doubao-seed-2.0-lite
-
 logging:
   level:
     com.agentdemo: DEBUG

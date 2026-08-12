@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { mount } from '@vue/test-utils';
+import { mount, flushPromises } from '@vue/test-utils';
 import { nextTick } from 'vue';
 import { createPinia, setActivePinia, type Pinia } from 'pinia';
 import MessageItem from '@/components/MessageItem.vue';
@@ -8,13 +8,17 @@ import MessageInput from '@/components/MessageInput.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
 import MessageList from '@/components/MessageList.vue';
 import KnowledgeBaseSelector from '@/components/KnowledgeBaseSelector.vue';
+import ModelSelector from '@/components/ModelSelector.vue';
 import NavBar from '@/components/NavBar.vue';
 import KnowledgeBasePage from '@/components/KnowledgeBasePage.vue';
+import SettingsPage from '@/components/SettingsPage.vue';
 import SessionList from '@/components/SessionList.vue';
 import App from '@/App.vue';
 import { useSessionStore } from '@/stores/session';
 import { useRagStore } from '@/stores/rag';
-import type { Message, SubTask, KnowledgeBase } from '@/types';
+import { useLlmStore } from '@/stores/llm';
+import { getModels, getConfigStatus } from '@/api/llm';
+import type { Message, SubTask, KnowledgeBase, LlmModel, ConfigStatus } from '@/types';
 
 // Mock streamChat 避免 ChatWindow 测试发起真实 API 调用
 vi.mock('@/api/chat', () => ({
@@ -30,6 +34,24 @@ vi.mock('@/api/rag', () => ({
   listDocuments: vi.fn().mockResolvedValue([]),
   deleteDocument: vi.fn(),
   getDocumentStatus: vi.fn(),
+}));
+
+// Mock LLM API 避免 LlmConfigPage 测试发起真实 API 调用
+vi.mock('@/api/llm', () => ({
+  getPredefinedVendors: vi.fn().mockResolvedValue([]),
+  getVendors: vi.fn().mockResolvedValue([]),
+  getModels: vi.fn().mockResolvedValue([]),
+  getConfigStatus: vi.fn(),
+  addVendor: vi.fn(),
+  updateVendor: vi.fn(),
+  deleteVendor: vi.fn(),
+  testConnection: vi.fn(),
+  syncConfig: vi.fn(),
+}));
+
+// Mock SettingsPage，避免其内部 LlmConfigPage/McpServicePage 在 App 条件渲染测试中实例化
+vi.mock('@/components/SettingsPage.vue', () => ({
+  default: { name: 'SettingsPage', template: '<div class="mock-settings"></div>' },
 }));
 
 /**
@@ -471,6 +493,14 @@ describe('MessageItem', () => {
 });
 
 describe('MessageInput', () => {
+  let pinia: Pinia;
+
+  beforeEach(() => {
+    // MessageInput 内部使用 useSessionStore，需要激活 Pinia
+    pinia = createPinia();
+    setActivePinia(pinia);
+  });
+
   it('渲染输入框和发送按钮', () => {
     const wrapper = mount(MessageInput, { props: { isStreaming: false } });
     expect(wrapper.find('textarea').exists()).toBe(true);
@@ -598,6 +628,60 @@ describe('MessageInput', () => {
     expect(wrapper.emitted('update:selectedKnowledgeBases')).toBeTruthy();
     expect(wrapper.emitted('update:selectedKnowledgeBases')![0][0]).toEqual(['产品手册']);
   });
+
+  // ===== Task-22 新增：模型选择器集成 =====
+
+  const chatModel: LlmModel = {
+    id: 'model-001',
+    vendorId: 'v1',
+    vendorName: '火山引擎',
+    modelName: 'doubao-seed-2.0-pro',
+    displayName: '豆包Seed 2.0 Pro',
+    type: 'chat',
+    supportsVision: true,
+  };
+
+  it('渲染包含 ModelSelector 组件（Task-22）', () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false } });
+    expect(wrapper.findComponent(ModelSelector).exists()).toBe(true);
+  });
+
+  it('selectedModel 与 models prop 透传给 ModelSelector（Task-22）', () => {
+    const wrapper = mount(MessageInput, {
+      props: { isStreaming: false, selectedModel: 'model-001', models: [chatModel] },
+    });
+    const selector = wrapper.findComponent(ModelSelector);
+    expect(selector.props('modelValue')).toBe('model-001');
+    expect(selector.props('models')).toEqual([chatModel]);
+  });
+
+  it('isStreaming 为 true 时 ModelSelector 的 disabled 为 true（Task-22）', () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: true, models: [chatModel] } });
+    const selector = wrapper.findComponent(ModelSelector);
+    expect(selector.props('disabled')).toBe(true);
+  });
+
+  it('ModelSelector 变更时 MessageInput emit update:selectedModel（Task-22）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false } });
+    const selector = wrapper.findComponent(ModelSelector);
+    await selector.vm.$emit('update:modelValue', 'model-001');
+    expect(wrapper.emitted('update:selectedModel')).toBeTruthy();
+    expect(wrapper.emitted('update:selectedModel')![0][0]).toBe('model-001');
+  });
+
+  it('无 chat 模型时显示"请先配置 chat 类型模型"引导并触发去配置（Task-22）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [] } });
+    expect(wrapper.find('.config-empty-state').text()).toContain('请先配置 chat 类型模型');
+    await wrapper.find('.btn-go-config').trigger('click');
+    expect(wrapper.emitted('navigate-to-config')).toBeTruthy();
+  });
+
+  it('hasConfig 为 false 时显示"请先配置 LLM 模型"引导（Task-22）', () => {
+    const wrapper = mount(MessageInput, {
+      props: { isStreaming: false, hasConfig: false, models: [chatModel] },
+    });
+    expect(wrapper.find('.config-empty-state').text()).toContain('请先配置 LLM 模型');
+  });
 });
 
 /**
@@ -608,10 +692,37 @@ describe('MessageInput', () => {
 describe('ChatWindow', () => {
   let pinia: Pinia;
 
+  /** 测试用 chat 模型（Task-22） */
+  const chatModel: LlmModel = {
+    id: 'model-001',
+    vendorId: 'vendor-001',
+    vendorName: '火山引擎',
+    modelName: 'doubao-seed-2.0-pro',
+    displayName: '豆包Seed 2.0 Pro',
+    type: 'chat',
+    supportsVision: true,
+  };
+
+  /** 测试用配置状态（Task-22） */
+  const configStatus: ConfigStatus = {
+    hasConfig: true,
+    hasChatModel: true,
+    hasEmbeddingModel: false,
+    vendorCount: 1,
+    chatModelCount: 1,
+  };
+
   beforeEach(() => {
     pinia = createPinia();
     setActivePinia(pinia);
     localStorage.clear();
+    vi.clearAllMocks();
+    // Task-22: 预置 chat 模型与配置状态，使 MessageInput 正常渲染且可发送
+    const llmStore = useLlmStore();
+    llmStore.chatModels = [chatModel];
+    llmStore.configStatus = configStatus;
+    vi.mocked(getModels).mockResolvedValue([chatModel]);
+    vi.mocked(getConfigStatus).mockResolvedValue(configStatus);
   });
 
   it('传递 enableThinking 状态给 MessageInput（AC-021）', () => {
@@ -806,12 +917,13 @@ describe('MessageList', () => {
  * 关联 AC：AC-001
  */
 describe('NavBar', () => {
-  it('渲染"对话"和"知识库"两个导航项', () => {
+  it('渲染"对话"、"知识库"和"设置"三个导航项', () => {
     const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
     const items = wrapper.findAll('.nav-item');
-    expect(items).toHaveLength(2);
+    expect(items).toHaveLength(3);
     expect(items[0].text()).toContain('对话');
     expect(items[1].text()).toContain('知识库');
+    expect(items[2].text()).toContain('设置');
   });
 
   it('currentView 为 chat 时"对话"项高亮（AC-001）', () => {
@@ -828,6 +940,12 @@ describe('NavBar', () => {
     expect(items[1].classes()).toContain('active');
   });
 
+  it('currentView 为 settings 时"设置"项高亮（AC-001）', () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'settings' } });
+    const items = wrapper.findAll('.nav-item');
+    expect(items[2].classes()).toContain('active');
+  });
+
   it('点击"知识库"时 emit update:currentView 为 "knowledge"', async () => {
     const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
     await wrapper.findAll('.nav-item')[1].trigger('click');
@@ -839,6 +957,12 @@ describe('NavBar', () => {
     const wrapper = mount(NavBar, { props: { currentView: 'knowledge' } });
     await wrapper.findAll('.nav-item')[0].trigger('click');
     expect(wrapper.emitted('update:currentView')![0]).toEqual(['chat']);
+  });
+
+  it('点击"设置"时 emit update:currentView 为 "settings"', async () => {
+    const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
+    await wrapper.findAll('.nav-item')[2].trigger('click');
+    expect(wrapper.emitted('update:currentView')![0]).toEqual(['settings']);
   });
 });
 
@@ -886,5 +1010,25 @@ describe('App 条件渲染', () => {
     await wrapper.findAll('.nav-item')[0].trigger('click');
     // 会话选择状态保持不变
     expect(store.currentSessionId).toBe(sessionId);
+  });
+
+  it('点击"设置"导航后渲染 SettingsPage，对话页面隐藏', async () => {
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    // 初始为对话页面
+    expect(wrapper.findComponent(SettingsPage).exists()).toBe(false);
+    // 点击设置导航
+    await wrapper.findAll('.nav-item')[2].trigger('click');
+    // 渲染设置页面
+    expect(wrapper.findComponent(SettingsPage).exists()).toBe(true);
+    // 对话页面隐藏
+    expect(wrapper.findComponent(SessionList).exists()).toBe(false);
+  });
+
+  it('从 ChatWindow 的 navigate-to-config 事件切换到设置视图', async () => {
+    const wrapper = mount(App, { global: { plugins: [pinia] } });
+    expect(wrapper.findComponent(SettingsPage).exists()).toBe(false);
+    // 触发 ChatWindow 的 navigate-to-config 事件
+    await wrapper.findComponent(ChatWindow).vm.$emit('navigate-to-config');
+    expect(wrapper.findComponent(SettingsPage).exists()).toBe(true);
   });
 });

@@ -59,7 +59,7 @@ class TaskBreakdownStreamExecutionTest {
         chatMemory = mock(ChatMemory.class);
 
         when(modelFactory.getDefaultChatModel()).thenReturn(chatModel);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
         when(toolSchemaConverter.convertToJson()).thenReturn("[]");
         when(toolSchemaConverter.convertToDescriptionText()).thenReturn("工具描述");
         when(memoryManager.getMemory(anyString())).thenReturn(chatMemory);
@@ -292,5 +292,77 @@ class TaskBreakdownStreamExecutionTest {
         // 验证子任务结果写入记忆
         verify(memoryManager).addUserMessage(eq("test-session"), contains("任务"));
         verify(memoryManager).addAssistantMessage(eq("test-session"), anyString());
+    }
+
+    // ========== BUG 修复：cancel 机制 ==========
+
+    /**
+     * 验证 cancel 后跳过剩余子任务，标记为已取消
+     * <p>
+     * Bug1 场景：emitter 超时后异步线程应停止后续子任务执行，
+     * 避免继续向已 complete 的 emitter 发送 task_token 事件导致 IllegalStateException
+     * </p>
+     */
+    @Test
+    void cancelShouldSkipRemainingSubTasks() {
+        mockPlanResponse("[{\"title\":\"任务1\"},{\"title\":\"任务2\"}]");
+        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
+
+        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        TaskBreakdownStream.TaskCancelledConsumer cancelledConsumer = mock(TaskBreakdownStream.TaskCancelledConsumer.class);
+        TaskBreakdownStream.TaskStartConsumer taskStartConsumer = mock(TaskBreakdownStream.TaskStartConsumer.class);
+
+        TaskBreakdownStream stream = createStream("任务", false);
+
+        // 在第一个子任务完成后 cancel
+        doAnswer(invocation -> {
+            stream.cancel();
+            return null;
+        }).when(completeConsumer).accept(anyInt());
+
+        stream.onTaskStart(taskStartConsumer)
+              .onTaskComplete(completeConsumer)
+              .onTaskCancelled(cancelledConsumer)
+              .start();
+
+        // 验证只有第一个子任务开始执行
+        verify(taskStartConsumer).accept(eq(1), eq("任务1"));
+        // 验证第二个子任务未被开始
+        verify(taskStartConsumer, never()).accept(eq(2), eq("任务2"));
+        // 验证第二个子任务被标记为已取消
+        verify(cancelledConsumer).accept(2);
+    }
+
+    /**
+     * 验证 cancel 后跳过 Phase 3 总结
+     * <p>
+     * Bug1 场景：emitter 超时后不应继续调用 LLM 生成总结，
+     * 避免向已 complete 的 emitter 发送 token 事件
+     * </p>
+     */
+    @Test
+    void cancelShouldSkipSummaryPhase() {
+        mockPlanResponse("[{\"title\":\"任务\"}]");
+        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
+
+        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        TaskBreakdownStream.TokenConsumer summaryTokenConsumer = mock(TaskBreakdownStream.TokenConsumer.class);
+
+        TaskBreakdownStream stream = createStream("任务", false);
+
+        // 在子任务完成后 cancel
+        doAnswer(invocation -> {
+            stream.cancel();
+            return null;
+        }).when(completeConsumer).accept(anyInt());
+
+        stream.onTaskComplete(completeConsumer)
+              .onSummaryToken(summaryTokenConsumer)
+              .start();
+
+        // 验证总结阶段未被调用（onSummaryToken 从未被触发）
+        verify(summaryTokenConsumer, never()).accept(anyString());
+        // 验证 thinkingModel.stream 只被调用 1 次（子任务执行），总结阶段被跳过
+        verify(thinkingModel, times(1)).stream(any(), any(), any());
     }
 }

@@ -223,6 +223,9 @@ public class DocumentService {
         try {
             EmbeddingModel embeddingModel = modelFactory.getEmbeddingModel();
             embeddings = batchEmbed(embeddingModel, segments);
+        } catch (BusinessException e) {
+            // 配置缺失异常（如 LLM_NO_EMBEDDING_MODEL）向上抛出，由 GlobalExceptionHandler 返回友好错误响应
+            throw e;
         } catch (Exception e) {
             log.error("文本向量化失败, documentId={}", documentId, e);
             documentStore.updateStatus(documentId, DocumentStatus.FAILED, null, "向量化失败");

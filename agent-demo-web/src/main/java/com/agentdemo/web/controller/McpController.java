@@ -120,6 +120,9 @@ public class McpController {
         response.setStatus(server.getStatus());
         response.setEnabled(server.isEnabled());
         response.setToolCount(server.getTools() != null ? server.getTools().size() : 0);
+        response.setUrl(server.getUrl());
+        response.setCommand(server.getCommand());
+        response.setArgs(server.getArgs());
         response.setConnectTime(server.getConnectTime());
         return response;
     }

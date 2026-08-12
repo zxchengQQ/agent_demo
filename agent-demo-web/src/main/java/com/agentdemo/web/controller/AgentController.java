@@ -2,6 +2,7 @@ package com.agentdemo.web.controller;
 
 import com.agentdemo.agent.core.SubTask;
 import com.agentdemo.agent.core.TaskBreakdownStream;
+import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.common.result.Result;
@@ -83,9 +84,12 @@ public class AgentController {
         // 记录用户消息到记忆
         memoryManager.addUserMessage(sessionId, request.getMessage());
 
+        // 业务含义：读取前端指定的 modelId，null 时使用默认模型
+        String modelId = request.getModel();
+
         // 调用 Agent（ReAct 循环由 LangChain4j 自动处理）
         long start = System.currentTimeMillis();
-        String response = simpleAgent.chat(sessionId, request.getMessage());
+        String response = simpleAgent.chat(sessionId, request.getMessage(), modelId);
         long duration = System.currentTimeMillis() - start;
 
         // 记录助手回复到记忆
@@ -158,6 +162,9 @@ public class AgentController {
         StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
 
+        // 业务含义：读取前端指定的 modelId，null 时使用默认模型
+        String modelId = request.getModel();
+
         // 业务含义：任务拆解分流（CR-002 新增）
         // - enableTaskBreakdown=true：走 PlanAgent.chatTaskBreakdownStream 路径
         // - enableTaskBreakdown=false/null：继续检查 enableThinking 分支
@@ -166,9 +173,8 @@ public class AgentController {
             // 若在请求线程同步执行 start()，Spring SseEmitter 在 Controller 返回前无法初始化 handler，
             // 所有 send() 数据被缓存到 earlySendAttempts，直到全部完成后才一次性发送，
             // 导致前端无法实时看到任务拆解和执行进度。
-            CompletableFuture.runAsync(() ->
-                planAgent.chatTaskBreakdownStream(effectiveSessionId, effectiveMessage,
-                    Boolean.TRUE.equals(request.getEnableThinking()))
+            TaskBreakdownStream breakdownStream = planAgent.chatTaskBreakdownStream(effectiveSessionId, effectiveMessage,
+                    Boolean.TRUE.equals(request.getEnableThinking()), modelId)
                 .onPlan(tasks -> {
                     // 推送子任务列表（AC-001）
                     List<Map<String, Object>> taskList = new ArrayList<>();
@@ -222,9 +228,20 @@ public class AgentController {
                     log.error("任务拆解异常: sessionId={}", effectiveSessionId, error);
                     sendEvent(emitter, "error", "任务拆解执行失败，请重试");
                     emitter.complete();
-                })
-                .start()
-            );
+                });
+
+            // BUG 修复：注册 emitter 生命周期回调，超时/断开时取消异步编排，
+            // 避免异步线程继续向已 complete 的 emitter 发送事件导致 IllegalStateException
+            emitter.onTimeout(() -> {
+                log.warn("SSE 超时，取消任务拆解编排: sessionId={}", effectiveSessionId);
+                breakdownStream.cancel();
+            });
+            emitter.onError(e -> {
+                log.warn("SSE 异常，取消任务拆解编排: sessionId={}", effectiveSessionId);
+                breakdownStream.cancel();
+            });
+
+            CompletableFuture.runAsync(breakdownStream::start);
             return emitter;
         }
 
@@ -235,9 +252,14 @@ public class AgentController {
             // ReAct 思考流式路径（Task-09 新增）
             // 业务含义：ReAct 模式中 content 通过 onPartialThought 推送为 thought 事件，
             // 不再使用 onPartialResponse（ReActThinkingStream 中为空实现）
-            simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage)
+            // BUG 修复：异步执行 start()，确保 SSE 事件实时推送（与任务拆解模式一致）。
+            // 若在请求线程同步执行 start()，SseEmitter handler 未初始化，
+            // 所有 send() 数据被缓存到 earlySendAttempts，导致前端流式输出失效。
+            ThinkingTokenStream thinkingStream = simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage, modelId)
                     .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
                     .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
+                    // BUG 修复：注册 onPartialResponse，将最终答案（stop 轮 content）以 token 事件流式推送到主回复区
+                    .onPartialResponse(token -> sendEvent(emitter, "token", token))
                     .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
                     .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
                     .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
@@ -259,11 +281,22 @@ public class AgentController {
                         log.error("思考流式对话异常: sessionId={}", effectiveSessionId, error);
                         sendEvent(emitter, "error", "生成回复时发生错误，请重试");
                         emitter.complete();
-                    })
-                    .start();
+                    });
+
+            // BUG 修复：注册 emitter 生命周期回调，超时/断开时取消异步编排
+            emitter.onTimeout(() -> {
+                log.warn("SSE 超时，取消思考流式编排: sessionId={}", effectiveSessionId);
+                thinkingStream.cancel();
+            });
+            emitter.onError(e -> {
+                log.warn("SSE 异常，取消思考流式编排: sessionId={}", effectiveSessionId);
+                thinkingStream.cancel();
+            });
+
+            CompletableFuture.runAsync(thinkingStream::start);
         } else {
             // 原路径（零回归）
-            simpleAgent.chatStream(effectiveSessionId, effectiveMessage)
+            simpleAgent.chatStream(effectiveSessionId, effectiveMessage, modelId)
                     .onPartialResponse(token -> {
                         sendEvent(emitter, "token", token);
                         fullResponse.append(token);

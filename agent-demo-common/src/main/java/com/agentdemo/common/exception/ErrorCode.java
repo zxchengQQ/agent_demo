@@ -38,6 +38,22 @@ public enum ErrorCode {
     LLM_PROVIDER_NOT_FOUND(5006, "LLM 提供商未注册"),
     /** LLM 能力不支持（CR-002 Task-24 新增）：厂商未实现某能力接口（如视觉对话），调用该能力方法时抛出 */
     LLM_CAPABILITY_NOT_SUPPORTED(5007, "LLM 能力不支持"),
+    /** LLM 配置不存在（动态配置功能新增） */
+    LLM_CONFIG_NOT_FOUND(5008, "LLM 配置不存在"),
+    /** 厂商不存在（按 ID 查找未命中时抛出） */
+    LLM_VENDOR_NOT_FOUND(5009, "厂商不存在"),
+    /** 模型不存在（按 ID 查找未命中时抛出） */
+    LLM_MODEL_NOT_FOUND(5010, "模型不存在"),
+    /** 厂商名称已存在（重复添加同名厂商时抛出） */
+    LLM_VENDOR_NAME_EXISTS(5011, "厂商名称已存在"),
+    /** 同类型同名模型已存在（同一厂商下同一类型重复模型名时抛出） */
+    LLM_MODEL_NAME_EXISTS(5012, "同类型同名模型已存在"),
+    /** 连接测试失败（API Key 验证不通过时返回） */
+    LLM_CONNECTION_TEST_FAILED(5013, "连接测试失败"),
+    /** 未配置 chat 模型（无可用对话模型时抛出） */
+    LLM_NO_CHAT_MODEL(5014, "未配置 chat 模型"),
+    /** 未配置 embedding 模型（RAG 向量化无可用模型时抛出） */
+    LLM_NO_EMBEDDING_MODEL(5015, "未配置 embedding 模型"),
 
     // 工具相关错误（5100-5199）
     TOOL_EXECUTION_FAILED(5100, "工具执行失败"),

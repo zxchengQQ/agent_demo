@@ -1,27 +1,31 @@
 <script setup lang="ts">
 /**
  * 顶部导航栏组件（Task-10，AC-001）
- * 业务含义：全局视图切换入口，在"对话"与"知识库"两个主功能间导航。
+ * 业务含义：全局视图切换入口，在"对话"、"知识库"与"设置"三个主功能间导航。
  * 通过 v-model:currentView 双向绑定当前视图，保持 App.vue 状态简洁。
  */
 
+/** 当前视图类型（Task-09 改造：llm-config 迁移为 settings） */
+export type ViewKey = 'chat' | 'knowledge' | 'settings';
+
 defineProps<{
   /** 当前激活的视图 */
-  currentView: 'chat' | 'knowledge';
+  currentView: ViewKey;
 }>();
 
 const emit = defineEmits<{
-  'update:currentView': [value: 'chat' | 'knowledge'];
+  'update:currentView': [value: ViewKey];
 }>();
 
 /** 导航项定义 */
 const navItems = [
   { key: 'chat' as const, label: '对话' },
   { key: 'knowledge' as const, label: '知识库' },
+  { key: 'settings' as const, label: '设置' },
 ];
 
 /** 切换视图 */
-function switchView(view: 'chat' | 'knowledge') {
+function switchView(view: ViewKey) {
   emit('update:currentView', view);
 }
 </script>

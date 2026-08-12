@@ -1,6 +1,6 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.5
+> **文档版本**：v2.8
 > **基线日期**：2026-08-07
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
@@ -61,7 +61,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 
 | 能力域 | 实现状态 | 学习要点 |
 |--------|---------|---------|
-| LLM 调用 | ✅ 已实现 | 模型抽象、流式输出、参数调优、场景路由、**多厂商注册表路由（CR-002 重构：能力矩阵 + 提供商策略 + 注册表，无厂商硬编码分支）** |
+| LLM 调用 | ✅ 已实现 | 模型抽象、流式输出、参数调优、场景路由、**动态配置 + 多厂商 + 前端管理 + 会话级模型选择（CR-003 重构：移除 Provider 模式，前端动态配置，LlmConfigStore 内存存储，按 modelId 路由）** |
 | 工具调用 | ✅ 已实现 | ReAct 循环、Function Calling、声明式注册 |
 | 记忆系统 | ✅ 已实现（短期） | 短期窗口记忆、会话隔离、超时清理 |
 | Agent 编排 | ✅ 已实现（单 Agent） | AiServices 代理、ReAct 循环、懒加载 |
@@ -179,52 +179,23 @@ project.version=1.0.0
 
 ### 3.2 LLM 提供商配置
 
-#### 火山引擎方舟（默认）
+> **配置方式变更（v2.7）**：LLM 厂商和模型配置已从静态 `application.yml` 提取到前端页面动态管理，不再通过环境变量注入 API Key。用户通过前端"LLM 配置"页面添加厂商、配置 API Key、选择模型，配置同时保存到后端内存和前端 localStorage，重启后自动恢复。
 
-| 配置项 | 值 |
-|--------|---|
-| 提供商 | 火山引擎方舟（Volcengine Ark） |
-| 接入方式 | Coding Plan（按次计费） |
-| Base URL | `https://ark.cn-beijing.volces.com/api/coding/v3` |
-| 协议 | OpenAI 兼容 |
-| 默认模型 | `doubao-seed-2.0-code` |
-| API Key | 环境变量 `ARK_API_KEY` 注入 |
-| 切换配置 | `llm.provider: ark`（默认值） |
+LLM 模块采用**动态配置模式**（CR-003 重构），通过 `LlmConfigStore` 内存存储管理所有厂商配置，`ModelFactory` 从 `LlmConfigStore` 读取配置动态创建 OpenAI 兼容模型实例，按 `vendorId:modelName` 缓存复用。支持多厂商同时配置，按会话维度选择模型。
 
-#### 阿里百炼（可选）
+项目内置 5 个预定义厂商（火山引擎方舟、阿里百炼、OpenAI、DeepSeek、Ollama），每个预定义厂商自带默认 Base URL 和常用模型清单，也支持用户自定义厂商。
 
-| 配置项 | 值 |
-|--------|---|
-| 提供商 | 阿里百炼（Alibaba Bailian） |
-| 接入方式 | OpenAI 兼容协议（`/compatible-mode/v1`） |
-| Base URL | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
-| 协议 | OpenAI 兼容 |
-| 默认模型 | `deepseek-v4-flash` |
-| API Key | 环境变量 `BAILIAN_API_KEY` 注入 |
-| 切换配置 | `llm.provider: bailian` |
+### 3.3 预定义模型目录
 
-### 3.3 支持的 LLM 模型清单
+> **配置方式变更（v2.7）**：模型配置已从静态 yml 提取到前端页面动态管理，以下为预定义厂商中内置的常用模型清单，实际可用模型由用户在前端配置时选择。
 
-#### 火山引擎方舟模型
-
-| 模型 | Model Name | 场景 | 状态 |
-|------|-----------|------|------|
-| 豆包 Seed 2.0 Code | `doubao-seed-2.0-code` | 编程任务（默认） | ✅ |
-| 豆包 Seed 2.0 Pro | `doubao-seed-2.0-pro` | 通用旗舰对话 | ✅ |
-| 豆包 Seed 2.0 Lite | `doubao-seed-2.0-lite` | 轻量快速场景 | ✅ |
-| MiniMax M2.7 | `minimax-m2.7` | 全栈任务 | 🚧 常量已定义 |
-| GLM 5.2 | `glm-5.2` | Agent 能力强 | 🚧 常量已定义 |
-| Kimi K2.7 Code | `kimi-k2.7-code` | 前端任务 | 🚧 常量已定义 |
-| DeepSeek V4 Pro | `deepseek-v4-pro` | 推理任务 | 🚧 常量已定义 |
-| 自动模式 | `ark-code-latest` | 效果+速度智能选择 | 🚧 常量已定义 |
-| 豆包 Embedding | `doubao-embedding-large-text-240915` | RAG 向量化 | ✅ |
-
-#### 阿里百炼模型
-
-| 模型 | Model Name | 场景 | 状态 |
-|------|-----------|------|------|
-| DeepSeek V4 Flash | `deepseek-v4-flash` | 通用对话（默认） | ✅ |
-| 阿里百炼 Embedding | `text-embedding-v4` | RAG 向量化 | ✅ |
+| 厂商 | 预定义模型（部分） |
+|------|------------------|
+| 火山引擎方舟 | doubao-seed-2.0-pro(chat)、doubao-seed-2.0-code(chat)、doubao-seed-2.0-lite(chat)、doubao-vision-pro(chat,支持视图)、doubao-embedding-large-text-240915(embedding) |
+| 阿里百炼 | deepseek-v4-flash(chat)、glm-5.2(chat)、qwen3.7-plus(chat,支持视图)、text-embedding-v4(embedding) |
+| OpenAI | gpt-4o(chat,支持视图)、gpt-4o-mini(chat)、text-embedding-3-small(embedding) |
+| DeepSeek | deepseek-chat(chat)、deepseek-reasoner(chat) |
+| Ollama (本地) | 无预定义模型，用户自定义 |
 
 ### 3.4 前端技术栈
 
@@ -279,7 +250,7 @@ agent-demo/
 ├── pom.xml                              # 根 POM，继承 spring-boot-starter-parent:3.2.5
 ├── agent-demo-bom/                      # BOM 物料清单（pom-only，统一版本）
 ├── agent-demo-common/                   # 公共组件（常量/枚举/异常/结果/工具类）
-├── agent-demo-llm/                      # LLM 接入层（火山引擎适配 + 模型工厂）
+├── agent-demo-llm/                      # LLM 接入层（动态配置 + 模型工厂 + 内存配置存储）
 ├── agent-demo-tools/                    # 工具集（内置工具 + 注册中心）
 ├── agent-demo-memory/                   # 记忆模块（短期记忆 + 会话管理）
 ├── agent-demo-rag/                      # RAG 模块（知识库问答：向量化、检索、CR-003 动态 Tool 注册，解析/分割已迁移至 splitter 模块）
@@ -297,16 +268,23 @@ agent-demo/
     └── src/
         ├── api/chat.ts                   # SSE 流式调用封装（fetch + ReadableStream，含 reasoning 事件处理，含 knowledgeBases 参数）
         ├── api/rag.ts                    # RAG API 封装（7 个 REST 接口 + 统一 request 函数）
+        ├── api/llm.ts                    # LLM 厂商配置 API 封装（预定义/厂商 CRUD/测试连接/模型/状态/同步）
+        ├── api/mcp.ts                    # MCP 服务管理 API 封装（Server 列表/添加/删除/重连/工具列表，Task-03 新增）
         ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning + knowledgeBasesBySession 会话级知识库选择状态）
         ├── stores/rag.ts                 # Pinia RAG 状态管理（知识库列表/文档列表/CRUD/状态轮询）
+        ├── stores/llm.ts                 # Pinia LLM 配置状态管理（vendors/chatModels/configStatus，配置同步至 localStorage）
+        ├── stores/mcp.ts                 # Pinia MCP 服务状态管理（servers/toolsCache，写操作后自动刷新，Task-04 新增）
         ├── utils/markdown.ts             # Markdown 渲染封装（marked + DOMPurify）
+        ├── utils/mcp-config.ts           # MCP JSON 配置解析器（mcpServers 格式解析 + 传输方式推断，Task-06 新增）
         ├── utils/storage.ts              # localStorage 缓存工具（50 会话 FIFO 淘汰）
         ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks + KnowledgeBase/DocumentInfo/DocumentStatus 等）
         ├── components/                   # Vue 组件
         │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector 集成）/ChatWindow（含知识库选择状态管理）/SessionList/NavBar
-        │   └── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
+        │   ├── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
+        │   ├── LLM 配置组件               # LlmConfigPage/VendorCard/VendorEditDialog/ModelSelector
+        │   └── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
-        └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库页面）
+        └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库/设置页面）
 ```
 
 ### 4.2 模块依赖方向
@@ -339,32 +317,26 @@ agent-demo-agent/
 └── single/                # SimpleAgent（单 Agent 实现）+ PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
 ```
 
-**agent-demo-llm**（LLM 接入，CR-002 重构为能力矩阵 + 提供商策略 + 注册表架构）：
+**agent-demo-llm**（LLM 接入，CR-003 重构为动态配置模式，移除 Provider 模式）：
 
 ```
 agent-demo-llm/
-├── config/                # 配置层：属性绑定 + 配置访问契约
-│                          # - LlmProviderConfig（配置访问契约接口，CR-002 从 factory 迁入）
-│                          # - LlmProvider（厂商枚举，CR-002 新增 code 字段，ARK("ark")/BAILIAN("bailian")）
-│                          # - LlmProperties（全局配置，llm.provider 切换，CR-002 新增 getProviderCode()）
-│                          # - ArkProperties / BailianProperties（厂商配置，CR-002 实现 LlmProviderConfig 接口）
-│                          # - LlmConfig（Spring @Configuration）
-├── capability/            # 能力契约层（ISP 接口，CR-002 新增）：定义"有什么能力"
-│                          # - ChatModelProvider / StreamingChatModelProvider / EmbeddingModelProvider
-│                          # - ThinkingStreamingChatModelProvider（工厂方法模式，声明 getThinkingStreamingChatModel(scene)）
-│                          # - VisionChatModelProvider（可选能力接口，ISP 拆出聚合接口外）
-├── provider/              # 厂商策略层（CR-002 新增）：定义"谁来提供"，新增厂商仅在此包加文件
-│                          # - LlmServiceProvider（聚合接口，继承 4 个核心能力接口 + getProviderCode()）
-│                          # - ArkLlmServiceProvider / BailianLlmServiceProvider（厂商实现，显式 implements VisionChatModelProvider）
-├── thinking/              # 思考流式模型层（CR-002 抽取为独立子系统）
+├── config/                # 配置层：实体 + 内存存储 + 预定义目录
+│                          # - LlmConfigStore（内存配置存储，@Component，ConcurrentHashMap 承载）
+│                          # - LlmVendorConfig（厂商配置实体，含 baseUrl/apiKey/models 等）
+│                          # - LlmModelConfig（模型配置实体，含 modelName/type/supportsVision 等）
+│                          # - PredefinedVendorCatalog（预定义厂商目录，5 个内置厂商）
+│                          # - PredefinedVendor / PredefinedModel（预定义厂商/模型类）
+├── registry/              # 编排层：ModelFactory（从 LlmConfigStore 读取配置，按 vendorId:modelName 缓存）
+│                          # - ModelFactory（注入 LlmConfigStore，无厂商硬编码，按 modelId 路由）
+├── thinking/              # 思考流式模型层（保留 CR-002 架构不变）
 │                          # - ThinkingStreamingChatModel（核心接口）
-│                          # - AbstractThinkingStreamingChatModel（模板方法基类，上提 SSE 解析/HTTP 调用通用逻辑）
-│                          # - ArkThinkingStreamingChatModel / BailianThinkingStreamingChatModel（子类仅实现差异化钩子）
+│                          # - AbstractThinkingStreamingChatModel（模板方法基类）
+│                          # - ArkThinkingStreamingChatModel（thinkingTrigger=enabled）
+│                          # - BailianThinkingStreamingChatModel（thinkingTrigger=none）
 │                          # - ThinkingStreamHandler（回调接口）/ ToolCall（数据结构）
-├── registry/              # 编排层（CR-002 新增）：注册表路由，对外门面
-│                          # - ModelFactory（注入 List<LlmServiceProvider>，按 providerCode 路由，无厂商硬编码分支）
-└── exception/             # 异常层
-                           # - UnsupportedCapabilityException（CR-002 新增，能力缺失时抛出）
+├── exception/             # 异常层（保留）
+│                          # - UnsupportedCapabilityException（能力不存在异常）
 ```
 
 **agent-demo-tools**（工具系统）：
@@ -425,7 +397,7 @@ agent-demo-mcp/
 ├── config/                # McpProperties（@ConfigurationProperties(prefix="mcp")，含 ServerConfig 内部类）
 ├── entity/                # McpServer（Server 元数据+运行时状态）/ McpServerStatus（4 状态枚举）
 │                          # McpTransportType（3 传输方式枚举：STDIO/SSE/HTTP）/ McpToolInfo（工具元数据）
-├── client/                # McpTransportFactory（传输工厂：按 transport 创建 Stdio/Http/StreamableHttp 传输）
+├── client/                # McpTransportFactory（传输工厂：按 transport 创建 Stdio/Http/StreamableHttp 传输；含 Windows 命令适配 resolveWindowsCommand，npx 自动补全为 npx.cmd，BUG-20260811）
 │                          # McpClientEntry（McpClient+Transport+状态聚合，AutoCloseable）
 │                          # McpClientRegistry（Server 注册表，ConcurrentHashMap 按 name 索引）
 ├── tool/                  # McpToolFactory（ByteBuddy 生成 @Tool 代理类，含 parseParametersSchema 结构化参数描述）
@@ -433,7 +405,7 @@ agent-demo-mcp/
 │                          # McpContentParser（内容类型策略分发器：统一解析 MCP 协议 6 种内容类型 text/image/audio/resource/structuredContent/unknown，CR-002 新增）
 │                          # McpToolExecutor（工具执行器：统一从 Wrapper 缓存通过 McpContentParser 解析，删除 extractResultText/extractFromRawResponse 双重路径，CR-002 重构）
 │                          # McpToolRegistrar（接口）/ McpToolRegistrarImpl（启动加载器 ApplicationRunner + 生命周期管理）
-└── service/               # McpServerManager（核心服务：CRUD + 连接 + 状态机 + serializeParameters 手动提取 JsonObjectSchema）
+└── service/               # McpServerManager（核心服务：CRUD + 连接 + 状态机 + serializeParameters 手动提取 JsonObjectSchema；连接失败消息含根因 rootCauseMessage，BUG-20260811）
 ```
 
 **agent-demo-web**（Web 接口）：
@@ -588,48 +560,36 @@ flowchart TD
     S --> A
 ```
 
-### 5.6 模型场景路由框架
+### 5.6 模型路由框架（CR-003 动态配置模式）
 
-> **数据来源**：`ModelFactory.java`、`ArkProperties.java`、`BailianProperties.java`、`LlmServiceProvider.java`（CR-002 注册表路由）
+> **数据来源**：`ModelFactory.java`、`LlmConfigStore.java`（CR-003 动态配置模式）
 
-#### 路由架构（CR-002 重构后）
+#### 路由架构
 
 ```mermaid
 flowchart LR
     Caller[调用方: Agent/RAG/Web] --> MF[ModelFactory]
-    MF -->|llmProperties.getProviderCode| Reg{providerRegistry}
-    Reg -->|ark| Ark[ArkLlmServiceProvider]
-    Reg -->|bailian| BL[BailianLlmServiceProvider]
-    Reg -->|mock| Mock[MockLlmServiceProvider<br>扩展性验证]
-    Ark -->|委托| ArkModels[ChatModel/StreamingModel/Embedding/<br>ThinkingStreaming/VisionModel]
-    BL -->|委托| BlModels[同上能力集]
+    MF -->|modelId| Store[(LlmConfigStore)]
+    Store -->|查找配置| Vendor[厂商配置]
+    Vendor -->|baseUrl/apiKey| Models[OpenAI 兼容模型实例]
+    MF -->|按 vendorId:modelName 缓存| Cache[ConcurrentHashMap 缓存]
+    Caller -->|vendorId:modelName| Cache
 ```
 
-- **路由方式（CR-002 改变）**：`ModelFactory` 注入 `List<LlmServiceProvider>`，按 `providerCode` 路由，**无厂商硬编码分支**（原 7 处 if-else 已移除）
-- **扩展点**：新增厂商仅需在 `provider/` 包新增 `@Component` 实现类，ModelFactory 零修改
-- **能力检测**：可选能力（如 VisionChatModelProvider）通过 `instanceof` 检测，未实现时抛 `UnsupportedCapabilityException`
-- **缓存语义**：缓存委托给 Provider 实例（Spring 单例），多次调用同 scene 返回同一实例（AC-022）
+- **路由方式（CR-003 重构）**：`ModelFactory` 注入 `LlmConfigStore`，调用方传入 `modelId`，ModelFactory 从 LlmConfigStore 查找模型配置，获取 `vendorId` 和 `modelName`，按 `vendorId:modelName` 缓存复用。无 modelId 时使用第一个可用 chat 模型。
+- **扩展点**：用户通过前端页面动态添加厂商，无需修改任何后端代码
+- **能力检测**：视觉模型通过 `LlmModelConfig.supportsVision` 属性标记，ModelFactory 遍历查找
+- **缓存语义**：模型实例按 `vendorId:modelName` 缓存，配置变更时通过 `clearCacheForVendor/clearAllCache` 清除
 
-#### 火山引擎方舟场景路由
+#### 预定义厂商目录
 
-| 场景标识 | 模型 | 适用场景 |
-|---------|------|---------|
-| `chat`（默认） | doubao-seed-2.0-pro | 通用旗舰对话 |
-| `code` | doubao-seed-2.0-code | 编程任务 |
-| `lite` | doubao-seed-2.0-lite | 轻量快速场景 |
-| Embedding | doubao-embedding-large-text-240915 | RAG 向量化 |
-
-#### 阿里百炼场景路由
-
-| 场景标识 | 模型 | 适用场景 |
-|---------|------|---------|
-| `chat`（默认） | deepseek-v4-flash | 通用对话 |
-| `code` | deepseek-v4-flash | 编程任务 |
-| `lite` | deepseek-v4-flash | 轻量快速场景 |
-| Embedding | text-embedding-v4 | RAG 向量化 |
-
-- **提供商切换**：通过 `llm.provider` 配置项切换（`ark` | `bailian`），默认 `ark`
-- **回退策略**：未命中场景配置时回退到对应提供商的 `default-model`
+| 厂商 | 类型 | 默认 Base URL | thinkingTrigger |
+|------|------|------|------|
+| 火山引擎方舟 | 预定义 | https://ark.cn-beijing.volces.com/api/coding/v3 | enabled |
+| 阿里百炼 | 预定义 | https://dashscope.aliyuncs.com/compatible-mode/v1 | none |
+| OpenAI | 预定义 | https://api.openai.com/v1 | none |
+| DeepSeek | 预定义 | https://api.deepseek.com/v1 | none |
+| Ollama (本地) | 预定义 | http://localhost:11434/v1 | none |
 
 ### 5.8 前端 SSE 流式对话流程
 
@@ -957,10 +917,11 @@ public class GlobalExceptionHandler {
 |---------|------|--------|------|
 | sessionMap | ConcurrentHashMap<String, SessionMetadata> | SessionManager | 会话管理 |
 | memoryMap | ConcurrentHashMap<String, ChatMemory> | ChatMemoryManager | 记忆管理 |
-| chatModelCache | ConcurrentHashMap<String, ChatModel> | ArkLlmServiceProvider / BailianLlmServiceProvider | 对话模型缓存（CR-002 缓存持有者从 ModelFactory 迁移到 Provider 实例） |
-| streamingModelCache | ConcurrentHashMap<String, StreamingChatModel> | ArkLlmServiceProvider / BailianLlmServiceProvider | 流式模型缓存（CR-002 迁移到 Provider） |
-| embeddingModel | volatile EmbeddingModel | ArkLlmServiceProvider / BailianLlmServiceProvider | Embedding 单例（CR-002 迁移到 Provider） |
-| providerRegistry | Map<String, LlmServiceProvider> | ModelFactory | 厂商注册表（CR-002 新增，按 providerCode 索引） |
+| chatModelCache | ConcurrentHashMap<String, ChatModel> | ModelFactory | 对话模型缓存（CR-003 缓存由 ModelFactory 直接管理，key 为 vendorId:modelName） |
+| streamingModelCache | ConcurrentHashMap<String, StreamingChatModel> | ModelFactory | 流式模型缓存（CR-003 缓存由 ModelFactory 直接管理，key 为 vendorId:modelName） |
+| embeddingModelCache | ConcurrentHashMap<String, EmbeddingModel> | ModelFactory | Embedding 模型缓存（CR-003 新增，按 vendorId:modelName 缓存） |
+| thinkingModelCache | ConcurrentHashMap<String, ThinkingStreamingChatModel> | ModelFactory | 思考模型缓存（CR-003 新增，按 vendorId:modelName 缓存） |
+| vendorsStore | ConcurrentHashMap<String, LlmVendorConfig> | LlmConfigStore | 厂商配置存储（CR-003 新增，按 vendorId 索引） |
 | tools | CopyOnWriteArrayList<Object> | ToolRegistry | 工具列表 |
 | servers | ConcurrentHashMap<String, McpClientEntry> | McpClientRegistry | MCP Server 注册表（按 name 索引） |
 | delegate | volatile BaseAgent | SimpleAgent | AiServices 代理 |
@@ -1010,8 +971,9 @@ CREATE TABLE `agent_{name}` (
 
 | 安全场景 | 机制 | 实现类 |
 |----------|------|--------|
-| API Key 保护 | 环境变量 `${ARK_API_KEY}` 或 `${BAILIAN_API_KEY}` 注入，禁止入库/日志 | ArkProperties / BailianProperties |
-| API Key 校验 | 创建模型前由各 Provider 实现类校验对应 API Key 非空（CR-002 重构：从 ModelFactory 迁移到 ArkLlmServiceProvider / BailianLlmServiceProvider） | ArkLlmServiceProvider.validateApiKey() / BailianLlmServiceProvider.validateApiKey() |
+| API Key 保护 | 前端配置 + 后端内存存储 + API 响应脱敏，禁止入库/日志 | LlmConfigStore / VendorResponse.maskApiKey |
+| API Key 校验 | 保存前通过测试连接端点验证有效性（POST /api/llm/config/test），ModelFactory 创建模型时直接使用配置中的 API Key | LlmConfigController / ModelFactory |
+| API Key 脱敏 | API 响应中 API Key 脱敏显示（maskApiKey 方法，保留后 4 位），前端展示已脱敏 | VendorResponse.maskApiKey() |
 | HTTP 工具 SSRF 防护 | 禁止访问内网地址（10./172.16-31./192.168./127./localhost） | HttpTool.validateUrl() |
 | HTTP 响应截断 | 超过 10KB 截断，防止 Token 消耗过大 | HttpTool.truncateResponse() |
 | 文件读取目录限制 | `agent.file-allowed-dir` 白名单（默认 `./data`） | FileReadTool |
@@ -1066,24 +1028,22 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
-| 1 | BR-LLM-001 | API Key 必须通过环境变量 `ARK_API_KEY` 注入，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
+| 1 | BR-LLM-001 | API Key 通过前端配置页面动态管理，无需环境变量，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
 | 2 | BR-LLM-002 | 必须使用 Coding Plan 专用地址 `/api/coding/v3`（按次计费） | LLM 接入 | 🔴 强制 |
 | 3 | BR-LLM-003 | 模型名称必须通过 `ModelConstants` 常量类引用 | LLM 接入 | 🔴 强制 |
-| 4 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用（CR-002 补充：缓存委托给 Provider 实例，持有者变更但语义不变） | LLM 接入 | 🔴 强制 |
+| 4 | BR-LLM-004 | 模型实例必须通过 `ModelFactory` 获取并缓存复用（CR-003 重构：缓存由 ModelFactory 直接管理，按 vendorId:modelName 缓存，配置变更时清除对应缓存） | LLM 接入 | 🔴 强制 |
 | 5 | BR-LLM-005 | 调用超时时间默认 60s | LLM 接入 | ⚪ 可覆盖 |
 | 6 | BR-LLM-006 | 最大重试次数默认 3 次 | LLM 接入 | ⚪ 可覆盖 |
 | 7 | BR-LLM-007 | 思考模式（thinking.enabled）必须通过自定义 ArkThinkingStreamingChatModel 直连方舟 API，不走 LangChain4j openai4j（因 openai4j 不透传 reasoning_content） | LLM 接入 | 🔴 强制 |
-| 8 | BR-LLM-008 | LLM 提供商通过 `llm.provider` 配置项切换（`ark` / `bailian`），默认值为 `ark` | LLM 接入 | 🔴 强制 |
-| 9 | BR-LLM-009 | 阿里百炼 API Key 必须通过环境变量 `BAILIAN_API_KEY` 注入，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
+| 8 | BR-LLM-008 | ~~LLM 提供商通过 `llm.provider` 配置项切换~~ **CR-003 已移除**：`llm.provider` 配置项已删除，LLM 模型通过前端页面动态配置，后端 LlmConfigStore 内存存储 | LLM 接入 | 🔴 强制 |
+| 9 | BR-LLM-009 | API Key 通过前端配置页面动态管理，无需环境变量，禁止硬编码入库 | LLM 接入 | 🔴 强制 |
 | 10 | BR-LLM-010 | 切换提供商后只校验当前提供商的 API Key，未激活的提供商不校验 | LLM 接入 | 🔴 强制 |
 | 11 | BR-LLM-011 | 阿里百炼必须使用 OpenAI 兼容协议地址 `/compatible-mode/v1` | LLM 接入 | 🔴 强制 |
 | 12 | BR-LLM-012 | ~~阿里百炼模式暂不支持深度思考~~ **CR-002 已修正**：阿里百炼通过 `BailianThinkingStreamingChatModel` 支持深度思考（继承 AbstractThinkingStreamingChatModel，模型名称自身触发思考能力） | LLM 接入 | 🔴 强制 |
 | 13 | BR-LLM-013 | Embedding 模型跟随提供商切换：ARK 使用 `doubao-embedding-vision`，BAILIAN 使用 `text-embedding-v4` | LLM 接入 | 🔴 强制 |
-| 14 | BR-LLM-014 | 新增 LLM 厂商时 `ModelFactory` 核心代码必须零修改，仅通过新增 `LlmServiceProvider` 实现类（标注 `@Component`）+ `LlmProviderConfig` 实现类完成接入（CR-002 新增，对应 AC-018） | LLM 接入 | 🔴 强制 |
-| 15 | BR-LLM-015 | `ModelFactory` 中禁止出现任何 `if (provider == XXX) {...} else {...}` 形式的厂商硬编码分支（CR-002 新增，对应 AC-019，静态扫描验证） | LLM 接入 | 🔴 强制 |
-| 16 | BR-LLM-016 | `ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 代码重复率必须 ≤ 30%，通过继承 `AbstractThinkingStreamingChatModel` 实现（CR-002 新增，对应 AC-020，jscpd 检测） | LLM 接入 | 🔴 强制 |
-| 17 | BR-LLM-017 | 厂商未实现的能力接口在运行时必须抛出 `UnsupportedCapabilityException`，禁止隐式失败（CR-002 新增，对应 AC-021） | LLM 接入 | 🔴 强制 |
-| 18 | BR-LLM-018 | `LlmServiceProvider` 接口必须按 ISP 原则拆分为多能力接口（`ChatModelProvider`、`StreamingChatModelProvider`、`ThinkingStreamingChatModelProvider`、`EmbeddingModelProvider`、`VisionChatModelProvider`），`VisionChatModelProvider` 为可选能力接口不强制聚合，厂商按需 `implements`（CR-002 新增） | LLM 接入 | 🔴 强制 |
+| 14 | BR-LLM-016 | `ArkThinkingStreamingChatModel` 与 `BailianThinkingStreamingChatModel` 代码重复率必须 ≤ 30%，通过继承 `AbstractThinkingStreamingChatModel` 实现（CR-002 新增，对应 AC-020，jscpd 检测） | LLM 接入 | 🔴 强制 |
+| 15 | BR-LLM-017 | 厂商未实现的能力接口在运行时必须抛出 `UnsupportedCapabilityException`，禁止隐式失败（CR-002 新增，对应 AC-021） | LLM 接入 | 🔴 强制 |
+| 16 | BR-LLM-018 | `LlmServiceProvider` 接口必须按 ISP 原则拆分为多能力接口（`ChatModelProvider`、`StreamingChatModelProvider`、`ThinkingStreamingChatModelProvider`、`EmbeddingModelProvider`、`VisionChatModelProvider`），`VisionChatModelProvider` 为可选能力接口不强制聚合，厂商按需 `implements`（CR-002 新增） | LLM 接入 | 🔴 强制 |
 
 ### 9.2 Agent 编排规则
 
@@ -1183,8 +1143,27 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 69 | BR-MCP-023 | MCP 工具输出统一从 McpTransportWrapper 缓存的原始 JSON-RPC 响应通过 McpContentParser 解析，executeTool 返回值被丢弃（CR-002 新增，对应 AC-041） | MCP 协议 | 🔴 强制 |
 | 70 | BR-MCP-024 | McpContentParser 按内容类型策略分发处理：text->提取文本，image URL->Markdown 图片语法，image/audio base64->文本描述，resource text->提取文本，resource blob->文本描述，structuredContent->JSON 序列化，unknown->WARNING 日志+静默跳过（CR-002 新增，对应 AC-042~044） | MCP 协议 | 🔴 强制 |
 | 71 | BR-MCP-025 | McpContentParser 对未知内容类型必须静默跳过（记录 WARNING 日志），不得导致工具调用失败（CR-002 新增，对应 AC-045） | MCP 协议 | 🔴 强制 |
+| 72 | BR-MCP-026 | Windows 下 stdio 传输的 command 若为无扩展名裸命令（如 npx），必须自动补全 PATH 中存在的 .cmd/.bat/.exe 扩展名（resolveWindowsCommand，npx→npx.cmd），否则 ProcessBuilder 无法启动子进程（BUG-20260811 修复） | MCP 协议 | 🔴 强制 |
+| 73 | BR-MCP-027 | MCP Server 连接失败的错误消息必须包含底层根因（rootCauseMessage 提取异常链最深层 cause），避免仅返回笼统"连接失败"（BUG-20260811 修复） | MCP 协议 | 🔴 强制 |
 
-### 9.8 前端对话模块规则
+### 9.8 前端 MCP 服务管理规则
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 1 | BR-MCP-FE-001 | MCP Server 名称 1-50 字符，仅允许中英文、数字、下划线和连字符（JSON 配置的 key 即名称，前端解析后校验） | 前端 MCP | 🔴 强制 |
+| 2 | BR-MCP-FE-002 | MCP Server 名称全局唯一（提交后接收后端唯一性校验结果并提示） | 前端 MCP | 🔴 强制 |
+| 3 | BR-MCP-FE-003 | JSON 配置必须符合 mcpServers 格式：顶层为 `{"mcpServers": {...}}`，每个 Server 为 key-value 对 | 前端 MCP | 🔴 强制 |
+| 4 | BR-MCP-FE-004 | 传输方式根据配置字段自动推断：有 command->STDIO；有 url 且无 command 且无 transport->HTTP；有 url + transport:"sse"->SSE | 前端 MCP | 🔴 强制 |
+| 5 | BR-MCP-FE-005 | stdio 类型必须包含 command 字段；args/env 为可选字段 | 前端 MCP | 🔴 强制 |
+| 6 | BR-MCP-FE-006 | sse/http 类型必须包含 url 字段（合法 http/https URL）；headers 为可选字段 | 前端 MCP | 🔴 强制 |
+| 7 | BR-MCP-FE-007 | 删除 Server 必须二次确认，确认框需明示"将断开连接并注销所有工具" | 前端 MCP | 🔴 强制 |
+| 8 | BR-MCP-FE-008 | 重连按钮仅在 Server 状态为 DISCONNECTED 或 ERROR 时可用，CONNECTED 显示"已连接"且不可点击 | 前端 MCP | 🔴 强制 |
+| 9 | BR-MCP-FE-009 | 添加/重连操作进行中按钮禁用并显示 loading，防止重复提交 | 前端 MCP | 🔴 强制 |
+| 10 | BR-MCP-FE-010 | MCP 模块禁用时（后端 5405）页面显示提示并禁用操作按钮 | 前端 MCP | 🔴 强制 |
+| 11 | BR-MCP-FE-011 | Server 列表在添加/删除/重连操作成功后自动刷新 | 前端 MCP | 🔴 强制 |
+| 12 | BR-MCP-FE-012 | JSON 配置支持一次添加多个 Server，每个 Server 独立处理（部分失败不影响其他添加） | 前端 MCP | 🔴 强制 |
+
+### 9.9 前端对话模块规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1203,7 +1182,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 46 | BR-FE-013 | 助手正式回复按 Markdown 格式渲染（marked + DOMPurify），用户消息保持纯文本（CR-001） | 前端对话 | 🔴 强制 |
 | 47 | BR-FE-014 | 推理内容随消息持久化到 localStorage（Message.reasoning 字段），刷新页面后仍可展开回看（CR-001） | 前端对话 | 🔴 强制 |
 
-### 9.9 错误码规则
+### 9.10 错误码规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1212,7 +1191,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 32 | BR-ERR-003 | 错误码编号区间按业务域划分，不可重叠 | 公共组件 | 🔴 强制 |
 | 33 | BR-ERR-004 | 新增错误码必须在 `ErrorCode` 枚举中分配编号并补充注释 | 公共组件 | 🔴 强制 |
 
-### 9.10 错误码区间速查
+### 9.11 错误码区间速查
 
 | 区间 | 业务域 | 示例 |
 |------|--------|------|
@@ -1225,7 +1204,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
 | 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401)、MCP_SERVER_NAME_EXISTS(5402)、MCP_SERVER_NOT_FOUND(5403)、MCP_TRANSPORT_UNSUPPORTED(5404)、MCP_MODULE_DISABLED(5405)、MCP_SERVER_ALREADY_CONNECTED(5406) |
 
-### 9.11 约束分级标准
+### 9.12 约束分级标准
 
 | 级别 | 标签 | 含义 | 违反后果 |
 |------|------|------|---------|
@@ -1234,7 +1213,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 🟢 建议 | `RECOMMENDED` | 推荐遵守，提升业务质量 | 体验下降、效率降低 |
 | ⚪ 可覆盖 | `CONFIGURABLE` | 可由管理员配置 | 依赖管理员决策 |
 
-### 9.12 前端知识库管理规则
+### 9.13 前端知识库管理规则
 
 | # | 编号 | 规则 | 范围 | 级别 |
 |---|------|------|------|------|
@@ -1249,7 +1228,32 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 56 | BR-RAG-FE-009 | 知识库选择按消息维度控制（发送消息时使用当前选择器的知识库配置，不影响历史消息） | 前端知识库 | 🔴 强制 |
 | 57 | BR-RAG-FE-010 | 文档状态轮询使用 setInterval 每 3 秒一次，仅对 PENDING/PROCESSING 文档发起请求，全部终态后自动停止，组件卸载时清理定时器 | 前端知识库 | 🔴 强制 |
 
-> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节、`ErrorCode.java`、`specs/features/2026-07-27/RAG知识库前端/RAG知识库前端.md`（BR-RAG-FE-001~010）、`specs/features/2026-07-24/RAG知识库问答/RAG知识库问答.md`（BR-RAG-013~014）、`specs/features/2026-08-05/MCP协议模块/MCP协议模块.md`（BR-MCP-001~019）
+> **数据来源**：`specs/SDD-工程业务背景文档.md` 第 5 节、`ErrorCode.java`、`specs/features/2026-07-27/RAG知识库前端/RAG知识库前端.md`（BR-RAG-FE-001~010）、`specs/features/2026-07-24/RAG知识库问答/RAG知识库问答.md`（BR-RAG-013~014）、`specs/features/2026-08-05/MCP协议模块/MCP协议模块.md`（BR-MCP-001~019）、`specs/features/2026-08-10/LLM厂商模型配置/LLM厂商模型配置.md`（BR-LLM-CONF-001~020）
+
+### 9.14 前端 LLM 配置管理规则（CR-003 新增）
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 58 | BR-LLM-CONF-001 | 厂商名称全局唯一，不允许重复 | LLM 配置 | 🔴 强制 |
+| 59 | BR-LLM-CONF-002 | 每个厂商必须配置 API Key 才能保存 | LLM 配置 | 🔴 强制 |
+| 60 | BR-LLM-CONF-003 | 每个厂商必须配置 Base URL（预定义自动填充，自定义手动填写） | LLM 配置 | 🔴 强制 |
+| 61 | BR-LLM-CONF-004 | 模型名称不可为空，同一厂商下同一类型的模型名称不可重复 | LLM 配置 | 🔴 强制 |
+| 62 | BR-LLM-CONF-005 | 模型类型限定四种：chat/embedding/rerank/multimodal | LLM 配置 | 🔴 强制 |
+| 63 | BR-LLM-CONF-006 | 仅 chat 类型模型支持"支持视图理解"标记 | LLM 配置 | 🔴 强制 |
+| 64 | BR-LLM-CONF-007 | 保存厂商配置前必须通过 API Key 测试连接 | LLM 配置 | 🔴 强制 |
+| 65 | BR-LLM-CONF-008 | API Key 在前端界面展示时必须脱敏 | LLM 配置 | 🔴 强制 |
+| 66 | BR-LLM-CONF-009 | 配置修改保存后即时生效，无需重启服务 | LLM 配置 | 🔴 强制 |
+| 67 | BR-LLM-CONF-010 | 模型选择按会话维度保持状态，切换会话互不影响 | LLM 配置 | 🔴 强制 |
+| 68 | BR-LLM-CONF-011 | 模型选择按消息维度控制（发送时用当前选中模型） | LLM 配置 | 🔴 强制 |
+| 69 | BR-LLM-CONF-012 | 新建会话默认选择上次使用的 chat 模型 | LLM 配置 | 🔴 强制 |
+| 70 | BR-LLM-CONF-013 | 删除厂商后，正在使用该厂商模型的会话自动切换到第一个可用 chat 模型 | LLM 配置 | 🔴 强制 |
+| 71 | BR-LLM-CONF-014 | 配置同时保存到后端内存和前端 localStorage | LLM 配置 | 🔴 强制 |
+| 72 | BR-LLM-CONF-015 | 后端重启后前端自动从 localStorage 推送配置到后端恢复 | LLM 配置 | 🔴 强制 |
+| 73 | BR-LLM-CONF-016 | 对话功能依赖至少一个已配置的 chat 模型 | LLM 配置 | 🔴 强制 |
+| 74 | BR-LLM-CONF-017 | RAG 文档向量化依赖已配置的 embedding 模型 | LLM 配置 | 🔴 强制 |
+| 75 | BR-LLM-CONF-018 | 预定义厂商列表包含：火山引擎方舟、阿里百炼、OpenAI、DeepSeek、Ollama | LLM 配置 | 🔴 强制 |
+| 76 | BR-LLM-CONF-019 | 移除 application.yml 中 llm/ark/bailian 配置段，LLM 配置完全由前端动态管理 | LLM 配置 | 🔴 强制 |
+| 77 | BR-LLM-CONF-020 | 后端模型实例缓存按厂商+模型名称维度管理，配置变更时清除对应缓存 | LLM 配置 | 🔴 强制 |
 
 ---
 
@@ -1275,8 +1279,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 
 | 变量名 | 必填 | 说明 |
 |--------|------|------|
-| `ARK_API_KEY` | 仅 `llm.provider: ark` 时 | 火山引擎方舟 API Key，禁止入库 |
-| `BAILIAN_API_KEY` | 仅 `llm.provider: bailian` 时 | 阿里百炼 API Key，禁止入库 |
+| 无（LLM 配置由前端动态管理，API Key 通过前端页面配置，无需环境变量） | - | LLM 配置已迁移至前端动态管理，无需设置环境变量 |
 
 ### 10.3 多环境配置
 
@@ -1337,38 +1340,6 @@ rag:
     host: ${MILVUS_HOST:localhost}
     port: ${MILVUS_PORT:19530}
     collection-name: agent_demo_rag
-
-# LLM 提供商选择
-llm:
-  provider: ark                    # 提供商切换：ark | bailian（默认 ark）
-
-# 火山引擎配置
-ark:
-  coding-plan:
-    base-url: https://ark.cn-beijing.volces.com/api/coding/v3
-    api-key: ${ARK_API_KEY}
-    default-model: doubao-seed-2.0-code
-    models:
-      chat: doubao-seed-2.0-pro
-      code: doubao-seed-2.0-code
-      lite: doubao-seed-2.0-lite
-    timeout: 60s
-    max-retries: 3
-    temperature: 0.7
-
-# 阿里百炼配置（当 llm.provider: bailian 时生效）
-bailian:
-  base-url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  api-key: ${BAILIAN_API_KEY}
-  default-model: deepseek-v4-flash
-  models:
-    chat: deepseek-v4-flash
-    code: deepseek-v4-flash
-    lite: deepseek-v4-flash
-  timeout: 60s
-  max-retries: 3
-  temperature: 0.7
-  embedding-model: text-embedding-v4
 
 # MCP 协议模块配置
 mcp:
@@ -1570,9 +1541,9 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 |---------|------|---------|
 | `java: error: release version 17 not supported` | JDK 版本低于 17 | 安装 OpenJDK 17+，IDE 配置 JDK 17 |
 | `cannot find symbol class Tool` | 未引入 langchain4j 依赖 | 检查 `agent-demo-tools/pom.xml` 是否引入 `langchain4j` |
-| `ARK_API_KEY 未配置` | 环境变量未设置 | 设置 `ARK_API_KEY` 环境变量后重启 |
-| `BAILIAN_API_KEY 未配置` | 环境变量未设置或 `llm.provider` 切换为 bailian 时未配置 | 设置 `BAILIAN_API_KEY` 环境变量后重启 |
-| `LLM API Key 无效` (5004) | API Key 错误或过期 | 检查火山引擎/阿里百炼控制台 API Key 状态 |
+| `ARK_API_KEY 未配置` | 环境变量未设置 | LLM 配置已迁移至前端动态管理，通过前端"LLM 配置"页面添加厂商和配置 API Key |
+| `BAILIAN_API_KEY 未配置` | 环境变量未设置或 `llm.provider` 切换为 bailian 时未配置 | LLM 配置已迁移至前端动态管理，通过前端"LLM 配置"页面添加厂商和配置 API Key |
+| `LLM API Key 无效` (5004) | API Key 错误或过期 | 在前端"LLM 配置"页面检查对应厂商的 API Key 是否正确，或重新配置 |
 | `端口 8080 被占用` | 端口冲突 | 修改 `application.yml` 的 `server.port` |
 | `循环依赖` 错误 | 构造函数中调用了懒加载方法 | 确认 SimpleAgent/ToolRegistry 使用懒加载模式 |
 
@@ -1581,11 +1552,11 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | 错误码 | 异常现象 | 排查方法 |
 |--------|---------|---------|
 | 5001 | LLM 调用失败 | 检查网络、API Key、模型名是否正确 |
-| 5002 | LLM 调用超时 | 调整 `ark.coding-plan.timeout`，或切换 Lite 模型 |
+| 5002 | LLM 调用超时 | 调整厂商配置中的 timeout 参数，或切换更快的模型 |
 | 5003 | LLM 调用被限流 | 降低调用频率，检查套餐额度 |
-| 5004 | LLM API Key 无效 | 重新配置 `ARK_API_KEY` 环境变量 |
-| 5006 | LLM 提供商未注册（CR-002 新增） | 检查 `llm.provider` 配置值是否在 providerRegistry 中，确认对应 `LlmServiceProvider` 实现类已标注 `@Component` |
-| 5007 | LLM 能力不支持（CR-002 新增） | 厂商未实现该能力接口，检查 Provider 类是否 `implements` 对应能力接口（如 `VisionChatModelProvider`） |
+| 5004 | LLM API Key 无效 | 在前端"LLM 配置"页面检查对应厂商的 API Key 是否正确 |
+| 5006 | LLM 模型不存在（CR-003 新增） | 检查 `modelId` 是否正确，对应厂商和模型是否已在前端配置 |
+| 5007 | LLM 能力不支持（CR-003 新增） | 检查模型类型是否正确（如需要 chat 模型但配置了 embedding 模型） |
 | 5100 | 工具执行失败 | 查看日志堆栈，检查工具参数 |
 | 5101 | 工具不存在 | 检查工具类是否加 `@Component` + `@Tool` 注解 |
 | 5102 | 工具参数无效 | 检查工具方法参数校验逻辑 |
@@ -1653,7 +1624,7 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | HTTP 工具被拦截 | 检查 SSRF 防护规则，确认 URL 不含内网地址 |
 | 文件读取失败 | 检查文件是否在 `agent.file-allowed-dir` 白名单目录内 |
 | 日志无 traceId | 检查 `TraceIdInterceptor` 是否注册到 `WebConfig` |
-| MCP Server 连接失败 | 检查 URL/命令是否正确；stdio 模式 Windows 下用 `npx.cmd` 而非 `npx`；npx 首次下载依赖可能需要更长的 initializationTimeout |
+| MCP Server 连接失败 | 检查 URL/命令是否正确；stdio 模式 Windows 下已自动适配（resolveWindowsCommand 将 npx 补全为 npx.cmd）；连接失败消息现会包含根因（如 CreateProcess error=2）；npx 首次下载依赖可能需要更长的 initializationTimeout |
 | MCP 工具返回 image 类型报错 | CR-002 后：McpToolExecutor 将 Unsupported content type 异常视为预期行为，统一从 Wrapper 缓存通过 McpContentParser 解析所有内容类型（text/image/audio/resource/structuredContent/unknown）。确认 McpContentParser 已注入 McpToolExecutor 构造器 |
 | LLM 调用 MCP 工具时参数名错误 | 检查 McpServerManager.serializeParameters 是否正确序列化 JsonObjectSchema；确认 McpToolFactory.parseParametersSchema 生成了结构化参数描述 |
 | MCP Server 启动超时 | 确认 DefaultMcpClient.Builder 配置了 initializationTimeout(60s)；npx 首次运行需下载依赖，可能需要更长超时 |
@@ -1720,6 +1691,8 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.4 | 2026-08-07 | MCP 协议模块完整实现 + 运行时调试修复：1.4 节能力矩阵 MCP 状态从 🚧 规划中 更新为 ✅ 已实现；2.2 节文档地图新增 MCP 协议模块业务说明书；3.1 节技术栈 langchain4j-mcp 从规划中更新为 1.17.2-beta27 已实现；4.1 节工程结构 MCP 模块从空模块更新为完整实现；4.2 节模块依赖更新（mcp 不再标记规划中，web 新增 mcp 依赖）；4.3 节新增 agent-demo-mcp 内部分层（config/entity/client/tool/service），更新 agent-demo-web 分层（新增 McpController/McpDTO）；4.4 节包命名新增 mcp 子包；7.2 节新增 MCP Server 注册表数据结构；9.7 节新增 19 条 MCP 业务规则（BR-MCP-001~019，含运行时调试新增的 BR-MCP-016~019：参数 Schema 手动序列化、结构化参数描述、初始化超时、Unsupported content type 异常捕获）；9.10 节错误码区间更新 MCP 完整 7 个错误码（5400-5406）；9.8~9.12 节编号顺延；10.4 节新增 mcp.* 配置段（含 mermaid-mcp HTTP 传输 + fetch stdio 传输示例）；12.2 节运行时异常新增 5400/5401/5402/5404/5405 排查方法；12.4 节调试技巧新增 MCP 连接失败/图片类型报错/参数名错误/启动超时 4 条排障 |
 | v2.5 | 2026-08-07 | CR-002 MCP 输出解析结构化重构：4.3 节 agent-demo-mcp tool 包新增 McpContentParser（内容类型策略分发器），McpToolExecutor 描述更新为统一从 Wrapper 缓存通过 McpContentParser 解析；9.7 节 BR-MCP-019 更新（从异常捕获改为统一解析预期行为），新增 BR-MCP-023（统一解析路径）、BR-MCP-024（内容类型策略分发矩阵）、BR-MCP-025（未知类型静默跳过）；12.4 节调试技巧更新 MCP 图片类型排障条目（从异常捕获改为 McpContentParser 统一解析） |
 | v2.6 | 2026-08-07 | Prompt 优化（角色×场景模板矩阵）：4.3 节 agent-demo-agent 新增 prompt 包（PromptTemplateLoader）；9.2 节 BR-AGT-005 更新为 PromptTemplateLoader 组合机制，BR-AGT-007 更新为场景模板引用，新增 BR-AGT-008（提示词外部化到模板文件）和 BR-AGT-009（{{tools}} 占位符运行时替换）；10.4 节移除 default-system-prompt/thinking-system-prompt/thinking-react-system-prompt 配置项，新增 default-role: general；数据架构文档 5.3 节提示词模板从 3 个旧文件更新为 4 角色 + 6 场景模板矩阵 |
+| v2.7 | 2026-08-10 | LLM 厂商模型配置（CR-003 重构）：移除 Provider/Properties/capability 模式，ModelFactory 改为从 LlmConfigStore 动态创建模型；新增 LlmConfigStore/LlmVendorConfig/LlmModelConfig/PredefinedVendorCatalog；新增 LlmConfigController（9 个 API 接口）；SimpleAgent delegate 改为按 modelId 隔离的 ConcurrentHashMap 缓存；ChatRequest.model 字段启用为 modelId；前端新增 LLM 配置页面（LlmConfigPage/VendorCard/VendorEditDialog）和 ModelSelector 模型选择器；配置同步至 localStorage，后端重启后自动恢复；移除 application.yml 中 llm/ark/bailian 配置段；新增 8 个错误码（5008-5015）；新增 20 条 BR-LLM-CONF 业务规则 |
+| v2.8 | 2026-08-07 | MCP 服务管理页面 + stdio 命令适配 BUG 修复：1.4/2.2/4.1/4.3 节新增设置页面与 MCP 服务管理（SettingsPage/McpServicePage/McpServerCard/McpJsonConfigEditor + api/mcp.ts + stores/mcp.ts + utils/mcp-config.ts JSON 配置解析器）；NavBar 导航从"LLM 配置"迁移为"设置"；后端 McpServerResponse 新增 url/command/args 字段；9.7 节新增 BR-MCP-026（Windows stdio 命令适配 resolveWindowsCommand，npx→npx.cmd）、BR-MCP-027（连接失败消息含根因 rootCauseMessage），新增 9.8 节前端 MCP 服务管理规则 12 条（BR-MCP-FE-001~012），原 9.8~9.12 顺延为 9.9~9.13；12.4 节 MCP 图片排障已更新 |
 
 ---
 

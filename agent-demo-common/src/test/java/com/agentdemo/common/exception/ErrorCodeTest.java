@@ -94,4 +94,44 @@ class ErrorCodeTest {
         assertEquals(5400, ErrorCode.MCP_CONNECTION_FAILED.getCode());
         assertEquals(5401, ErrorCode.MCP_TOOL_CALL_FAILED.getCode());
     }
+
+    @Test
+    @DisplayName("LLM 配置相关错误码 5008-5015 存在且正确")
+    void llmConfigErrorCodesShouldExist() {
+        assertEquals(5008, ErrorCode.LLM_CONFIG_NOT_FOUND.getCode());
+        assertEquals("LLM 配置不存在", ErrorCode.LLM_CONFIG_NOT_FOUND.getMessage());
+        assertEquals(5009, ErrorCode.LLM_VENDOR_NOT_FOUND.getCode());
+        assertEquals("厂商不存在", ErrorCode.LLM_VENDOR_NOT_FOUND.getMessage());
+        assertEquals(5010, ErrorCode.LLM_MODEL_NOT_FOUND.getCode());
+        assertEquals("模型不存在", ErrorCode.LLM_MODEL_NOT_FOUND.getMessage());
+        assertEquals(5011, ErrorCode.LLM_VENDOR_NAME_EXISTS.getCode());
+        assertEquals("厂商名称已存在", ErrorCode.LLM_VENDOR_NAME_EXISTS.getMessage());
+        assertEquals(5012, ErrorCode.LLM_MODEL_NAME_EXISTS.getCode());
+        assertEquals("同类型同名模型已存在", ErrorCode.LLM_MODEL_NAME_EXISTS.getMessage());
+        assertEquals(5013, ErrorCode.LLM_CONNECTION_TEST_FAILED.getCode());
+        assertEquals("连接测试失败", ErrorCode.LLM_CONNECTION_TEST_FAILED.getMessage());
+        assertEquals(5014, ErrorCode.LLM_NO_CHAT_MODEL.getCode());
+        assertEquals("未配置 chat 模型", ErrorCode.LLM_NO_CHAT_MODEL.getMessage());
+        assertEquals(5015, ErrorCode.LLM_NO_EMBEDDING_MODEL.getCode());
+        assertEquals("未配置 embedding 模型", ErrorCode.LLM_NO_EMBEDDING_MODEL.getMessage());
+    }
+
+    @Test
+    @DisplayName("新增 LLM 配置错误码均在 5008-5015 区间内")
+    void llmConfigErrorCodesShouldBeInRange() {
+        List<ErrorCode> newCodes = Arrays.asList(
+            ErrorCode.LLM_CONFIG_NOT_FOUND,
+            ErrorCode.LLM_VENDOR_NOT_FOUND,
+            ErrorCode.LLM_MODEL_NOT_FOUND,
+            ErrorCode.LLM_VENDOR_NAME_EXISTS,
+            ErrorCode.LLM_MODEL_NAME_EXISTS,
+            ErrorCode.LLM_CONNECTION_TEST_FAILED,
+            ErrorCode.LLM_NO_CHAT_MODEL,
+            ErrorCode.LLM_NO_EMBEDDING_MODEL
+        );
+        for (ErrorCode code : newCodes) {
+            assertTrue(code.getCode() >= 5008 && code.getCode() <= 5015,
+                "错误码 " + code.name() + " 应在 5008-5015 区间内");
+        }
+    }
 }

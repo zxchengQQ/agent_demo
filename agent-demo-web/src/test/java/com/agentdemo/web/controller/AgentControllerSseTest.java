@@ -81,7 +81,7 @@ class AgentControllerSseTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -110,7 +110,7 @@ class AgentControllerSseTest {
         when(thinkingStream.onPartialResponse(any())).thenReturn(thinkingStream);
         when(thinkingStream.onComplete(any())).thenReturn(thinkingStream);
         when(thinkingStream.onError(any())).thenReturn(thinkingStream);
-        when(simpleAgent.chatThinkingReActStream(anyString(), anyString())).thenReturn(thinkingStream);
+        when(simpleAgent.chatThinkingReActStream(anyString(), anyString(), any())).thenReturn(thinkingStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -119,9 +119,9 @@ class AgentControllerSseTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了 ReAct 思考流式路径
-        verify(simpleAgent).chatThinkingReActStream(anyString(), anyString());
+        verify(simpleAgent).chatThinkingReActStream(anyString(), anyString(), any());
         // 验证没走原路径（chatStream 未被调用）
-        verify(simpleAgent, never()).chatStream(anyString(), anyString());
+        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any());
     }
 
     /**
@@ -137,7 +137,7 @@ class AgentControllerSseTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -146,8 +146,8 @@ class AgentControllerSseTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了原路径
-        verify(simpleAgent).chatStream(anyString(), anyString());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any());
         // 验证没走 ReAct 思考流式路径
-        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString());
+        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any());
     }
 }

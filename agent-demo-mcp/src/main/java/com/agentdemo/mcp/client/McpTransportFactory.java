@@ -73,15 +73,20 @@ public class McpTransportFactory {
                     "stdio 模式的 Server " + config.getName() + " 必须配置 command 字段");
         }
 
+        // BUG-20260811：Windows 命令适配。用户配置业界通用的裸命令（如 npx、node）时，
+        // Java ProcessBuilder 使用 CreateProcess 无法直接执行无扩展名的命令（实为 npx.ps1/npx.cmd），
+        // 导致 stdio 子进程启动失败、MCP 连接报 5400。这里在 Windows 下自动补全 .cmd/.exe 扩展名。
+        String command = resolveWindowsCommand(config.getCommand());
+
         // 合并 command + args 为完整命令列表
-        List<String> command = new ArrayList<>();
-        command.add(config.getCommand());
+        List<String> commandList = new ArrayList<>();
+        commandList.add(command);
         if (config.getArgs() != null) {
-            command.addAll(config.getArgs());
+            commandList.addAll(config.getArgs());
         }
 
         StdioMcpTransport.Builder builder = new StdioMcpTransport.Builder()
-                .command(command)
+                .command(commandList)
                 .logEvents(true);
 
         // 传递环境变量
@@ -90,8 +95,59 @@ public class McpTransportFactory {
             builder.environment(env);
         }
 
-        log.info("创建 stdio 传输: server={}, command={}", config.getName(), command);
+        log.info("创建 stdio 传输: server={}, command={}", config.getName(), commandList);
         return builder.build();
+    }
+
+    /**
+     * 解析 stdio 命令，在 Windows 下自动补全可执行文件扩展名
+     * <p>
+     * 业务含义：Windows 的 CreateProcess 无法直接执行无扩展名的命令（npx 实为 npx.cmd/npx.ps1）。
+     * 若命令为裸命令且 PATH 中存在对应的 .cmd/.bat/.exe 文件，则返回补全后的命令，
+     * 否则保持原样（可能是带路径的绝对命令或非 Windows 平台）。
+     * </p>
+     *
+     * @param command 用户配置的原始命令
+     * @return 适配后的命令
+     */
+    String resolveWindowsCommand(String command) {
+        return resolveWindowsCommand(command, System.getenv("PATH"), isWindows());
+    }
+
+    /**
+     * resolveWindowsCommand 的可注入 PATH / 平台版本（便于测试）
+     */
+    String resolveWindowsCommand(String command, String pathEnv, boolean windows) {
+        // 仅 Windows 平台需要适配
+        if (!windows) {
+            return command;
+        }
+        // 空命令或已带扩展名的命令不处理
+        if (command == null || command.indexOf('.') >= 0) {
+            return command;
+        }
+        if (pathEnv == null || pathEnv.isBlank()) {
+            return command;
+        }
+        // 遍历 PATH 目录，查找对应的可执行文件
+        for (String dir : pathEnv.split(java.util.regex.Pattern.quote(java.io.File.pathSeparator))) {
+            if (dir == null || dir.isBlank()) {
+                continue;
+            }
+            for (String ext : new String[]{".cmd", ".bat", ".exe"}) {
+                if (java.nio.file.Files.isRegularFile(java.nio.file.Paths.get(dir, command + ext))) {
+                    return command + ext;
+                }
+            }
+        }
+        return command;
+    }
+
+    /**
+     * 判断当前运行平台是否为 Windows
+     */
+    boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
     /**

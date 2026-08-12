@@ -55,6 +55,8 @@ public class TaskBreakdownStream {
     private final String sessionId;
     private final String message;
     private final boolean enableThinking;
+    /** 模型 ID（null 表示使用默认模型） */
+    private final String modelId;
     private final ModelFactory modelFactory;
     private final ChatMemoryManager memoryManager;
     private final AgentConfig agentConfig;
@@ -86,15 +88,32 @@ public class TaskBreakdownStream {
     private Runnable onComplete;
     private ErrorConsumer onError;
 
+    // BUG 修复：cancel 标志位，emitter 超时/断开时通知异步线程停止后续执行
+    private volatile boolean cancelled = false;
+
     // ==================== 构造器 ====================
 
     public TaskBreakdownStream(String sessionId, String message, boolean enableThinking,
                                ModelFactory modelFactory, ChatMemoryManager memoryManager,
                                AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
                                ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader) {
+        this(sessionId, message, enableThinking, null, modelFactory, memoryManager,
+                agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader);
+    }
+
+    /**
+     * 带 modelId 的构造器（Phase 2 新增）
+     *
+     * @param modelId 模型 ID（null 使用默认模型）
+     */
+    public TaskBreakdownStream(String sessionId, String message, boolean enableThinking, String modelId,
+                               ModelFactory modelFactory, ChatMemoryManager memoryManager,
+                               AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
+                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader) {
         this.sessionId = sessionId;
         this.message = message;
         this.enableThinking = enableThinking;
+        this.modelId = modelId;
         this.modelFactory = modelFactory;
         this.memoryManager = memoryManager;
         this.agentConfig = agentConfig;
@@ -183,6 +202,18 @@ public class TaskBreakdownStream {
     // ==================== start() 核心流程 ====================
 
     /**
+     * 取消编排（BUG 修复）
+     * <p>
+     * 业务含义：emitter 超时或客户端断开时，由 AgentController 调用此方法，
+     * 通知异步线程停止后续子任务执行和总结阶段。正在进行的 LLM 调用无法中途打断，
+     * 但会在当前 LLM 调用返回后立即退出循环。
+     * </p>
+     */
+    public void cancel() {
+        cancelled = true;
+    }
+
+    /**
      * 启动三阶段编排
      * <p>
      * 业务含义：同步执行规划 -> 执行 -> 总结三阶段，通过回调与 Controller 通信。
@@ -212,6 +243,12 @@ public class TaskBreakdownStream {
                 onPlan.accept(tasks);
             }
 
+            // BUG 修复：emitter 超时/断开时取消后续执行
+            if (cancelled) {
+                log.info("任务拆解已取消，跳过 Phase 2 执行: sessionId={}", sessionId);
+                return;
+            }
+
             // ===== Phase 2: 逐个子任务执行（Task-04 实现）=====
             boolean allSuccess = executeAllSubTasks(tasks);
 
@@ -220,6 +257,12 @@ public class TaskBreakdownStream {
                 if (onComplete != null) {
                     onComplete.run();
                 }
+                return;
+            }
+
+            // BUG 修复：emitter 超时/断开时取消后续执行
+            if (cancelled) {
+                log.info("任务拆解已取消，跳过 Phase 3 总结: sessionId={}", sessionId);
                 return;
             }
 
@@ -249,7 +292,10 @@ public class TaskBreakdownStream {
      * @return 子任务列表（空列表表示无需拆解）
      */
     private List<SubTask> planTasks() {
-        ChatModel chatModel = modelFactory.getDefaultChatModel();
+        // 业务含义：按 modelId 选择 ChatModel，null 时使用默认模型
+        ChatModel chatModel = (modelId != null)
+                ? modelFactory.getChatModelByModelId(modelId)
+                : modelFactory.getDefaultChatModel();
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_PLAN)));
@@ -366,6 +412,17 @@ public class TaskBreakdownStream {
         for (int i = 0; i < tasks.size(); i++) {
             SubTask task = tasks.get(i);
 
+            // BUG 修复：emitter 超时/断开时取消剩余子任务
+            if (cancelled) {
+                log.info("任务拆解已取消，跳过剩余子任务: sessionId={}, currentIndex={}", sessionId, i);
+                for (int j = i; j < tasks.size(); j++) {
+                    if (onTaskCancelled != null) {
+                        onTaskCancelled.accept(tasks.get(j).index());
+                    }
+                }
+                return false;
+            }
+
             // 推送子任务开始事件（AC-003: 状态 pending -> in-progress）
             if (onTaskStart != null) {
                 onTaskStart.accept(task.index(), task.title());
@@ -420,7 +477,10 @@ public class TaskBreakdownStream {
      * @return 子任务执行结果文本
      */
     private String executeSubTaskWithReAct(SubTask task, List<String> previousResults) {
-        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        // 业务含义：按 modelId 选择思考流式模型，null 时使用默认模型
+        ThinkingStreamingChatModel thinkingModel = (modelId != null)
+                ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
+                : modelFactory.getDefaultThinkingStreamingChatModel();
 
         // 构造系统提示词：执行提示词 + 动态工具描述（{{tools}} 占位符运行时替换）
         String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_EXECUTE)
@@ -449,6 +509,11 @@ public class TaskBreakdownStream {
         StringBuilder fullResponse = new StringBuilder();
 
         while (iteration < maxIterations) {
+            // BUG 修复：emitter 超时/断开时退出 ReAct 循环
+            if (cancelled) {
+                log.info("子任务 ReAct 循环已取消: index={}, iteration={}", task.index(), iteration);
+                return fullResponse.toString();
+            }
             iteration++;
             final int currentIteration = iteration;
 
@@ -632,7 +697,10 @@ public class TaskBreakdownStream {
      * @param messages 消息列表
      */
     private void streamResponse(List<ChatMessage> messages) {
-        ThinkingStreamingChatModel thinkingModel = modelFactory.getThinkingStreamingChatModel();
+        // 业务含义：按 modelId 选择思考流式模型，null 时使用默认模型
+        ThinkingStreamingChatModel thinkingModel = (modelId != null)
+                ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
+                : modelFactory.getDefaultThinkingStreamingChatModel();
         final Throwable[] errorHolder = {null};
 
         ThinkingStreamHandler handler = new ThinkingStreamHandler() {

@@ -502,6 +502,9 @@ function statusIcon(status: SubTaskStatus): string {
   border-top: 1px solid var(--border);
   white-space: pre-wrap;
   word-break: break-word;
+  /* BUG 修复：限制推理内容高度，超长内容可滚动查看，避免撑开整个页面 */
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 /* ===== ReAct 推理过程折叠区块样式 ===== */
@@ -544,6 +547,9 @@ function statusIcon(status: SubTaskStatus): string {
   line-height: 1.6;
   color: var(--text-muted);
   border-top: 1px solid var(--border);
+  /* BUG 修复：限制 ReAct 推理过程高度，超长内容可滚动查看，避免撑开整个页面 */
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 .react-step {

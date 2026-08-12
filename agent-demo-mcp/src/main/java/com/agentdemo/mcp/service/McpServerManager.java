@@ -96,8 +96,9 @@ public class McpServerManager {
                     : mcpProperties.getDefaultToolTimeout();
             mcpClient = createMcpClient(name, transport, timeout);
         } catch (Exception e) {
+            // BUG-20260811：消息包含底层根因（如 CreateProcess 无法启动 npx），便于用户定位 stdio 配置问题
             throw new BusinessException(ErrorCode.MCP_CONNECTION_FAILED,
-                    "连接 MCP Server 失败: " + name, e);
+                    "连接 MCP Server 失败: " + name + "，原因: " + rootCauseMessage(e), e);
         }
 
         // 3. 拉取工具列表（失败也视为连接失败，需关闭已创建的 client 避免资源泄漏）
@@ -107,7 +108,7 @@ public class McpServerManager {
         } catch (Exception e) {
             closeQuietly(mcpClient, name);
             throw new BusinessException(ErrorCode.MCP_CONNECTION_FAILED,
-                    "拉取工具列表失败: " + name, e);
+                    "拉取工具列表失败: " + name + "，原因: " + rootCauseMessage(e), e);
         }
 
         // 4. 转换工具元数据并填充 server（构造注册名 mcp_{serverName}_{toolName}）
@@ -262,6 +263,22 @@ public class McpServerManager {
     }
 
     // ==================== 内部辅助方法 ====================
+
+    /**
+     * 提取异常链最深层根因的消息文本
+     * <p>
+     * 业务含义：连接失败时底层异常（如 IOException "CreateProcess error"）往往被多层包装，
+     * 仅返回最外层消息无法定位问题。此方法递归提取最深层 cause 的消息并返回。
+     * </p>
+     */
+    private String rootCauseMessage(Throwable e) {
+        Throwable cause = e;
+        while (cause.getCause() != null && cause.getCause() != cause) {
+            cause = cause.getCause();
+        }
+        String msg = cause.getMessage();
+        return msg == null || msg.isBlank() ? e.getMessage() : msg;
+    }
 
     /**
      * 将 McpServer 业务实体转换为 McpProperties.ServerConfig

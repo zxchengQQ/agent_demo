@@ -183,6 +183,40 @@ describe('Session Store', () => {
     expect(found?.reasoning).toBe('推理内容');
   });
 
+  // ========== BUG 修复：moveThoughtToContent 保留推理过程 ==========
+
+  /**
+   * 验证 moveThoughtToContent 后 step.thought 保留（Bug2）
+   * <p>
+   * 场景：收到 final-answer 事件时，最终答案移入 content，
+   * 但不应清空 reactSteps 中的 thought，否则回答结束后推理过程信息消失。
+   * </p>
+   */
+  it('moveThoughtToContent 保留 thought 不清空（Bug2）', () => {
+    const store = useSessionStore();
+    store.init();
+    const sessionId = store.sessions[0].sessionId;
+    store.addMessage(sessionId, {
+      id: 'msg-react-1',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    });
+    // 模拟流式推理过程
+    store.appendThought('msg-react-1', '第一步推理', 1);
+    store.appendThought('msg-react-1', '第二步推理', 2);
+    // 最终答案对应 iteration 2
+    store.moveThoughtToContent('msg-react-1', 2);
+
+    const found = store.sessions[0].messages.find((m) => m.id === 'msg-react-1');
+    // 最终答案追加到 content
+    expect(found?.content).toContain('第二步推理');
+    // BUG 修复：thought 保留，推理过程信息不消失
+    expect(found?.reactSteps?.[1].thought).toBe('第二步推理');
+    expect(found?.reactSteps?.[0].thought).toBe('第一步推理');
+  });
+
   // ========== CR-002 新增：子任务状态管理（AC-003, AC-005, AC-014, AC-016）==========
 
   /** 辅助：创建带助手消息的会话 */
@@ -395,6 +429,55 @@ describe('Session Store', () => {
       store.setKnowledgeBases('session-A', ['产品手册']);
       store.setKnowledgeBases('session-A', []);
       expect(store.getKnowledgeBases('session-A')).toEqual([]);
+    });
+  });
+
+  /**
+   * 模型选择器会话级状态测试（Task-17）
+   */
+  describe('模型选择器会话级状态', () => {
+    it('getModel 无记录时返回空字符串', () => {
+      const store = useSessionStore();
+      expect(store.getModel('session-X')).toBe('');
+    });
+
+    it('setModel 后 getModel 返回已设置的 modelId', () => {
+      const store = useSessionStore();
+      store.setModel('session-A', 'doubao-seed-2.0-pro');
+      expect(store.getModel('session-A')).toBe('doubao-seed-2.0-pro');
+    });
+
+    it('不同会话的 modelId 互不影响（会话隔离）', () => {
+      const store = useSessionStore();
+      store.setModel('session-A', 'model-a');
+      store.setModel('session-B', 'model-b');
+      expect(store.getModel('session-A')).toBe('model-a');
+      expect(store.getModel('session-B')).toBe('model-b');
+      expect(store.getModel('session-C')).toBe('');
+    });
+
+    it('deleteSession 时清理 modelBySession 记录', () => {
+      const store = useSessionStore();
+      store.init();
+      const sessionId = store.sessions[0].sessionId;
+      store.setModel(sessionId, 'doubao-seed-2.0-pro');
+      expect(store.getModel(sessionId)).toBe('doubao-seed-2.0-pro');
+
+      store.deleteSession(sessionId);
+      // 删除后 sessionId 已变更（切换到新会话或新建），验证旧记录已清理
+      expect(store.modelBySession[sessionId]).toBeUndefined();
+    });
+
+    it('modelBySession 不被持久化到 localStorage', () => {
+      const store = useSessionStore();
+      store.init();
+      const sessionId = store.sessions[0].sessionId;
+      store.setModel(sessionId, 'doubao-seed-2.0-pro');
+
+      // localStorage 中不应包含 modelBySession 数据
+      const raw = localStorage.getItem('agent-demo:sessions');
+      expect(raw).not.toContain('modelBySession');
+      expect(raw).not.toContain('doubao-seed-2.0-pro');
     });
   });
 });

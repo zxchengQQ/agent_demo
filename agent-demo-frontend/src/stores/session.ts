@@ -33,6 +33,13 @@ export const useSessionStore = defineStore('session', {
      * 不持久化到 localStorage（与深度思考开关行为一致，刷新后重置）。
      */
     knowledgeBasesBySession: {} as Record<string, string[]>,
+    /**
+     * 模型选择器状态（按会话隔离）
+     * 业务含义：key 为 sessionId，value 为用户选中的 modelId。
+     * 无记录时返回空字符串（由上层回退到 lastUsedModelId 或默认模型）。
+     * 不持久化到 localStorage（与 knowledgeBasesBySession 行为一致，刷新后重置）。
+     */
+    modelBySession: {} as Record<string, string>,
   }),
 
   actions: {
@@ -118,6 +125,8 @@ export const useSessionStore = defineStore('session', {
     deleteSession(sessionId: string) {
       this.sessions = this.sessions.filter((s) => s.sessionId !== sessionId);
       storage.saveSessions(this.sessions);
+      // 清理会话级状态（与 knowledgeBasesBySession 一致，避免内存泄漏）
+      delete this.modelBySession[sessionId];
       // 若删除的是当前会话，切换到第一个或新建
       if (this.currentSessionId === sessionId) {
         if (this.sessions.length > 0) {
@@ -251,9 +260,10 @@ export const useSessionStore = defineStore('session', {
     },
 
     /**
-     * 将指定 iteration 的 thought 移动到 message.content，并清空该轮 thought
+     * 将指定 iteration 的 thought 移动到 message.content
      * 业务含义：收到 final-answer 事件时，最终答案对应的 thought 即为正式回复，
-     * 将其移入 content 展示，同时清空 reactStep 中的 thought 避免重复展示。
+     * 将其追加到 content 展示。BUG 修复：不再清空 reactStep 中的 thought，
+     * 保留推理过程的完整记录，避免回答结束后推理过程信息消失。
      */
     moveThoughtToContent(messageId: string, iteration: number) {
       for (const session of this.sessions) {
@@ -262,7 +272,7 @@ export const useSessionStore = defineStore('session', {
           const step = msg.reactSteps.find((s) => s.iteration === iteration);
           if (step) {
             msg.content += step.thought;
-            step.thought = '';
+            // BUG 修复：保留 thought，不清空，避免推理过程信息消失
             storage.saveSessions(this.sessions);
           }
           return;
@@ -529,6 +539,24 @@ export const useSessionStore = defineStore('session', {
      */
     setKnowledgeBases(sessionId: string, bases: string[]) {
       this.knowledgeBasesBySession[sessionId] = bases;
+    },
+
+    // ===== 模型选择器会话级状态（Task-17）=====
+
+    /**
+     * 获取会话的 modelId
+     * 业务含义：无记录时返回空字符串，由上层回退到 lastUsedModelId 或默认模型。
+     */
+    getModel(sessionId: string): string {
+      return this.modelBySession[sessionId] || '';
+    },
+
+    /**
+     * 设置会话的 modelId
+     * 业务含义：用户通过模型选择器切换选择时调用，按会话隔离保存。
+     */
+    setModel(sessionId: string, modelId: string) {
+      this.modelBySession[sessionId] = modelId;
     },
   },
 });

@@ -1,19 +1,28 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useSessionStore } from '@/stores/session';
+import { useLlmStore } from '@/stores/llm';
 import SessionList from '@/components/SessionList.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
 import NavBar from '@/components/NavBar.vue';
 import KnowledgeBasePage from '@/components/KnowledgeBasePage.vue';
+import SettingsPage from '@/components/SettingsPage.vue';
 
 const store = useSessionStore();
+const llmStore = useLlmStore();
 
-/** 当前激活的视图（AC-001：对话/知识库导航切换） */
-const currentView = ref<'chat' | 'knowledge'>('chat');
+/** 当前激活的视图（AC-001：对话/知识库/设置 导航切换） */
+const currentView = ref<'chat' | 'knowledge' | 'settings'>('chat');
 
-// 初始化：从 localStorage 加载会话（AC-001）
+/** 从对话页引导跳转到设置视图（ChatWindow 空状态引导，AC-035） */
+function navigateToConfig() {
+  currentView.value = 'settings';
+}
+
+// 初始化：从 localStorage 加载会话（AC-001），并同步 LLM 配置（AC-009）
 onMounted(() => {
   store.init();
+  llmStore.initConfigSync();
 });
 </script>
 
@@ -31,12 +40,15 @@ onMounted(() => {
 
       <!-- 右侧：对话框（自适应） -->
       <main class="main">
-        <ChatWindow />
+        <ChatWindow @navigate-to-config="navigateToConfig" />
       </main>
     </div>
 
     <!-- 知识库页面（Task-11 完整实现） -->
-    <KnowledgeBasePage v-else />
+    <KnowledgeBasePage v-else-if="currentView === 'knowledge'" />
+
+    <!-- 设置页面（LLM 配置 + MCP 服务，Task-08/09） -->
+    <SettingsPage v-else />
   </div>
 </template>
 

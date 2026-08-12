@@ -52,7 +52,7 @@ class TaskBreakdownStreamSummaryTest {
         chatMemory = mock(ChatMemory.class);
 
         when(modelFactory.getDefaultChatModel()).thenReturn(chatModel);
-        when(modelFactory.getThinkingStreamingChatModel()).thenReturn(thinkingModel);
+        when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
         when(toolSchemaConverter.convertToJson()).thenReturn("[]");
         when(toolSchemaConverter.convertToDescriptionText()).thenReturn("工具描述");
         when(memoryManager.getMemory(anyString())).thenReturn(chatMemory);

@@ -19,6 +19,7 @@ const API_BASE = '/api/agent';
  * @param enableThinking 是否开启深度思考（CR-001，AC-021），后端据此分流是否推送 reasoning 事件
  * @param enableTaskBreakdown 是否开启复杂任务拆解（CR-002，AC-001），后端据此分流是否执行任务拆解
  * @param knowledgeBases 用户指定的知识库名称列表（空数组=自动模式，AC-012/AC-013/AC-014）
+ * @param modelId 用户选中的模型 ID（Task-22），后端据此路由到对应模型
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
  */
@@ -28,6 +29,7 @@ export async function streamChat(
   enableThinking: boolean,
   enableTaskBreakdown: boolean,
   knowledgeBases: string[],
+  modelId = '',
   callbacks: StreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
@@ -36,7 +38,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases }),
+      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId }),
       signal,
     });
   } catch {

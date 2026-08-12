@@ -74,6 +74,15 @@ public interface ThinkingTokenStream {
      */
     void start();
 
+    /**
+     * 取消流式（BUG 修复）
+     * <p>
+     * 业务含义：emitter 超时或客户端断开时，由 AgentController 调用此方法，
+     * 通知异步线程停止后续 ReAct 迭代。默认空实现，由需要的子类覆盖。
+     * </p>
+     */
+    default void cancel() {}
+
     /** 推理内容片段消费者 */
     @FunctionalInterface
     interface ThinkingConsumer {

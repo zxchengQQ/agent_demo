@@ -34,7 +34,7 @@ public class ChatRequest {
     private String agentType;
 
     /**
-     * 指定模型（可选，为空用默认模型）
+     * 模型 ID（可选，为空使用第一个可用 chat 模型）
      */
     private String model;
 

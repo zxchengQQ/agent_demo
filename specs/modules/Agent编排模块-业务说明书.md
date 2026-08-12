@@ -26,10 +26,11 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 ### 3.2 Agent 委托懒加载与 Tool 变化重建
 
 - **触发场景**：SimpleAgent 首次被调用 chat() 时，或 Tool 数量发生变化时（CR-003 新增）。
-- **操作步骤**：双重检查锁创建 AiServices 代理。
-- **系统行为**：`AiServices.builder(BaseAgent.class)` 绑定 chatModel + memoryProvider + tools + systemMessageProvider。
-- **Tool 变化检测（CR-003 新增）**：`SimpleAgent` 维护 `lastToolCount` 字段，每次 `getDelegate()` 调用时检测 `toolRegistry.getToolCount()` 是否变化。若 Tool 数量变化（如知识库创建/删除导致动态 Tool 增减），则重建 delegate 绑定最新工具列表，确保新注册/注销的知识库 Tool 对 Agent 生效。
-- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖；Tool 变化重建确保动态 Tool 实时生效（BR-AGT-003）。
+- **操作步骤**：按 modelId 从 delegateCache 获取 AiServices 代理，未命中或 Tool 数量变化时经双重检查锁重建。
+- **系统行为**：`AiServices.builder(BaseAgent.class)` 绑定 chatModel + streamingChatModel + memoryProvider + tools + systemMessageProvider。
+- **delegate 缓存（v2.0 新增）**：`SimpleAgent` 的 delegate 缓存从单一 `volatile BaseAgent` 升级为 `ConcurrentHashMap<String, BaseAgent>`（`delegateCache`），按 modelId 隔离不同模型的 Agent 实例，新增 `getDelegate(String modelId)` 方法；modelId 为 null 时以 `"default"` 作为 cacheKey 使用默认模型（第一个可用 chat 模型）。对话时按 modelId 选择模型：`modelFactory.getChatModelByModelId(modelId)`/`getStreamingChatModelByModelId(modelId)`（有指定 modelId）或 `getDefaultChatModel()`/`getDefaultStreamingChatModel()`（modelId 为空）。
+- **Tool 变化检测（CR-003 新增，v2.0 扩展）**：`SimpleAgent` 维护 `delegateToolCounts`（`ConcurrentHashMap<String, Integer>`），按 cacheKey 记录各 delegate 创建时的工具数量。每次 `getDelegate(modelId)` 调用时检测 `toolRegistry.getToolCount()` 是否变化。若 Tool 数量变化（如知识库创建/删除导致动态 Tool 增减），则重建该 cacheKey 的 delegate 绑定最新工具列表，确保新注册/注销的知识库 Tool 对 Agent 生效。
+- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖；Tool 变化重建确保动态 Tool 实时生效；delegate 按 modelId 隔离，不同模型使用独立实例（BR-AGT-003、BR-AGT-010）。
 
 ### 3.3 ReAct 循环执行
 
@@ -47,10 +48,10 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 ### 3.5 思考流式对话（CR-001 新增）
 
 - **触发场景**：用户开启"深度思考"开关发送消息时。
-- **操作步骤**：AgentController 根据 `enableThinking=true` 调用 `SimpleAgent.chatThinkingStream(sessionId, message)` 替代 `chatStream`。
+- **操作步骤**：AgentController 根据 `enableThinking=true` 调用 `SimpleAgent.chatThinkingStream(sessionId, message)`（或带 modelId 的 `chatThinkingStream(sessionId, message, modelId)` 重载，v2.0 新增）替代 `chatStream`；ReAct 模式对应 `chatThinkingReActStream`（同样新增 modelId 重载）。
 - **系统行为**：
   1. 调用 `buildMessagesWithMemory(sessionId, message)` 手动组装消息列表（系统提示词 + 历史消息 + 当前用户消息）
-  2. 委托 `ArkThinkingStreamingChatModel` 直连方舟 API（stream=true, thinking.enabled）
+  2. 按 modelId 获取思考模型：`modelFactory.getThinkingStreamingChatModelByModelId(modelId)`（有指定 modelId 时）或 `getDefaultThinkingStreamingChatModel()`（modelId 为空时，v2.0 起替代原 `getThinkingStreamingChatModel()`），委托 `ArkThinkingStreamingChatModel` 直连方舟 API（stream=true, thinking.enabled）
   3. 通过 `ThinkingTokenStream` 回调暴露推理内容（onPartialThinking）与正式回复（onPartialResponse）
 - **业务规则**：思考模式使用场景模板 "thinking"（声明"此模式不可调用工具"），通过 PromptTemplateLoader 组合提示词（BR-AGT-007）
 - **前置条件**：ARK_API_KEY 已配置，方舟 Coding Plan 地址支持 thinking 参数。
@@ -99,7 +100,9 @@ flowchart TD
 ## 7. 核心数据实体
 
 - **BaseAgent**：Agent 抽象接口，定义 `chat(sessionId, message)` 和 `chatStream(sessionId, message)` 入口，使用 `@MemoryId` + `@UserMessage` 注解。
-- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。CR-003 新增 `lastToolCount` 字段检测 Tool 数量变化，Tool 增减时自动重建 delegate 绑定最新工具列表。
+- **SimpleAgent**：单 Agent 实现，委托 AiServices 代理执行，懒加载 delegate。CR-001 新增 `chatThinkingStream(sessionId, message)` 方法，返回 `ThinkingTokenStream`。CR-003 新增 `lastToolCount` 字段检测 Tool 数量变化，Tool 增减时自动重建 delegate 绑定最新工具列表。v2.0 将 delegate 缓存升级为按 modelId 隔离的 `ConcurrentHashMap<String, BaseAgent>`（`delegateCache`），新增 `getDelegate(String modelId)`（null 时以 `"default"` 为 cacheKey）；`delegateToolCounts`（`ConcurrentHashMap<String, Integer>`）按 cacheKey 维护各 delegate 的工具数量；chat/chatStream/chatThinkingStream/chatThinkingReActStream 均新增带 modelId 重载方法（原方法保留，传 null 走默认模型）。
+- **PlanAgent**：任务拆解 Agent（任务编排，非 BaseAgent 接口）。v2.0 新增 `chatTaskBreakdownStream(sessionId, message, enableThinking, modelId)` 重载方法（原三参方法保留，modelId 传 null），内部将 modelId 透传给 `TaskBreakdownStream`，按其选择各阶段思考流式模型。
+- **TaskBreakdownStream**：三阶段任务编排流（规划 -> 执行 -> 总结）接口/实现，v2.0 新增 `modelId` 字段与构造器，各阶段通过 `getThinkingStreamingChatModelByModelId(modelId)`（有指定 modelId）或 `getDefaultThinkingStreamingChatModel()`（modelId 为空）获取思考模型。
 - **ThinkingTokenStream**：思考流式接口（CR-001 新增），定义 `onPartialThinking`/`onPartialResponse`/`onComplete`/`onError` 四个回调 + `start()` 方法，区别于 LangChain4j TokenStream 仅回调 content。
 - **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultRole/enableLogging/fileAllowedDir。`defaultRole` 指定默认角色模板（对应 `prompts/roles/` 目录文件名）。旧提示词字段（defaultSystemPrompt 等）保留为模板缺失时的最终回退。
 - **PromptTemplateLoader**：提示词模板加载器，从 classpath 加载 `prompts/roles/{role}.txt` + `prompts/scenarios/{scenario}.txt`，组合为最终系统提示词（角色 + "\n\n" + 场景）。模板缺失时三级回退：指定角色 -> general 角色 -> AgentConfig 默认值。
@@ -128,6 +131,7 @@ flowchart TD
 | BR-THINK-002 | ReAct 模式使用场景模板 "react"（含 ReAct 格式引导 + {{tools}} 占位符），工具描述通过 `convertToDescriptionText()` 运行时替换占位符 | 🔴 强制 |
 | BR-AGT-008 | 系统提示词外部化为模板文件（`prompts/roles/*.txt` + `prompts/scenarios/*.txt`），AgentConfig 旧提示词仅作回退 | 🔴 强制 |
 | BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方运行时替换 | 🔴 强制 |
+| BR-AGT-010 | Agent delegate 按 modelId 隔离缓存（ConcurrentHashMap），不同 modelId 使用独立 delegate；modelId 为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

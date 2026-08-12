@@ -321,3 +321,166 @@ export interface DocumentChunk {
   /** 分块字符数 */
   charCount: number;
 }
+
+// ========== LLM 厂商模型配置相关类型 ==========
+
+/** 厂商配置（前端展示用，API Key 脱敏） */
+export interface LlmVendor {
+  id: string
+  name: string
+  type: 'predefined' | 'custom'
+  baseUrl: string
+  /** 脱敏后的 API Key（如 sk-****7890） */
+  apiKeyMasked: string
+  /** 是否已配置 API Key */
+  apiKeyConfigured: boolean
+  thinkingTrigger: 'enabled' | 'none'
+  timeout: number
+  maxRetries: number
+  temperature: number
+  models: LlmModel[]
+}
+
+/** 模型配置 */
+export interface LlmModel {
+  id: string
+  vendorId: string
+  vendorName: string
+  /** API 模型名称（如 doubao-seed-2.0-pro） */
+  modelName: string
+  /** 显示名称（如"豆包Seed 2.0 Pro"） */
+  displayName: string
+  type: 'chat' | 'embedding' | 'rerank' | 'multimodal'
+  /** 是否支持视图理解（仅 chat 类型有意义） */
+  supportsVision: boolean
+}
+
+/** 预定义厂商（供用户选择） */
+export interface PredefinedVendor {
+  code: string
+  name: string
+  baseUrl: string
+  thinkingTrigger: 'enabled' | 'none'
+  models: PredefinedModel[]
+}
+
+/** 预定义模型 */
+export interface PredefinedModel {
+  modelName: string
+  displayName: string
+  type: 'chat' | 'embedding' | 'rerank' | 'multimodal'
+  supportsVision: boolean
+}
+
+/** 测试连接结果 */
+export interface TestConnectionResult {
+  success: boolean
+  message: string
+  latency: number
+}
+
+/** 配置状态 */
+export interface ConfigStatus {
+  hasConfig: boolean
+  hasChatModel: boolean
+  hasEmbeddingModel: boolean
+  vendorCount: number
+  chatModelCount: number
+}
+
+/** 添加/编辑厂商请求体 */
+export interface VendorRequest {
+  name: string
+  type: 'predefined' | 'custom'
+  baseUrl: string
+  apiKey: string
+  thinkingTrigger: 'enabled' | 'none'
+  timeout: number
+  maxRetries: number
+  temperature: number
+  models: {
+    modelName: string
+    displayName: string
+    type: 'chat' | 'embedding' | 'rerank' | 'multimodal'
+    supportsVision: boolean
+  }[]
+}
+
+/** 同步配置请求体 */
+export interface SyncConfigRequest {
+  vendors: VendorRequest[]
+}
+
+// ========== MCP 服务管理相关类型 ==========
+
+/** MCP 传输方式（对应后端 McpTransportType 枚举） */
+export type McpTransportType = 'STDIO' | 'SSE' | 'HTTP'
+
+/** MCP Server 状态（对应后端 McpServerStatus 枚举） */
+export type McpServerStatus = 'CONNECTED' | 'DISCONNECTED' | 'ERROR' | 'DISABLED'
+
+/** MCP Server 信息（对应后端 McpServerResponse） */
+export interface McpServerInfo {
+  /** Server 名称 */
+  name: string
+  /** 传输方式 */
+  transport: McpTransportType
+  /** 当前状态 */
+  status: McpServerStatus
+  /** 是否启用 */
+  enabled: boolean
+  /** 工具数量 */
+  toolCount: number
+  /** 最近错误信息（ERROR/DISCONNECTED 状态时填充） */
+  lastError: string | null
+  /** 首次连接时间 */
+  connectTime: string | null
+  /** sse/http Server 的连接 URL（stdio 类型为 null） */
+  url: string | null
+  /** stdio Server 的执行命令（sse/http 类型为 null） */
+  command: string | null
+  /** stdio Server 的命令参数（sse/http 类型为 null） */
+  args: string[] | null
+}
+
+/** MCP 工具信息（对应后端 McpToolResponse） */
+export interface McpToolInfo {
+  /** MCP Server 返回的原始工具名 */
+  originalName: string
+  /** 注册到 ToolRegistry 的工具方法名（mcp_{serverName}_{toolName}） */
+  registeredName: string
+  /** 工具描述 */
+  description: string
+  /** 参数 JSON Schema 字符串 */
+  parametersSchema: string
+}
+
+/** 添加 MCP Server 请求体（对应后端 CreateMcpServerRequest） */
+export interface CreateMcpServerRequest {
+  /** Server 唯一标识 */
+  name: string
+  /** 传输方式 */
+  transport: McpTransportType
+  /** 是否启用 */
+  enabled: boolean
+  /** stdio 专用：可执行命令 */
+  command?: string
+  /** stdio 专用：命令参数 */
+  args?: string[]
+  /** stdio 专用：环境变量 */
+  env?: Record<string, string>
+  /** sse/http 专用：连接 URL */
+  url?: string
+  /** sse/http 专用：请求头 */
+  headers?: Record<string, string>
+}
+
+/** 批量添加 Server 的单条结果 */
+export interface AddResult {
+  /** Server 名称 */
+  name: string
+  /** 是否成功 */
+  success: boolean
+  /** 失败原因（success=false 时填充） */
+  error?: string
+}
