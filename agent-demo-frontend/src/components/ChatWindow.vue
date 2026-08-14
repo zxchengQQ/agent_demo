@@ -84,6 +84,21 @@ function handleKnowledgeBasesChange(bases: string[]) {
   store.setKnowledgeBases(store.currentSessionId, bases);
 }
 
+/**
+ * 当前会话的工具选择（工具按需加载）
+ * 业务含义：从 session store 读取用户选中的可选工具 ID 列表。
+ * 不包含默认工具（默认工具始终加载）。空数组表示仅默认工具。
+ */
+const selectedTools = computed(() => store.getTools(store.currentSessionId));
+
+/**
+ * 工具选择变更处理
+ * 业务含义：用户通过 ToolSelector 切换选择时，更新 session store 中的会话级状态。
+ */
+function handleToolsChange(tools: string[]) {
+  store.setTools(store.currentSessionId, tools);
+}
+
 let abortController: AbortController | null = null;
 
 /** 当前会话的消息列表 */
@@ -148,6 +163,7 @@ async function sendMessage(message: string) {
       enableTaskBreakdown.value,
       selectedKnowledgeBases.value,
       modelId,
+      selectedTools.value,
       {
         // AC-010: 透明续聊 - 后端返回新 sessionId 时更新关联
         onSession: (newSessionId: string) => {
@@ -289,6 +305,7 @@ function stopGeneration() {
       :enable-task-breakdown="enableTaskBreakdown"
       :knowledge-bases="ragStore.knowledgeBases"
       :selected-knowledge-bases="selectedKnowledgeBases"
+      :selected-tools="selectedTools"
       :selected-model="selectedModel"
       :models="llmStore.chatModels"
       :has-config="!!llmStore.configStatus?.hasConfig"
@@ -297,6 +314,7 @@ function stopGeneration() {
       @toggle-thinking="enableThinking = !enableThinking"
       @toggle-task-breakdown="enableTaskBreakdown = !enableTaskBreakdown"
       @update:selected-knowledge-bases="handleKnowledgeBasesChange"
+      @update:selected-tools="handleToolsChange"
       @update:selected-model="handleModelChange"
       @navigate-to-config="emit('navigate-to-config')"
     />

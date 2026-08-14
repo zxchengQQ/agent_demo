@@ -26,6 +26,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
@@ -267,10 +268,11 @@ class SimpleAgentThinkingStreamTest {
         agentConfig.setThinkingMaxIterations(1); // 减少循环次数，避免测试耗时
 
         // mock ToolSchemaConverter 返回特定工具描述（CR-001 动态工具描述）
+        // 注：工具按需加载后，SimpleAgent 调用带工具列表参数的重载方法
         ToolSchemaConverter toolSchemaConverter = mock(ToolSchemaConverter.class);
         String mockToolDescription = "你可以调用以下工具来获取信息：\n- calculate: 数学表达式计算\n当问题需要实时信息或计算时，请主动调用工具。";
-        when(toolSchemaConverter.convertToDescriptionText()).thenReturn(mockToolDescription);
-        when(toolSchemaConverter.convertToJson()).thenReturn("[]");
+        when(toolSchemaConverter.convertToDescriptionText(anyList())).thenReturn(mockToolDescription);
+        when(toolSchemaConverter.convertToJson(anyList())).thenReturn("[]");
 
         ToolExecutor toolExecutor = mock(ToolExecutor.class);
 

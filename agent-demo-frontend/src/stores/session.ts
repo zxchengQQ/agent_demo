@@ -40,6 +40,13 @@ export const useSessionStore = defineStore('session', {
      * 不持久化到 localStorage（与 knowledgeBasesBySession 行为一致，刷新后重置）。
      */
     modelBySession: {} as Record<string, string>,
+    /**
+     * 工具选择器状态（按会话隔离）
+     * 业务含义：key 为 sessionId，value 为用户选中的可选工具 ID 列表（如 ["mcp:mermaid-mcp"]）。
+     * 不包含默认工具（默认工具始终加载，无需记录）。
+     * 不持久化到 localStorage（与 knowledgeBasesBySession 行为一致，刷新后重置）。
+     */
+    toolsBySession: {} as Record<string, string[]>,
   }),
 
   actions: {
@@ -557,6 +564,33 @@ export const useSessionStore = defineStore('session', {
      */
     setModel(sessionId: string, modelId: string) {
       this.modelBySession[sessionId] = modelId;
+    },
+
+    // ===== 工具选择器会话级状态 =====
+
+    /**
+     * 获取指定会话选中的可选工具 ID 列表
+     * 业务含义：无记录时返回空数组（仅默认工具）。
+     */
+    getTools(sessionId: string): string[] {
+      return this.toolsBySession[sessionId] ?? [];
+    },
+
+    /**
+     * 设置指定会话选中的可选工具 ID 列表
+     * 业务含义：用户通过工具选择器切换选择时调用，按会话隔离保存。
+     * 传入空数组表示清除（恢复仅默认工具）。
+     */
+    setTools(sessionId: string, tools: string[]) {
+      this.toolsBySession[sessionId] = tools;
+    },
+
+    /**
+     * 清除指定会话的工具选择
+     * 业务含义：删除会话绑定的可选工具，恢复仅默认工具。
+     */
+    clearTools(sessionId: string) {
+      delete this.toolsBySession[sessionId];
     },
   },
 });

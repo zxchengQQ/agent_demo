@@ -125,6 +125,14 @@ Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层�
 - **操作步骤**：`POST /api/llm/config/sync`，请求体为完整的厂商配置列表。
 - **系统行为**：`configStore.replaceAll()` 替换所有现有配置，同步后清除模型工厂全部缓存。
 
+### 3.13 获取可用工具列表（工具按需加载 CR 新增）
+
+- **触发场景**：前端工具选择器、设置页面工具管理展示可选工具。
+- **操作步骤**：`GET /api/agent/tools`。
+- **系统行为**：读取 `agentConfig.getTools().getDefaultTools()`，调用 `ToolRegistry.getAvailableTools(defaultIds)` 返回所有工具信息（id/category/name/description/isDefault）+ defaults 默认工具 ID 列表。
+- **后置结果**：`Result<Map<String,Object>>`，含 `tools`（ToolInfo 列表）与 `defaults`（默认 ID 列表）。
+- **对话 tools 参数**：`ChatRequest.tools` 为工具标识列表，AgentController 在分流前先 `toolRegistry.resolveTools(toolIds)` 校验（格式错误 5102、不存在 5101），失败通过 SSE `error` 事件返回并终止，不执行对话。
+
 ## 4. 业务流程串联
 
 ```mermaid
@@ -173,7 +181,8 @@ flowchart TD
 
 - **AgentController**：Agent 对话 Controller，提供 chat/session 接口，CR-001 扩展 chatStream 方法支持 enableThinking 分流 + reasoning 事件推送，v2.0 透传 modelId 给 SimpleAgent/PlanAgent。
 - **LlmConfigController**（v2.0 新增）：LLM 配置管理 Controller（`@RequestMapping("/api/llm/config")`），提供厂商 CRUD、预定义厂商查询、API Key 连接测试、模型列表查询、配置状态查询与批量同步 9 个 API，依赖 `LlmConfigStore`/`PredefinedVendorCatalog`/`ModelFactory`。
-- **ChatRequest**：对话请求 DTO，含 sessionId/message/enableThinking（CR-001 新增，Boolean 可选，默认 false）/model（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型）。
+- **ChatRequest**：对话请求 DTO，含 sessionId/message/enableThinking（CR-001 新增，Boolean 可选，默认 false）/model（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型）/tools（工具按需加载 CR 新增，可选，工具标识列表，null=沿用会话缓存、非空=指定、空=清除恢复默认）。
+- **ToolInfo**（common 模块，工具按需加载 CR 新增）：工具信息 DTO，含 id/category/name/description/isDefault（`@JsonProperty("isDefault")` 保证序列化字段名）。
 - **ChatResponse**：对话响应 DTO，含 sessionId/response/toolCalls/duration/usage。
 - **VendorRequest**（v2.0 新增）：厂商配置请求 DTO（添加/编辑），含 name/type/baseUrl/apiKey/thinkingTrigger/timeout/maxRetries/temperature/models。
 - **VendorResponse**（v2.0 新增）：厂商响应 DTO，含 id/name/type/baseUrl/apiKeyMasked/apiKeyConfigured/thinkingTrigger/timeout/maxRetries/temperature/models。
@@ -197,6 +206,7 @@ flowchart TD
 | `/api/agent/session` | POST | 创建会话 | 无 | 无 | `Result<String>` |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 | path: sessionId | `Result<Boolean>` |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 | path: sessionId | `Result<Void>` |
+| `/api/agent/tools` | GET | 获取可用工具列表（工具按需加载 CR 新增） | 无 | 无 | `Result<Map<String,Object>>`（tools + defaults） |
 | `/api/llm/config/predefined` | GET | 获取预定义厂商目录（v2.0） | 无 | 无 | `Result<List<PredefinedVendorResponse>>` |
 | `/api/llm/config/vendors` | GET | 获取已配置厂商列表（API Key 脱敏）（v2.0） | 无 | 无 | `Result<List<VendorResponse>>` |
 | `/api/llm/config/vendors` | POST | 添加厂商（v2.0） | 无 | VendorRequest | `Result<VendorResponse>` |
@@ -215,6 +225,7 @@ flowchart TD
 | message | String | 是 | `@NotBlank`、`@Size(max=4000)` | 用户消息，上限 4000 字符（AC-015） |
 | enableThinking | Boolean | 否 | - | 是否开启深度思考（CR-001 新增，默认 false） |
 | model | String | 否 | - | 模型 ID（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型） |
+| tools | List&lt;String&gt; | 否 | - | 工具标识列表（工具按需加载 CR 新增，null=沿用会话缓存、非空=指定并缓存、空=清除恢复默认） |
 
 **ChatResponse 字段**：
 
@@ -244,6 +255,7 @@ flowchart TD
 | BR-WEB-012 | 厂商查询响应中 API Key 必须脱敏（保留前 3 位 + **** + 后 4 位），禁止明文泄露（v2.0 新增） | 🔴 强制 |
 | BR-WEB-013 | 厂商配置变更（添加/编辑/删除/同步）后必须清除模型工厂缓存（`clearAllCache`/`clearCacheForVendor`），确保新配置即时生效（v2.0 新增） | 🔴 强制 |
 | BR-WEB-014 | 对话请求 model 字段透传为 modelId，为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
+| BR-WEB-015 | 对话请求 tools 参数先经 `ToolRegistry.resolveTools` 校验，格式错误返回 5102、工具不存在返回 5101，失败通过 SSE `error` 事件返回并终止对话（CR 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 
@@ -334,3 +346,4 @@ curl -X DELETE http://localhost:8080/api/agent/session/a1b2c3d4e5f6/memory
 
 **变更日志**：
 - v2.0（2026-08-11）：LLM 厂商模型配置迭代 — 新增 LlmConfigController（/api/llm/config 9 个 API）与 8 个 DTO（VendorRequest/VendorResponse/ModelResponse/PredefinedVendorResponse/TestConnectionRequest/TestConnectionResponse/SyncConfigRequest/ConfigStatusResponse）；ChatRequest.model 启用为 modelId 透传给 Agent 层；新增 4 条业务规则（BR-WEB-011~014）；补充 8 个错误码（5008-5015）
+- v2.9（2026-08-12）：Agent 工具按需加载迭代 — 新增 GET /api/agent/tools 接口；ChatRequest 新增 tools 字段；新增 ToolInfo DTO（common 模块）；对话接口分流前先校验 tools 参数（5102/5101）；新增业务规则 BR-WEB-015

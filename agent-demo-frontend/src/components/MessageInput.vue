@@ -3,6 +3,7 @@ import { ref, computed, nextTick } from 'vue';
 import { useSessionStore } from '@/stores/session';
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
 import ModelSelector from './ModelSelector.vue';
+import ToolSelector from './ToolSelector.vue';
 import type { KnowledgeBase, TokenUsage, LlmModel } from '@/types';
 
 const props = withDefaults(defineProps<{
@@ -15,6 +16,8 @@ const props = withDefaults(defineProps<{
   knowledgeBases?: KnowledgeBase[];
   /** 选中的知识库名称列表（Task-08，AC-029），默认空数组 */
   selectedKnowledgeBases?: string[];
+  /** 用户选中的可选工具 ID 列表（工具按需加载），默认空数组 */
+  selectedTools?: string[];
   /** 当前选中的模型 ID（Task-22 模型选择集成） */
   selectedModel?: string;
   /** chat 模型列表（Task-22），默认空数组 */
@@ -26,6 +29,7 @@ const props = withDefaults(defineProps<{
   enableTaskBreakdown: false,
   knowledgeBases: () => [],
   selectedKnowledgeBases: () => [],
+  selectedTools: () => [],
   selectedModel: '',
   models: () => [],
   hasConfig: true,
@@ -40,6 +44,8 @@ const emit = defineEmits<{
   toggleTaskBreakdown: [];
   /** 知识库选择变更（Task-08，AC-029） */
   'update:selectedKnowledgeBases': [value: string[]];
+  /** 工具选择变更（工具按需加载） */
+  'update:selectedTools': [value: string[]];
   /** 模型选择变更（Task-22） */
   'update:selectedModel': [value: string];
   /** 跳转到 LLM 配置视图（Task-22 空状态引导） */
@@ -122,6 +128,15 @@ function handleKeydown(e: KeyboardEvent) {
     <div v-else-if="props.models.length === 0" class="config-empty-state">
       <span class="empty-text">请先配置 chat 类型模型</span>
       <button class="btn-go-config" @click="emit('navigate-to-config')">去配置</button>
+    </div>
+
+    <!-- 工具标签栏（独立一行，位于输入框上方，紧凑不拥挤） -->
+    <div class="tool-bar" :class="{ disabled: isStreaming }">
+      <ToolSelector
+        :model-value="props.selectedTools"
+        :disabled="props.isStreaming"
+        @update:model-value="emit('update:selectedTools', $event)"
+      />
     </div>
 
     <div class="input-wrapper" :class="{ disabled: isStreaming }">
@@ -251,6 +266,17 @@ function handleKeydown(e: KeyboardEvent) {
   border-radius: var(--radius-md);
   padding: var(--spacing-sm);
   transition: border-color 0.2s;
+}
+
+/* 工具标签栏（独立一行，位于输入框上方） */
+.tool-bar {
+  margin-bottom: 6px;
+  padding: 0 2px;
+}
+
+.tool-bar.disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .input-wrapper:focus-within {

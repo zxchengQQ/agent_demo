@@ -2,26 +2,29 @@
 import { ref } from 'vue';
 import LlmConfigPage from '@/components/LlmConfigPage.vue';
 import McpServicePage from '@/components/McpServicePage.vue';
+import ToolManagementPage from '@/components/ToolManagementPage.vue';
 
 /**
  * 设置页面（Task-08）
- * 业务含义：统一设置入口，以标签页形式整合 LLM 配置与 MCP 服务管理。
+ * 业务含义：统一设置入口，以标签页形式整合 LLM 配置、MCP 服务管理与工具管理。
  * LLM 配置标签页迁移自原 LlmConfigPage（功能行为不变，AC-035）。
  * MCP 服务标签页为新增的 MCP Server 管理（AC-002）。
+ * 工具管理标签页为新增的工具清单展示（工具按需加载，AC-006）。
  * 切换标签页时保持各自页面状态（AC-003）。
  */
 
 /** 当前激活标签页 */
-const activeTab = ref<'llm' | 'mcp'>('llm');
+const activeTab = ref<'llm' | 'mcp' | 'tools'>('llm');
 
 /** 标签页列表 */
 const tabs = [
   { key: 'llm' as const, label: 'LLM 配置' },
   { key: 'mcp' as const, label: 'MCP 服务' },
+  { key: 'tools' as const, label: '工具管理' },
 ];
 
 /** 切换标签页 */
-function switchTab(key: 'llm' | 'mcp') {
+function switchTab(key: 'llm' | 'mcp' | 'tools') {
   activeTab.value = key;
 }
 </script>
@@ -45,7 +48,8 @@ function switchTab(key: 'llm' | 'mcp') {
     <div class="settings-content">
       <KeepAlive>
         <LlmConfigPage v-if="activeTab === 'llm'" />
-        <McpServicePage v-else />
+        <McpServicePage v-else-if="activeTab === 'mcp'" />
+        <ToolManagementPage v-else />
       </KeepAlive>
     </div>
   </div>

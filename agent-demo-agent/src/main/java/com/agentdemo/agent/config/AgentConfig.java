@@ -4,6 +4,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Agent 配置
  * <p>
@@ -169,4 +172,30 @@ public class AgentConfig {
      * </p>
      */
     private int taskBreakdownMaxSubtasks = 10;
+
+    // ==================== 工具按需加载配置 ====================
+
+    /**
+     * 工具配置
+     * <p>
+     * 业务含义：控制 Agent 加载哪些工具。default 列表中的工具始终加载，
+     * optional 列表中的工具需要通过 API 显式指定才会加载。
+     * 工具标识格式为 category:name（如 builtin:getCurrentTime、mcp:mermaid-mcp、rag:*）。
+     * </p>
+     */
+    private ToolProperties tools = new ToolProperties();
+
+    @Data
+    public static class ToolProperties {
+
+        /**
+         * 默认加载的工具标识列表（始终加载，无需 API 指定）
+         */
+        private List<String> defaultTools = new ArrayList<>();
+
+        /**
+         * 可选工具标识列表（需通过 API 显式指定才会加载）
+         */
+        private List<String> optional = new ArrayList<>();
+    }
 }

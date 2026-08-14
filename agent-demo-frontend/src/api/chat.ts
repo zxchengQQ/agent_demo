@@ -30,6 +30,7 @@ export async function streamChat(
   enableTaskBreakdown: boolean,
   knowledgeBases: string[],
   modelId = '',
+  tools: string[] = [],
   callbacks: StreamCallbacks,
   signal: AbortSignal,
 ): Promise<void> {
@@ -38,7 +39,7 @@ export async function streamChat(
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId }),
+      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId, tools }),
       signal,
     });
   } catch {

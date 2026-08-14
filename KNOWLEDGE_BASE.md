@@ -62,7 +62,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 能力域 | 实现状态 | 学习要点 |
 |--------|---------|---------|
 | LLM 调用 | ✅ 已实现 | 模型抽象、流式输出、参数调优、场景路由、**动态配置 + 多厂商 + 前端管理 + 会话级模型选择（CR-003 重构：移除 Provider 模式，前端动态配置，LlmConfigStore 内存存储，按 modelId 路由）** |
-| 工具调用 | ✅ 已实现 | ReAct 循环、Function Calling、声明式注册 |
+| 工具调用 | ✅ 已实现 | ReAct 循环、Function Calling、声明式注册、**工具按需加载（default-tools 默认加载 + optional 按需指定，GET /api/agent/tools 查询）** |
 | 记忆系统 | ✅ 已实现（短期） | 短期窗口记忆、会话隔离、超时清理 |
 | Agent 编排 | ✅ 已实现（单 Agent） | AiServices 代理、ReAct 循环、懒加载 |
 | Web 接口 | ✅ 已实现 | REST 同步对话、SSE 流式对话、会话管理、Swagger 文档 |
@@ -257,7 +257,7 @@ agent-demo/
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
-├── agent-demo-app/                      # 应用编排层（规划中，空模块）
+├── agent-demo-app/                      # 应用编排层（P2 完整实现：core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
 ├── agent-demo-bootstrap/                # 启动模块（主启动类 + 配置 + 提示词）
 └── agent-demo-frontend/                 # 前端模块（Vue 3 + Vite + TypeScript + Pinia）
@@ -279,10 +279,11 @@ agent-demo/
         ├── utils/storage.ts              # localStorage 缓存工具（50 会话 FIFO 淘汰）
         ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks + KnowledgeBase/DocumentInfo/DocumentStatus 等）
         ├── components/                   # Vue 组件
-        │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector 集成）/ChatWindow（含知识库选择状态管理）/SessionList/NavBar
+        │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector + ToolSelector 集成）/ChatWindow（含知识库选择 + 工具选择状态管理）/SessionList/NavBar
         │   ├── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
+        │   ├── 工具选择组件（CR 新增）    # ToolSelector（工具标签栏 + 下拉选择，位于输入框上方）/ ToolManagementPage（设置页工具管理）
         │   ├── LLM 配置组件               # LlmConfigPage/VendorCard/VendorEditDialog/ModelSelector
-        │   └── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
+        │   └── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务 + 工具管理）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
         └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库/设置页面）
 ```
@@ -314,7 +315,8 @@ agent-demo-agent/
 ├── config/                # AgentConfig（配置属性绑定，含 defaultRole + 提示词默认值作为模板回退）
 ├── core/                  # BaseAgent（Agent 抽象接口）+ ThinkingTokenStream（思考流式接口）+ TaskBreakdownStream（任务拆解三阶段编排流）
 ├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词）
-└── single/                # SimpleAgent（单 Agent 实现）+ PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
+└── single/                # SimpleAgent（单 Agent 实现，工具按需加载 CR 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键）
+                            # + PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
 ```
 
 **agent-demo-llm**（LLM 接入，CR-003 重构为动态配置模式，移除 Provider 模式）：
@@ -344,7 +346,9 @@ agent-demo-llm/
 ```
 agent-demo-tools/
 ├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
-└── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展）+ ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
+└── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展；
+                           #   工具按需加载 CR 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)）
+                           # + ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
 ```
 
 **agent-demo-memory**（记忆系统）：
@@ -413,8 +417,8 @@ agent-demo-mcp/
 ```
 agent-demo-web/
 ├── config/                # OpenApiConfig / TraceIdInterceptor / WebConfig
-├── controller/            # AgentController / McpController（MCP Server 管理 REST API）/ RagController
-├── dto/                   # ChatRequest / ChatResponse / CreateMcpServerRequest / McpServerResponse / McpToolResponse / McpServerConfigValidator（MCP 配置条件校验）
+├── controller/            # AgentController（含工具按需加载 CR 新增 GET /api/agent/tools）/ McpController（MCP Server 管理 REST API）/ RagController
+├── dto/                   # ChatRequest（含 tools 字段 CR 新增）/ ChatResponse / CreateMcpServerRequest / McpServerResponse / McpToolResponse / McpServerConfigValidator（MCP 配置条件校验）
 └── handler/               # GlobalExceptionHandler
 ```
 
@@ -423,6 +427,7 @@ agent-demo-web/
 ```
 agent-demo-common/
 ├── constant/              # ModelConstants / StatusCode
+├── dto/                   # ToolInfo（工具信息 DTO，工具按需加载 CR 新增）
 ├── enums/                 # AgentType / MemoryType / MessageType
 ├── exception/             # BusinessException / ErrorCode
 ├── result/                # Result / PageResult
@@ -1059,6 +1064,8 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 14 | BR-THINK-002 | ReAct 模式使用场景模板 "react"（含 ReAct 格式引导 + {{tools}} 占位符），工具描述通过 `convertToDescriptionText()` 在运行时替换占位符，不硬编码在提示词中 | Agent 编排 | 🔴 强制 |
 | 15 | BR-AGT-008 | 系统提示词外部化为模板文件（`prompts/roles/*.txt` + `prompts/scenarios/*.txt`），AgentConfig 中的旧提示词默认值仅作为模板缺失时的最终回退 | Agent 编排 | 🔴 强制 |
 | 16 | BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方通过 `String.replace("{{tools}}", convertToDescriptionText())` 在运行时替换 | Agent 编排 | 🔴 强制 |
+| 17 | BR-AGT-011 | Agent delegate 缓存键为 modelId + toolsFingerprint，不同工具集使用独立 delegate；工具按需加载时默认工具不可排除（默认 ∪ 指定）（工具按需加载 CR 新增） | Agent 编排 | 🔴 强制 |
+| 18 | BR-AGT-012 | 会话级工具绑定按 sessionId 缓存（sessionToolIds），首次指定后后续轮次沿用；空数组清除恢复默认（工具按需加载 CR 新增） | Agent 编排 | 🔴 强制 |
 
 ### 9.3 工具调用规则
 
@@ -1071,6 +1078,16 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 17 | BR-TOOL-005 | 文件读取工具必须限定在 `agent.file-allowed-dir` 目录白名单内 | 工具调用 | 🔴 强制 |
 | 18 | BR-TOOL-006 | 工具执行失败必须抛出 `BusinessException` + 对应 ErrorCode | 工具调用 | 🔴 强制 |
 | 19 | BR-TOOL-007 | 动态注册/注销工具应通过 `ToolRegistry.register()` / `unregisterTool()` 操作（CR-003 新增注销方法） | 工具调用 | 🟡 尽量 |
+| 20 | BR-TOOL-010 | 默认工具不可通过 API 排除，最终工具 = 默认 ∪ 指定（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 21 | BR-TOOL-011 | 工具标识格式为 `category:name`，category 取值：`builtin`/`mcp`/`rag`（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 22 | BR-TOOL-012 | `name` 支持通配符 `*`，表示该类别下所有工具（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 23 | BR-TOOL-013 | API 指定不存在的工具时，返回 `TOOL_NOT_FOUND(5101)`，提示具体工具名（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 24 | BR-TOOL-014 | API 指定格式错误的工具标识时，返回 `TOOL_PARAM_INVALID(5102)`（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 25 | BR-TOOL-015 | 默认工具配置了不存在的工具时，启动日志 ERROR 并跳过，不阻塞启动（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 26 | BR-TOOL-016 | MCP Server 断开后其工具从可选列表移除，API 指定已断开的工具报 `TOOL_NOT_FOUND`（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 27 | BR-TOOL-017 | 知识库删除后其工具从可选列表移除，API 指定已删除的知识库工具报 `TOOL_NOT_FOUND`（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 28 | BR-TOOL-018 | 前端工具选择器按会话维度保持状态，切换会话互不影响（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
+| 29 | BR-TOOL-019 | ChatRequest.tools 为空或不传时，仅加载默认工具（工具按需加载 CR 新增） | 工具调用 | 🔴 强制 |
 
 ### 9.4 记忆与会话规则
 
@@ -1203,6 +1220,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5200-5299 | 记忆/会话 | MEMORY_NOT_FOUND(5200)、SESSION_NOT_FOUND(5201)、SESSION_EXPIRED(5202) |
 | 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
 | 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401)、MCP_SERVER_NAME_EXISTS(5402)、MCP_SERVER_NOT_FOUND(5403)、MCP_TRANSPORT_UNSUPPORTED(5404)、MCP_MODULE_DISABLED(5405)、MCP_SERVER_ALREADY_CONNECTED(5406) |
+| 5500-5599 | 工作流相关 | WORKFLOW_NOT_FOUND(5500)、WORKFLOW_PARAM_MISSING(5501)、WORKFLOW_MODEL_NOT_FOUND(5502)、WORKFLOW_EXECUTION_FAILED(5503)、WORKFLOW_TIMEOUT(5504)、WORKFLOW_ALREADY_TERMINATED(5505)、WORKFLOW_MODE_NOT_SUPPORTED(5506，P2 新增) |
 
 ### 9.12 约束分级标准
 
@@ -1304,6 +1322,16 @@ agent:
   # AgentConfig 中的默认值作为模板缺失时的最终回退
   enable-logging: true                  # 调用日志开关
   file-allowed-dir: ./data              # 文件读取白名单目录
+  tools:                                # 工具按需加载配置（CR 新增）
+    default-tools:                      # 默认加载的工具（始终可用，无需 API 指定）
+      - builtin:getCurrentTime
+      - builtin:calculate
+    optional:                           # 可选工具（需通过 API tools 参数显式指定才加载）
+      - builtin:httpGet
+      - builtin:httpPost
+      - builtin:readFile
+      - mcp:*                           # 所有 MCP 工具
+      - rag:*                           # 所有知识库工具
 
 # 会话配置
 session:
@@ -1693,6 +1721,8 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.6 | 2026-08-07 | Prompt 优化（角色×场景模板矩阵）：4.3 节 agent-demo-agent 新增 prompt 包（PromptTemplateLoader）；9.2 节 BR-AGT-005 更新为 PromptTemplateLoader 组合机制，BR-AGT-007 更新为场景模板引用，新增 BR-AGT-008（提示词外部化到模板文件）和 BR-AGT-009（{{tools}} 占位符运行时替换）；10.4 节移除 default-system-prompt/thinking-system-prompt/thinking-react-system-prompt 配置项，新增 default-role: general；数据架构文档 5.3 节提示词模板从 3 个旧文件更新为 4 角色 + 6 场景模板矩阵 |
 | v2.7 | 2026-08-10 | LLM 厂商模型配置（CR-003 重构）：移除 Provider/Properties/capability 模式，ModelFactory 改为从 LlmConfigStore 动态创建模型；新增 LlmConfigStore/LlmVendorConfig/LlmModelConfig/PredefinedVendorCatalog；新增 LlmConfigController（9 个 API 接口）；SimpleAgent delegate 改为按 modelId 隔离的 ConcurrentHashMap 缓存；ChatRequest.model 字段启用为 modelId；前端新增 LLM 配置页面（LlmConfigPage/VendorCard/VendorEditDialog）和 ModelSelector 模型选择器；配置同步至 localStorage，后端重启后自动恢复；移除 application.yml 中 llm/ark/bailian 配置段；新增 8 个错误码（5008-5015）；新增 20 条 BR-LLM-CONF 业务规则 |
 | v2.8 | 2026-08-07 | MCP 服务管理页面 + stdio 命令适配 BUG 修复：1.4/2.2/4.1/4.3 节新增设置页面与 MCP 服务管理（SettingsPage/McpServicePage/McpServerCard/McpJsonConfigEditor + api/mcp.ts + stores/mcp.ts + utils/mcp-config.ts JSON 配置解析器）；NavBar 导航从"LLM 配置"迁移为"设置"；后端 McpServerResponse 新增 url/command/args 字段；9.7 节新增 BR-MCP-026（Windows stdio 命令适配 resolveWindowsCommand，npx→npx.cmd）、BR-MCP-027（连接失败消息含根因 rootCauseMessage），新增 9.8 节前端 MCP 服务管理规则 12 条（BR-MCP-FE-001~012），原 9.8~9.12 顺延为 9.9~9.13；12.4 节 MCP 图片排障已更新 |
+| v2.9 | 2026-08-12 | Agent 工具按需加载（feature 2026-08-12）：1.4 能力矩阵工具调用新增按需加载；4.1/4.3 节工程结构更新（ToolRegistry 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)、SimpleAgent 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键、AgentController 新增 GET /api/agent/tools、common 新增 dto/ToolInfo、前端新增 ToolSelector/ToolManagementPage）；9.2 节新增 BR-AGT-011/012，9.3 节新增 BR-TOOL-010~019（共 10 条，工具标识 category:name、通配符、默认工具不可排除、会话级绑定）；10.4 节新增 agent.tools 配置段（default-tools 默认加载 + optional 按需指定） |
+| v3.0 | 2026-08-13 | 应用编排层 P2 多模式编排（feature 2026-08-13）：1.4 能力矩阵多 Agent 协作/工作流编排更新为 ✅ 已实现；4.1 节 agent-demo-app 更新为 P2 完整实现（core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）；9.10 节错误码区间新增 5500-5599 工作流段（含 5506 WORKFLOW_MODE_NOT_SUPPORTED P2 新增）；策略模式三层分离架构（协调层 WorkflowExecutionService + 策略层 WorkflowExecutionStrategy 4 实现 + 基础设施 AgentExecutor/WorkflowEventPublisher/WorkflowContext） |
 
 ---
 

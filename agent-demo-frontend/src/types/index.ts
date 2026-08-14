@@ -484,3 +484,117 @@ export interface AddResult {
   /** 失败原因（success=false 时填充） */
   error?: string
 }
+
+// ========== 工具按需加载相关类型 ==========
+
+/** 工具信息（对应后端 ToolInfo） */
+export interface ToolInfo {
+  /** 工具标识，格式 category:name（如 builtin:getCurrentTime、mcp:mermaid-mcp） */
+  id: string
+  /** 工具类别：builtin / mcp / rag */
+  category: string
+  /** 工具名称（方法名或 serverName） */
+  name: string
+  /** 工具描述 */
+  description: string
+  /** 是否为默认加载工具 */
+  isDefault: boolean
+}
+
+/** 工具列表响应（对应后端 GET /api/agent/tools） */
+export interface ToolsResponse {
+  /** 所有工具信息列表 */
+  tools: ToolInfo[]
+  /** 默认工具 ID 列表 */
+  defaults: string[]
+}
+
+// ========== 工作流编排相关类型（P2 新增）==========
+
+/** 编排模式（对应后端 OrchestrationMode 枚举） */
+export type OrchestrationMode = 'SEQUENTIAL' | 'PARALLEL' | 'CONDITIONAL' | 'LOOP' | 'SUPERVISOR'
+
+/** 工作流执行状态（对应后端 WorkflowExecutionStatus 枚举） */
+export type WorkflowExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TERMINATED' | 'TIMEOUT'
+
+/** 工作流参数定义 */
+export interface WorkflowParameter {
+  name: string
+  type: string
+  required: boolean
+  description: string
+}
+
+/** 模板摘要（对应后端 WorkflowTemplateResponse） */
+export interface WorkflowTemplateSummary {
+  id: string
+  name: string
+  description: string
+  mode: OrchestrationMode
+  agentCount: number
+  parameters: WorkflowParameter[]
+}
+
+/** 模板 Agent 项 */
+export interface WorkflowAgentItem {
+  name: string
+  description: string
+  modelId: string | null
+  tools: string[]
+}
+
+/** 模板详情（对应后端 WorkflowDetailResponse） */
+export interface WorkflowTemplateDetail {
+  id: string
+  name: string
+  description: string
+  mode: OrchestrationMode
+  maxRetries: number
+  agents: WorkflowAgentItem[]
+  parameters: WorkflowParameter[]
+  parallelGroups?: { name: string; agents: WorkflowAgentItem[] }[]
+  branches?: { name: string; conditionDescription: string; agents: WorkflowAgentItem[] }[]
+  loop?: { maxIterations: number; exitConditionDescription: string; agents: WorkflowAgentItem[] }
+}
+
+/** 执行历史摘要（对应后端 WorkflowExecutionSummaryResponse） */
+export interface WorkflowExecutionSummary {
+  executionId: string
+  templateId: string
+  templateName: string
+  mode: OrchestrationMode | null
+  status: WorkflowExecutionStatus
+  startTime: string | null
+  endTime: string | null
+  finalResult: string
+  iterationCount: number
+}
+
+/** 执行步骤项 */
+export interface WorkflowStepItem {
+  agentName: string
+  status: string
+  durationMs: number
+}
+
+/** 执行详情（对应后端 WorkflowExecutionResponse） */
+export interface WorkflowExecutionDetail extends WorkflowExecutionSummary {
+  steps: WorkflowStepItem[]
+}
+
+/** 工作流 SSE 流式事件回调 */
+export interface WorkflowStreamCallbacks {
+  onWorkflowStart: (data: { executionId: string; templateName: string; mode: string; agentCount: number }) => void
+  onStepStart: (data: { agentIndex: number; agentName: string; groupIndex?: number; iteration?: number; totalAgents: number }) => void
+  onToken: (data: { agentIndex: number; content: string }) => void
+  onStepComplete: (data: { agentIndex: number; agentName: string; durationMs: number; outputLength: number }) => void
+  onStepRetry: (data: { agentIndex: number; retryCount: number; remainingRetries: number }) => void
+  onStepError: (data: { agentIndex: number; error: string; retryCount: number }) => void
+  onBranchSelected: (data: { branchIndex: number; branchName: string; agentCount: number }) => void
+  onLoopIteration: (data: { iteration: number; maxIterations: number; agentCount: number }) => void
+  onGroupStart: (data: { groupIndex: number; groupName: string; agentCount: number }) => void
+  onGroupComplete: (data: { groupIndex: number; groupName: string; durationMs: number; outputLength: number }) => void
+  onWorkflowComplete: (data: { executionId: string; finalResult: string; mode: string; totalDurationMs: number; iterationCount?: number; exitReason?: string }) => void
+  onWorkflowFailed: (data: { executionId: string; status: string; error: string }) => void
+  onError: (message: string) => void
+}

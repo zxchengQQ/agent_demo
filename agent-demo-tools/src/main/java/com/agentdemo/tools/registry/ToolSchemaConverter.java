@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Parameter;
+import java.util.List;
 
 /**
  * 工具 Schema 转换器
@@ -39,9 +40,23 @@ public class ToolSchemaConverter {
      * @return OpenAI 兼容的 tools JSON 数组字符串
      */
     public String convertToJson() {
+        return convertToJson(toolRegistry.listTools());
+    }
+
+    /**
+     * 将指定工具列表的 @Tool 方法转换为 OpenAI 兼容的 tools JSON Schema 字符串
+     * <p>
+     * 业务含义：工具按需加载时，仅对当前 Agent 绑定的工具生成 Schema，
+     * 避免把未指定的可选工具（如 MCP/知识库工具）暴露给 LLM。
+     * </p>
+     *
+     * @param tools 工具对象列表
+     * @return OpenAI 兼容的 tools JSON 数组字符串
+     */
+    public String convertToJson(List<Object> tools) {
         ArrayNode toolsArray = objectMapper.createArrayNode();
 
-        for (Object tool : toolRegistry.listTools()) {
+        for (Object tool : tools) {
             // 使用 getDeclaredMethods 扫描类自身声明的方法（不含继承方法）
             for (Method method : tool.getClass().getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Tool.class)) {
@@ -64,9 +79,23 @@ public class ToolSchemaConverter {
      * @return 人类可读的工具描述文本字符串
      */
     public String convertToDescriptionText() {
+        return convertToDescriptionText(toolRegistry.listTools());
+    }
+
+    /**
+     * 将指定工具列表的 @Tool 方法转换为人类可读的工具描述文本
+     * <p>
+     * 业务含义：工具按需加载时，仅对当前 Agent 绑定的工具生成描述文本，
+     * 注入系统提示词的工具清单与 LLM 实际可调用工具保持一致。
+     * </p>
+     *
+     * @param tools 工具对象列表
+     * @return 人类可读的工具描述文本字符串
+     */
+    public String convertToDescriptionText(List<Object> tools) {
         StringBuilder sb = new StringBuilder();
         sb.append("你可以调用以下工具来辅助回答：\n");
-        for (Object tool : toolRegistry.listTools()) {
+        for (Object tool : tools) {
             for (Method method : tool.getClass().getDeclaredMethods()) {
                 if (method.isAnnotationPresent(Tool.class)) {
                     Tool toolAnnotation = method.getAnnotation(Tool.class);

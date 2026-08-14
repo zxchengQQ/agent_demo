@@ -1,10 +1,12 @@
 package com.agentdemo.web.controller;
 
 import com.agentdemo.agent.core.ThinkingTokenStream;
+import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
+import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.web.dto.ChatRequest;
 import dev.langchain4j.service.TokenStream;
 import org.junit.jupiter.api.Test;
@@ -45,6 +47,10 @@ class AgentControllerSseTest {
     SessionManager sessionManager;
     @MockBean
     ChatMemoryManager memoryManager;
+    @MockBean
+    ToolRegistry toolRegistry;
+    @MockBean
+    AgentConfig agentConfig;
 
     /**
      * AC-014: 空消息应返回 400
@@ -81,7 +87,7 @@ class AgentControllerSseTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -110,7 +116,7 @@ class AgentControllerSseTest {
         when(thinkingStream.onPartialResponse(any())).thenReturn(thinkingStream);
         when(thinkingStream.onComplete(any())).thenReturn(thinkingStream);
         when(thinkingStream.onError(any())).thenReturn(thinkingStream);
-        when(simpleAgent.chatThinkingReActStream(anyString(), anyString(), any())).thenReturn(thinkingStream);
+        when(simpleAgent.chatThinkingReActStream(anyString(), anyString(), any(), any())).thenReturn(thinkingStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -119,9 +125,9 @@ class AgentControllerSseTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了 ReAct 思考流式路径
-        verify(simpleAgent).chatThinkingReActStream(anyString(), anyString(), any());
+        verify(simpleAgent).chatThinkingReActStream(anyString(), anyString(), any(), any());
         // 验证没走原路径（chatStream 未被调用）
-        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any());
+        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any(), any());
     }
 
     /**
@@ -137,7 +143,7 @@ class AgentControllerSseTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -146,8 +152,8 @@ class AgentControllerSseTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了原路径
-        verify(simpleAgent).chatStream(anyString(), anyString(), any());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any(), any());
         // 验证没走 ReAct 思考流式路径
-        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any());
+        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any(), any());
     }
 }

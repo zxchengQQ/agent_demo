@@ -71,4 +71,15 @@ public class ChatRequest {
      * </p>
      */
     private List<String> knowledgeBases;
+
+    /**
+     * 用户指定的工具标识列表（可选）
+     * <p>
+     * 业务含义：前端工具选择器选中的工具，格式为 category:name（如 mcp:mermaid-mcp）。
+     * null → 沿用会话已绑定的工具（无绑定时用默认）；
+     * 非空 → 解析并绑定到会话，后续轮次沿用；
+     * 空数组 → 清除会话绑定，恢复仅默认工具。
+     * </p>
+     */
+    private List<String> tools;
 }

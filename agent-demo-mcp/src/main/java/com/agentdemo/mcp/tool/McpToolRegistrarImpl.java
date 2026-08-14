@@ -129,8 +129,9 @@ public class McpToolRegistrarImpl implements McpToolRegistrar, ApplicationRunner
         List<Object> toolProxies = toolFactory.createTools(server.getName(), toolInfos);
 
         // 逐个注册到 ToolRegistry（触发 SimpleAgent delegate 重建）
+        // 业务含义：传入 serverName 供 ToolRegistry 登记 mcp:{serverName} 标识，保证 id 精确
         for (Object proxy : toolProxies) {
-            toolRegistry.register(proxy);
+            toolRegistry.register(proxy, server.getName());
         }
         log.info("MCP Server {} 工具注册完成，共 {} 个", server.getName(), toolProxies.size());
     }

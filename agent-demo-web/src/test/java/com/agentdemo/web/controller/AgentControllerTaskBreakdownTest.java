@@ -1,10 +1,12 @@
 package com.agentdemo.web.controller;
 
 import com.agentdemo.agent.core.TaskBreakdownStream;
+import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
+import com.agentdemo.tools.registry.ToolRegistry;
 import dev.langchain4j.service.TokenStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -51,6 +53,10 @@ class AgentControllerTaskBreakdownTest {
     SessionManager sessionManager;
     @MockBean
     ChatMemoryManager memoryManager;
+    @MockBean
+    ToolRegistry toolRegistry;
+    @MockBean
+    AgentConfig agentConfig;
 
     /**
      * 创建 Mock 的 TaskBreakdownStream（链式方法返回 this）
@@ -96,8 +102,8 @@ class AgentControllerTaskBreakdownTest {
         // 验证走了任务拆解路径
         verify(planAgent).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
         // 验证没走原路径
-        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any());
-        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any());
+        verify(simpleAgent, never()).chatStream(anyString(), anyString(), any(), any());
+        verify(simpleAgent, never()).chatThinkingReActStream(anyString(), anyString(), any(), any());
         // 验证 start() 被调用（异步执行，需 timeout 等待）
         verify(taskStream, timeout(2000)).start();
     }
@@ -114,7 +120,7 @@ class AgentControllerTaskBreakdownTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
@@ -123,7 +129,7 @@ class AgentControllerTaskBreakdownTest {
             .andExpect(content().contentType(MediaType.TEXT_EVENT_STREAM));
 
         // 验证走了原路径
-        verify(simpleAgent).chatStream(anyString(), anyString(), any());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any(), any());
         // 验证没走任务拆解路径
         verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
     }
@@ -140,14 +146,14 @@ class AgentControllerTaskBreakdownTest {
         when(tokenStream.onPartialResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onCompleteResponse(any())).thenReturn(tokenStream);
         when(tokenStream.onError(any())).thenReturn(tokenStream);
-        when(simpleAgent.chatStream(anyString(), anyString(), any())).thenReturn(tokenStream);
+        when(simpleAgent.chatStream(anyString(), anyString(), any(), any())).thenReturn(tokenStream);
 
         mockMvc.perform(post("/api/agent/chat/stream")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("{\"message\":\"你好\"}"))
             .andExpect(status().isOk());
 
-        verify(simpleAgent).chatStream(anyString(), anyString(), any());
+        verify(simpleAgent).chatStream(anyString(), anyString(), any(), any());
         verify(planAgent, never()).chatTaskBreakdownStream(anyString(), anyString(), anyBoolean(), any());
     }
 

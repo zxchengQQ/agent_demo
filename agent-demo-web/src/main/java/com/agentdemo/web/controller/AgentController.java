@@ -5,10 +5,14 @@ import com.agentdemo.agent.core.TaskBreakdownStream;
 import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
+import com.agentdemo.agent.config.AgentConfig;
+import com.agentdemo.common.dto.ToolInfo;
 import com.agentdemo.common.result.Result;
 import com.agentdemo.common.utils.SimpleTokenEstimator;
+import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
+import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.web.dto.ChatRequest;
 import com.agentdemo.web.dto.ChatResponse;
 import dev.langchain4j.data.message.AiMessage;
@@ -54,12 +58,18 @@ public class AgentController {
     private final PlanAgent planAgent;
     private final SessionManager sessionManager;
     private final ChatMemoryManager memoryManager;
+    private final ToolRegistry toolRegistry;
+    private final AgentConfig agentConfig;
 
-    public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent, SessionManager sessionManager, ChatMemoryManager memoryManager) {
+    public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent,
+                           SessionManager sessionManager, ChatMemoryManager memoryManager,
+                           ToolRegistry toolRegistry, AgentConfig agentConfig) {
         this.simpleAgent = simpleAgent;
         this.planAgent = planAgent;
         this.sessionManager = sessionManager;
         this.memoryManager = memoryManager;
+        this.toolRegistry = toolRegistry;
+        this.agentConfig = agentConfig;
     }
 
     /**
@@ -87,9 +97,16 @@ public class AgentController {
         // 业务含义：读取前端指定的 modelId，null 时使用默认模型
         String modelId = request.getModel();
 
+        // 业务含义：解析工具列表（默认 ∪ 指定），工具按需加载
+        List<String> toolIds = request.getTools();
+        if (toolIds != null && !toolIds.isEmpty()) {
+            // 校验工具标识，格式错误/不存在抛 BusinessException（由 GlobalExceptionHandler 统一处理）
+            toolRegistry.resolveTools(toolIds);
+        }
+
         // 调用 Agent（ReAct 循环由 LangChain4j 自动处理）
         long start = System.currentTimeMillis();
-        String response = simpleAgent.chat(sessionId, request.getMessage(), modelId);
+        String response = simpleAgent.chat(sessionId, request.getMessage(), modelId, toolIds);
         long duration = System.currentTimeMillis() - start;
 
         // 记录助手回复到记忆
@@ -98,6 +115,26 @@ public class AgentController {
         ChatResponse chatResponse = new ChatResponse(
                 sessionId, response, null, duration, null, null);
         return Result.success(chatResponse);
+    }
+
+    /**
+     * 获取可用工具列表
+     * <p>
+     * 业务含义：返回所有已注册工具的信息，供前端工具选择器和设置页面展示。
+     * 每项包含 id（category:name）、category、name、description、isDefault。
+     * </p>
+     *
+     * @return 工具信息列表 + 默认工具 ID 列表
+     */
+    @Operation(summary = "获取可用工具列表", description = "返回所有已注册工具的信息，按类别分组")
+    @GetMapping("/tools")
+    public Result<Map<String, Object>> getAvailableTools() {
+        List<String> defaultIds = agentConfig.getTools().getDefaultTools();
+        List<ToolInfo> tools = toolRegistry.getAvailableTools(defaultIds);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("tools", tools);
+        result.put("defaults", defaultIds);
+        return Result.success(result);
     }
 
     /**
@@ -164,6 +201,19 @@ public class AgentController {
 
         // 业务含义：读取前端指定的 modelId，null 时使用默认模型
         String modelId = request.getModel();
+
+        // 业务含义：解析工具列表，供 Agent 按需加载
+        // 工具解析错误（如格式错误、工具不存在）通过 SSE error 事件通知前端
+        List<String> toolIds = request.getTools();
+        try {
+            if (toolIds != null && !toolIds.isEmpty()) {
+                toolRegistry.resolveTools(toolIds); // 仅校验，不在此处使用
+            }
+        } catch (BusinessException e) {
+            sendEvent(emitter, "error", e.getMessage());
+            emitter.complete();
+            return emitter;
+        }
 
         // 业务含义：任务拆解分流（CR-002 新增）
         // - enableTaskBreakdown=true：走 PlanAgent.chatTaskBreakdownStream 路径
@@ -255,7 +305,7 @@ public class AgentController {
             // BUG 修复：异步执行 start()，确保 SSE 事件实时推送（与任务拆解模式一致）。
             // 若在请求线程同步执行 start()，SseEmitter handler 未初始化，
             // 所有 send() 数据被缓存到 earlySendAttempts，导致前端流式输出失效。
-            ThinkingTokenStream thinkingStream = simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage, modelId)
+            ThinkingTokenStream thinkingStream = simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
                     .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
                     .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
                     // BUG 修复：注册 onPartialResponse，将最终答案（stop 轮 content）以 token 事件流式推送到主回复区
@@ -296,7 +346,7 @@ public class AgentController {
             CompletableFuture.runAsync(thinkingStream::start);
         } else {
             // 原路径（零回归）
-            simpleAgent.chatStream(effectiveSessionId, effectiveMessage, modelId)
+            simpleAgent.chatStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
                     .onPartialResponse(token -> {
                         sendEvent(emitter, "token", token);
                         fullResponse.append(token);

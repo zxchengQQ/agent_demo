@@ -29,6 +29,21 @@ agent:
   thinking-max-iterations: 8  # 深度思考 ReAct 模式最大迭代次数
   enable-logging: true
   file-allowed-dir: ./data
+  # 工具按需加载配置
+  tools:
+    # 默认加载的工具（Agent 始终可用，无需 API 指定）
+    default-tools:
+      - builtin:getCurrentTime     # 当前时间查询
+      - builtin:getCurrentTimeByZone  # 时区时间查询
+      - builtin:getCurrentDate     # 当前日期查询
+      - builtin:calculate          # 数学计算器
+    # 可选工具（需通过 API 显式指定才会加载）
+    optional:
+      - builtin:httpGet            # HTTP GET 请求
+      - builtin:httpPost           # HTTP POST 请求
+      - builtin:readFile           # 文件读取
+      - mcp:*                      # 所有 MCP 工具
+      - rag:*                      # 所有知识库工具
 
 # 会话配置
 session:
@@ -97,6 +112,20 @@ mcp:
       command: npx.cmd  # Windows 需 .cmd 后缀，Linux/Mac 用 npx
       args:
         - mcp-fetch-server
+      tool-timeout: 60s
+
+    # === web-search（本地 stdio MCP Server） ===
+    # 业务含义：网页搜索服务，通过 npx 启动 open-websearch 子进程，提供多搜索引擎检索能力
+    - name: web-search
+      transport: stdio
+      enabled: true
+      command: npx.cmd  # Windows 需 .cmd 后缀，Linux/Mac 用 npx
+      args:
+        - open-websearch@latest
+      env:
+        MODE: stdio                   # 运行模式：stdio 子进程通信
+        DEFAULT_SEARCH_ENGINE: duckduckgo  # 默认搜索引擎
+        ALLOWED_SEARCH_ENGINES: duckduckgo,bing,exa  # 允许使用的搜索引擎列表
       tool-timeout: 60s
 
     # === stdio 传输示例（本地子进程） ===

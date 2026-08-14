@@ -30,7 +30,8 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 - **系统行为**：`AiServices.builder(BaseAgent.class)` 绑定 chatModel + streamingChatModel + memoryProvider + tools + systemMessageProvider。
 - **delegate 缓存（v2.0 新增）**：`SimpleAgent` 的 delegate 缓存从单一 `volatile BaseAgent` 升级为 `ConcurrentHashMap<String, BaseAgent>`（`delegateCache`），按 modelId 隔离不同模型的 Agent 实例，新增 `getDelegate(String modelId)` 方法；modelId 为 null 时以 `"default"` 作为 cacheKey 使用默认模型（第一个可用 chat 模型）。对话时按 modelId 选择模型：`modelFactory.getChatModelByModelId(modelId)`/`getStreamingChatModelByModelId(modelId)`（有指定 modelId）或 `getDefaultChatModel()`/`getDefaultStreamingChatModel()`（modelId 为空）。
 - **Tool 变化检测（CR-003 新增，v2.0 扩展）**：`SimpleAgent` 维护 `delegateToolCounts`（`ConcurrentHashMap<String, Integer>`），按 cacheKey 记录各 delegate 创建时的工具数量。每次 `getDelegate(modelId)` 调用时检测 `toolRegistry.getToolCount()` 是否变化。若 Tool 数量变化（如知识库创建/删除导致动态 Tool 增减），则重建该 cacheKey 的 delegate 绑定最新工具列表，确保新注册/注销的知识库 Tool 对 Agent 生效。
-- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖；Tool 变化重建确保动态 Tool 实时生效；delegate 按 modelId 隔离，不同模型使用独立实例（BR-AGT-003、BR-AGT-010）。
+- **工具按需加载（CR 工具按需加载 新增）**：delegate 缓存键从 `modelId` 扩展为 `modelId + ":" + toolsFingerprint`（工具方法名排序拼接），不同工具集使用独立 delegate。新增 `sessionToolIds`（`ConcurrentHashMap<String, List<String>>`）会话级工具缓存：首次指定 tools 后缓存，后续轮次无需重复指定；空数组清除缓存恢复仅默认工具。新增带 `List<String> toolIds` 参数的方法重载（chat/chatStream/chatThinkingStream/chatThinkingReActStream），经 `resolveSessionTools`（null→沿用缓存/非空→解析缓存/空→清除）解析后绑定；`mergeDefaults` 保证默认工具始终在列表中（默认 ∪ 指定）。
+- **业务规则**：懒加载避免构造时调用 listTools() 触发循环依赖；Tool 变化重建确保动态 Tool 实时生效；delegate 按 modelId 隔离，不同模型使用独立实例（BR-AGT-003、BR-AGT-010、BR-AGT-011）。
 
 ### 3.3 ReAct 循环执行
 
@@ -132,6 +133,8 @@ flowchart TD
 | BR-AGT-008 | 系统提示词外部化为模板文件（`prompts/roles/*.txt` + `prompts/scenarios/*.txt`），AgentConfig 旧提示词仅作回退 | 🔴 强制 |
 | BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方运行时替换 | 🔴 强制 |
 | BR-AGT-010 | Agent delegate 按 modelId 隔离缓存（ConcurrentHashMap），不同 modelId 使用独立 delegate；modelId 为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
+| BR-AGT-011 | Agent delegate 缓存键为 modelId + toolsFingerprint，不同工具集使用独立 delegate；工具按需加载时默认工具不可排除（默认 ∪ 指定）（CR 新增） | 🔴 强制 |
+| BR-AGT-012 | 会话级工具绑定按 sessionId 缓存（sessionToolIds），首次指定后后续轮次沿用；空数组清除恢复默认（CR 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 
