@@ -102,6 +102,12 @@
                 <artifactId>langchain4j-mcp</artifactId>
                 <version>${langchain4j.beta.version}</version>
             </dependency>
+            <!-- Agentic 多 Agent 编排模块（beta 版） -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-agentic</artifactId>
+                <version>${langchain4j.beta.version}</version>
+            </dependency>
 
             <!-- Milvus 向量数据库 -->
             <dependency>

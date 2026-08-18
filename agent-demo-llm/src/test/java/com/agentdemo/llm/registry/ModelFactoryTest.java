@@ -168,6 +168,24 @@ class ModelFactoryTest {
         }
 
         @Test
+        @DisplayName("getChatModelByModelId(modelName) 兜底按 modelName 解析（预置工作流模板场景）")
+        void shouldResolveByModelNameWhenIdMiss() {
+            // 预置工作流模板的 AgentDefinition.modelId 引用 API 模型名（如 glm-5.2/doubao-seed-2.0-pro）
+            // 而非记录 UUID，id 未命中时应按 modelName 兜底解析，否则模板 Agent 构建必然报"模型不存在"
+            ChatModel model = factory.getChatModelByModelId("doubao-seed-2.0-pro");
+            assertNotNull(model, "按 modelName 查找应返回非 null ChatModel");
+        }
+
+        @Test
+        @DisplayName("getChatModelByModelId(embedding modelName) 兜底不匹配非 chat 类型")
+        void shouldNotResolveEmbeddingModelNameForChat() {
+            BusinessException ex = assertThrows(BusinessException.class,
+                    () -> factory.getChatModelByModelId("doubao-embedding-large-text-240915"),
+                    "embedding 模型名查 chat 不应命中");
+            assertEquals(ErrorCode.LLM_MODEL_NOT_FOUND, ex.getErrorCode());
+        }
+
+        @Test
         @DisplayName("getDefaultChatModel() 无 chat 模型时抛出 BusinessException(LLM_NO_CHAT_MODEL)")
         void shouldThrowWhenNoChatModel() {
             LlmConfigStore emptyStore = new LlmConfigStore();
@@ -195,6 +213,14 @@ class ModelFactoryTest {
         }
 
         @Test
+        @DisplayName("getStreamingChatModelByModelId(modelName) 兜底按 modelName 解析（预置工作流模板场景）")
+        void shouldResolveByModelNameWhenIdMiss() {
+            // 复现 BUG：预置模板 modelId="glm-5.2"（modelName 语义）按 UUID 查找必失败
+            StreamingChatModel model = factory.getStreamingChatModelByModelId("doubao-seed-2.0-pro");
+            assertNotNull(model, "按 modelName 查找应返回非 null StreamingChatModel");
+        }
+
+        @Test
         @DisplayName("getDefaultStreamingChatModel() 返回非 null")
         void shouldReturnDefaultStreamingChatModel() {
             StreamingChatModel model = factory.getDefaultStreamingChatModel();
@@ -213,6 +239,13 @@ class ModelFactoryTest {
         void shouldReturnThinkingModelForValidId() {
             ThinkingStreamingChatModel model = factory.getThinkingStreamingChatModelByModelId(arkChatModelId);
             assertNotNull(model, "有效的 chat modelId 应返回非 null ThinkingStreamingChatModel");
+        }
+
+        @Test
+        @DisplayName("getThinkingStreamingChatModelByModelId(modelName) 兜底按 modelName 解析（预置工作流模板场景）")
+        void shouldResolveByModelNameWhenIdMiss() {
+            ThinkingStreamingChatModel model = factory.getThinkingStreamingChatModelByModelId("doubao-seed-2.0-pro");
+            assertNotNull(model, "按 modelName 查找应返回非 null ThinkingStreamingChatModel");
         }
 
         @Test

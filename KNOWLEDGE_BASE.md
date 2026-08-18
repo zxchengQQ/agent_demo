@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.8
-> **基线日期**：2026-08-07
+> **文档版本**：v2.9
+> **基线日期**：2026-08-17
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -70,8 +70,8 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 前端知识库管理 | ✅ 已实现 | 知识库 CRUD、文档上传/轮询/删除、对话知识库选择器、左右分栏管理页面 |
 | RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
 | MCP 协议 | ✅ 已实现 | MCP 客户端、双传输（stdio+SSE+Streamable HTTP）、动态/静态 Server 管理、ByteBuddy 工具代理 |
-| 多 Agent 协作 | 🚧 规划中 | Sequential/Hierarchical 模式 |
-| 工作流编排 | 🚧 规划中 | 状态机、分支重试、Human-in-the-loop |
+| 多 Agent 协作 | ✅ 已实现 | langchain4j-agentic 编排引擎：串行/并行/条件/循环/Supervisor 五种模式（2026-08-13 应用编排层 P1~P3 交付） |
+| 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（HITL 与拖拽编排规划中） |
 
 > **数据来源**：`specs/SDD-工程业务背景文档.md` 第 2.3 节、`docs/ARCHITECTURE.md`
 
@@ -101,6 +101,9 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 公共组件模块 | `specs/modules/公共组件模块-业务说明书.md` |
 | RAG 知识库模块 | `specs/modules/RAG模块-业务说明书.md` |
 | MCP 协议模块 | `specs/modules/MCP协议模块-业务说明书.md` |
+| 应用编排模块 | `specs/modules/应用编排模块-业务说明书.md`（v2.9 新增） |
+
+> 模块总目录：`specs/modules/README.md`（v2.9 新增，含模块依赖全景图）
 
 ### 2.3 前端模块目录
 
@@ -139,6 +142,10 @@ features/{yyyy-MM-dd}/{功能名}/
 | 阶段二 | `docs/开发记录/前端对话模块_阶段2_完成报告.md` |
 | 阶段三 | `docs/开发记录/前端对话模块_阶段3_完成报告.md` |
 | 阶段四 | `docs/开发记录/前端对话模块_阶段4_T16联调报告.md` |
+| 应用编排层 P2 阶段一 | `docs/开发记录/应用编排层_P2_阶段1_完成报告.md` |
+| 应用编排层 P2 | `docs/开发记录/应用编排层_P2_完成报告.md` |
+| 应用编排层 P3 | `docs/开发记录/应用编排层_P3_完成报告.md` |
+| 应用编排层全阶段 | `docs/开发记录/应用编排层_全阶段_完成报告.md` |
 
 > **数据来源**：`specs/` 目录扫描
 
@@ -160,6 +167,7 @@ langchain4j.version=1.0.0
 langchain4j-open-ai=1.0.0          # 火山引擎接入适配器
 langchain4j-milvus=1.0.0           # 向量数据库（规划中）
 langchain4j-mcp=1.17.2-beta27       # MCP 协议（已实现，客户端 + 三种传输方式）
+langchain4j-agentic=1.17.2-beta27   # 多 Agent 编排引擎（应用编排层：串行/并行/条件/循环/Supervisor + 断点恢复）
 
 # 数据访问
 mybatis-plus.version=3.5.7         # ORM（规划中）
@@ -257,7 +265,7 @@ agent-demo/
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
-├── agent-demo-app/                      # 应用编排层（P2 完整实现：core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）
+├── agent-demo-app/                      # 应用编排层（P1~P3 完整实现：adapter 基础设施桥接 + core 领域模型 + strategy 五种编排策略 + execution 重试/SSE 基础设施 + service 协调层与断点恢复 + registry 模板注册 + template 5 个预置模板）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
 ├── agent-demo-bootstrap/                # 启动模块（主启动类 + 配置 + 提示词）
 └── agent-demo-frontend/                 # 前端模块（Vue 3 + Vite + TypeScript + Pinia）
@@ -270,6 +278,7 @@ agent-demo/
         ├── api/rag.ts                    # RAG API 封装（7 个 REST 接口 + 统一 request 函数）
         ├── api/llm.ts                    # LLM 厂商配置 API 封装（预定义/厂商 CRUD/测试连接/模型/状态/同步）
         ├── api/mcp.ts                    # MCP 服务管理 API 封装（Server 列表/添加/删除/重连/工具列表，Task-03 新增）
+        ├── api/workflow.ts               # 工作流 API 封装（7 个 REST 接口 + SSE 解析 parseSseStream + 断流兜底 + streamResume 恢复流，应用编排层新增）
         ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning + knowledgeBasesBySession 会话级知识库选择状态）
         ├── stores/rag.ts                 # Pinia RAG 状态管理（知识库列表/文档列表/CRUD/状态轮询）
         ├── stores/llm.ts                 # Pinia LLM 配置状态管理（vendors/chatModels/configStatus，配置同步至 localStorage）
@@ -283,7 +292,8 @@ agent-demo/
         │   ├── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
         │   ├── 工具选择组件（CR 新增）    # ToolSelector（工具标签栏 + 下拉选择，位于输入框上方）/ ToolManagementPage（设置页工具管理）
         │   ├── LLM 配置组件               # LlmConfigPage/VendorCard/VendorEditDialog/ModelSelector
-        │   └── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务 + 工具管理）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
+        │   ├── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务 + 工具管理）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
+        │   └── 编排组件（应用编排层新增）  # WorkflowPage（视图切换+恢复跳转）/WorkflowTemplateList（模板卡片）/WorkflowExecuteView（参数表单+步骤面板+暂停banner+Supervisor子任务卡片）/WorkflowHistoryList（历史+PAUSED恢复入口）
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
         └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库/设置页面）
 ```
@@ -301,7 +311,7 @@ agent-demo/
 | `agent-demo-splitter` | common |
 | `agent-demo-mcp` | common, tools |
 | `agent-demo-agent` | common, llm, tools, memory |
-| `agent-demo-app` | agent, rag, mcp（规划中） |
+| `agent-demo-app` | agent, rag, mcp（已实现：另依赖 common/llm/tools 经传递引入） |
 | `agent-demo-web` | app, agent, memory, rag, mcp |
 | `agent-demo-bootstrap` | web（聚合全部） |
 | `agent-demo-frontend` | 独立运行，通过 HTTP 调用后端 API（无 Maven 依赖） |
@@ -914,6 +924,7 @@ public class GlobalExceptionHandler {
 | 模型缓存域 | 内存 ConcurrentHashMap | 极小（按 modelName） | agent-demo-llm |
 | 配置数据域 | application.yml + 环境变量 | 极小 | agent-demo-bootstrap |
 | 工具数据域 | 内存 CopyOnWriteArrayList | 极小（工具数） | agent-demo-tools |
+| 工作流数据域 | 内存 ConcurrentHashMap（执行实例/取消标记/恢复快照） | 小（并发执行数） | agent-demo-app |
 | 日志数据域 | 文件 logs/agent-demo.log | 中 | 全局 |
 
 ### 7.2 核心内存数据结构
@@ -930,6 +941,9 @@ public class GlobalExceptionHandler {
 | tools | CopyOnWriteArrayList<Object> | ToolRegistry | 工具列表 |
 | servers | ConcurrentHashMap<String, McpClientEntry> | McpClientRegistry | MCP Server 注册表（按 name 索引） |
 | delegate | volatile BaseAgent | SimpleAgent | AiServices 代理 |
+| executions | ConcurrentHashMap<String, WorkflowExecution> | WorkflowExecutionService | 工作流执行实例（按 executionId 索引，应用编排层新增） |
+| cancelFlags | ConcurrentHashMap<String, AtomicBoolean> | WorkflowExecutionService | 执行取消标记（终止/超时/SSE 客户端断开时置位，应用编排层新增） |
+| resumableStates | ConcurrentHashMap<String, ResumableExecutionState> | WorkflowExecutionService | PAUSED 断点恢复快照（已完成步骤输出 + AgenticScope 状态，应用编排层 P3 新增） |
 
 ### 7.3 规划数据库（未来接入）
 
@@ -1220,7 +1234,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 5200-5299 | 记忆/会话 | MEMORY_NOT_FOUND(5200)、SESSION_NOT_FOUND(5201)、SESSION_EXPIRED(5202) |
 | 5300-5399 | RAG 相关 | RAG_RETRIEVE_FAILED(5300)、RAG_EMBEDDING_FAILED(5301)、RAG_DOCUMENT_LOAD_FAILED(5302)、RAG_DOCUMENT_PARSE_FAILED(5303)、RAG_VECTOR_STORE_INIT_FAILED(5304)、RAG_KNOWLEDGE_BASE_NOT_FOUND(5305)、RAG_DOCUMENT_NOT_FOUND(5306)、RAG_KNOWLEDGE_BASE_NAME_EXISTS(5307)、RAG_DOCUMENT_SIZE_EXCEEDED(5308)、RAG_DOCUMENT_FORMAT_UNSUPPORTED(5309) |
 | 5400-5499 | MCP 相关 | MCP_CONNECTION_FAILED(5400)、MCP_TOOL_CALL_FAILED(5401)、MCP_SERVER_NAME_EXISTS(5402)、MCP_SERVER_NOT_FOUND(5403)、MCP_TRANSPORT_UNSUPPORTED(5404)、MCP_MODULE_DISABLED(5405)、MCP_SERVER_ALREADY_CONNECTED(5406) |
-| 5500-5599 | 工作流相关 | WORKFLOW_NOT_FOUND(5500)、WORKFLOW_PARAM_MISSING(5501)、WORKFLOW_MODEL_NOT_FOUND(5502)、WORKFLOW_EXECUTION_FAILED(5503)、WORKFLOW_TIMEOUT(5504)、WORKFLOW_ALREADY_TERMINATED(5505)、WORKFLOW_MODE_NOT_SUPPORTED(5506，P2 新增) |
+| 5500-5599 | 工作流相关 | WORKFLOW_NOT_FOUND(5500)、WORKFLOW_PARAM_MISSING(5501)、WORKFLOW_MODEL_NOT_FOUND(5502)、WORKFLOW_EXECUTION_FAILED(5503)、WORKFLOW_TIMEOUT(5504)、WORKFLOW_ALREADY_TERMINATED(5505)、WORKFLOW_MODE_NOT_SUPPORTED(5506，P2 新增)、WORKFLOW_NOT_RESUMABLE(5507，P3 新增) |
 
 ### 9.12 约束分级标准
 
@@ -1272,6 +1286,19 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 75 | BR-LLM-CONF-018 | 预定义厂商列表包含：火山引擎方舟、阿里百炼、OpenAI、DeepSeek、Ollama | LLM 配置 | 🔴 强制 |
 | 76 | BR-LLM-CONF-019 | 移除 application.yml 中 llm/ark/bailian 配置段，LLM 配置完全由前端动态管理 | LLM 配置 | 🔴 强制 |
 | 77 | BR-LLM-CONF-020 | 后端模型实例缓存按厂商+模型名称维度管理，配置变更时清除对应缓存 | LLM 配置 | 🔴 强制 |
+
+### 9.15 应用编排规则（v2.9 新增）
+
+> **来源**：`specs/features/2026-08-13_应用编排层/应用编排层.md` 第 5.3 节（BR-APP-001~016，详见[应用编排模块-业务说明书](specs/modules/应用编排模块-业务说明书.md)第 9 节）+ 2026-08-17 BUG 修复沉淀
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 78 | BR-APP-004 | 工作流模板引用的模型必须已存在于 LLM 配置（UUID 优先、modelName 兜底解析），否则拒绝执行（WORKFLOW_MODEL_NOT_FOUND） | 应用编排 | 🔴 强制 |
+| 79 | BR-APP-007 | Agent 重试耗尽后工作流暂停在失败步骤（PAUSED），不自动跳过；仅 PAUSED 态可断点恢复，恢复时已完成步骤跳过不重跑 | 应用编排 | 🔴 强制 |
+| 80 | BR-APP-008 | 工作流执行状态（含 AgenticScope 共享变量）仅内存存储，应用重启丢失 | 应用编排 | 🔴 强制 |
+| 81 | BR-APP-014 | 循环工作流必须配置 maxIterations 上限，防止无限循环 | 应用编排 | 🔴 强制 |
+| 82 | BR-APP-SSE-001 | SSE emitter 必须配置为永不超时（`new SseEmitter(0L)`），禁止固定超时值——长任务工作流会被异步超时掐断并导致前端卡"执行中"（2026-08-17 BUG：300s 超时致长任务中断） | Web/应用编排 | 🔴 强制 |
+| 83 | BR-APP-SSE-002 | 前端 SSE 解析必须做断流兜底：流结束但未收到终态事件（complete/failed/paused）时回调 onError 退出"执行中"状态 | 前端编排 | 🔴 强制 |
 
 ---
 

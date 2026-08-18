@@ -917,13 +917,14 @@ describe('MessageList', () => {
  * 关联 AC：AC-001
  */
 describe('NavBar', () => {
-  it('渲染"对话"、"知识库"和"设置"三个导航项', () => {
+  it('渲染"对话"、"知识库"、"编排"和"设置"四个导航项（P2 新增编排，AC-032）', () => {
     const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
     const items = wrapper.findAll('.nav-item');
-    expect(items).toHaveLength(3);
+    expect(items).toHaveLength(4);
     expect(items[0].text()).toContain('对话');
     expect(items[1].text()).toContain('知识库');
-    expect(items[2].text()).toContain('设置');
+    expect(items[2].text()).toContain('编排');
+    expect(items[3].text()).toContain('设置');
   });
 
   it('currentView 为 chat 时"对话"项高亮（AC-001）', () => {
@@ -943,7 +944,7 @@ describe('NavBar', () => {
   it('currentView 为 settings 时"设置"项高亮（AC-001）', () => {
     const wrapper = mount(NavBar, { props: { currentView: 'settings' } });
     const items = wrapper.findAll('.nav-item');
-    expect(items[2].classes()).toContain('active');
+    expect(items[3].classes()).toContain('active');
   });
 
   it('点击"知识库"时 emit update:currentView 为 "knowledge"', async () => {
@@ -961,7 +962,7 @@ describe('NavBar', () => {
 
   it('点击"设置"时 emit update:currentView 为 "settings"', async () => {
     const wrapper = mount(NavBar, { props: { currentView: 'chat' } });
-    await wrapper.findAll('.nav-item')[2].trigger('click');
+    await wrapper.findAll('.nav-item')[3].trigger('click');
     expect(wrapper.emitted('update:currentView')![0]).toEqual(['settings']);
   });
 });
@@ -1016,8 +1017,8 @@ describe('App 条件渲染', () => {
     const wrapper = mount(App, { global: { plugins: [pinia] } });
     // 初始为对话页面
     expect(wrapper.findComponent(SettingsPage).exists()).toBe(false);
-    // 点击设置导航
-    await wrapper.findAll('.nav-item')[2].trigger('click');
+    // 点击设置导航（P2 新增编排后 index 3）
+    await wrapper.findAll('.nav-item')[3].trigger('click');
     // 渲染设置页面
     expect(wrapper.findComponent(SettingsPage).exists()).toBe(true);
     // 对话页面隐藏

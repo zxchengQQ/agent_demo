@@ -100,13 +100,20 @@ class ToolSchemaConverterTest {
             String name = function.get("name").asText();
             if ("calculate".equals(name)) {
                 hasCalculate = true;
-                assertEquals("计算数学表达式，支持加减乘除、括号、幂运算(用 ^ 表示幂)，例如：2+3、(2+3)*4、2^10",
+                assertEquals("计算数学表达式并返回结果。支持加减乘除、括号、幂运算（用 ^ 表示幂）。"
+                                + "适用场景：用户需要精确数学计算时调用。"
+                                + "不适用场景：简单的计数或日期计算无需调用。"
+                                + "参数 expression 为数学表达式字符串，如 2+3、(2+3)*4、2^10。"
+                                + "返回格式为'表达式 = 结果'。表达式无法解析时返回错误。",
                         function.get("description").asText(),
                         "calculate 的 description 应为 @Tool 注解值");
             }
             if ("getCurrentTime".equals(name)) {
                 hasGetCurrentTime = true;
-                assertEquals("获取当前时间，返回标准格式 yyyy-MM-dd HH:mm:ss",
+                assertEquals("获取当前时间（默认时区 Asia/Shanghai）。"
+                                + "适用场景：用户询问当前时间时调用。"
+                                + "不适用场景：查询特定时区时间用 getCurrentTimeByZone；仅需日期用 getCurrentDate。"
+                                + "无参数。返回格式为'当前时间：yyyy-MM-dd HH:mm:ss'。",
                         function.get("description").asText(),
                         "getCurrentTime 的 description 应为 @Tool 注解值");
             }
@@ -261,9 +268,9 @@ class ToolSchemaConverterTest {
 
         String description = converter.convertToDescriptionText();
 
-        assertTrue(description.contains("你可以调用以下工具来获取信息"),
+        assertTrue(description.contains("你可以调用以下工具来辅助回答"),
                 "工具描述应包含前缀引导语");
-        assertTrue(description.contains("当问题需要实时信息或计算时，请主动调用工具"),
+        assertTrue(description.contains("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具"),
                 "工具描述应包含后缀引导语");
     }
 
@@ -318,9 +325,9 @@ class ToolSchemaConverterTest {
         String description = converter.convertToDescriptionText();
 
         assertNotNull(description, "空工具列表不应返回 null");
-        assertTrue(description.contains("你可以调用以下工具来获取信息"),
+        assertTrue(description.contains("你可以调用以下工具来辅助回答"),
                 "空列表仍应包含前缀引导语");
-        assertTrue(description.contains("当问题需要实时信息或计算时，请主动调用工具"),
+        assertTrue(description.contains("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具"),
                 "空列表仍应包含后缀引导语");
     }
 

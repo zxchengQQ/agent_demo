@@ -91,6 +91,18 @@ public enum ErrorCode {
     /** MCP Server 已连接（重连已 CONNECTED 状态的 Server 时抛出） */
     MCP_SERVER_ALREADY_CONNECTED(5406, "MCP Server 已连接"),
 
+    // 工作流相关错误（5500-5599）
+    WORKFLOW_NOT_FOUND(5500, "工作流模板不存在"),
+    WORKFLOW_PARAM_MISSING(5501, "工作流参数缺失"),
+    WORKFLOW_MODEL_NOT_FOUND(5502, "工作流模型未配置"),
+    WORKFLOW_EXECUTION_FAILED(5503, "工作流执行失败"),
+    WORKFLOW_TIMEOUT(5504, "工作流执行超时"),
+    WORKFLOW_ALREADY_TERMINATED(5505, "工作流已终止"),
+    /** 不支持的编排模式（P2 新增）：模板 mode 无对应执行策略时抛出 */
+    WORKFLOW_MODE_NOT_SUPPORTED(5506, "不支持的编排模式"),
+    /** 工作流当前状态不支持恢复（P3 新增）：resume 非 PAUSED 状态或快照缺失时抛出（BR-APP-009） */
+    WORKFLOW_NOT_RESUMABLE(5507, "工作流当前状态不支持恢复"),
+
     // 系统错误
     SYSTEM_ERROR(5000, "系统异常");
 

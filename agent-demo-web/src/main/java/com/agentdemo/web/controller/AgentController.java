@@ -158,8 +158,9 @@ public class AgentController {
     @Operation(summary = "流式对话", description = "发送消息给 Agent，流式返回生成内容（SSE）")
     @PostMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter chatStream(@Valid @RequestBody ChatRequest request) {
-        // SSE 超时与 Tomcat connection-timeout 对齐（5 分钟）
-        SseEmitter emitter = new SseEmitter(300_000L);
+        // 业务含义：深度思考等长回复可能超过 5 分钟，固定超时会掐断流式输出。
+        // 0 = 永不超时（Servlet 规范），客户端真实断开由容器回调兜底（与 WorkflowController 一致）
+        SseEmitter emitter = new SseEmitter(0L);
 
         // 业务含义：空消息校验（AC-015），避免无效请求消耗会话与 LLM 资源
         if (request.getMessage() == null || request.getMessage().trim().isEmpty()) {

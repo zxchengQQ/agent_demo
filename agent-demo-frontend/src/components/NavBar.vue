@@ -5,8 +5,8 @@
  * 通过 v-model:currentView 双向绑定当前视图，保持 App.vue 状态简洁。
  */
 
-/** 当前视图类型（Task-09 改造：llm-config 迁移为 settings） */
-export type ViewKey = 'chat' | 'knowledge' | 'settings';
+/** 当前视图类型（Task-09 改造：llm-config 迁移为 settings；P2 新增 workflow 编排） */
+export type ViewKey = 'chat' | 'knowledge' | 'workflow' | 'settings';
 
 defineProps<{
   /** 当前激活的视图 */
@@ -17,10 +17,11 @@ const emit = defineEmits<{
   'update:currentView': [value: ViewKey];
 }>();
 
-/** 导航项定义 */
+/** 导航项定义（P2 新增"编排"入口，AC-032） */
 const navItems = [
   { key: 'chat' as const, label: '对话' },
   { key: 'knowledge' as const, label: '知识库' },
+  { key: 'workflow' as const, label: '编排' },
   { key: 'settings' as const, label: '设置' },
 ];
 

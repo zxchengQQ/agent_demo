@@ -118,6 +118,31 @@ public class LlmConfigStore {
         return null;
     }
 
+    /**
+     * 按 API 模型名称与类型查找模型配置
+     * <p>
+     * 业务含义：预置工作流模板的 AgentDefinition.modelId 引用 API 模型名
+     * （如 glm-5.2、doubao-seed-2.0-pro）而非记录 UUID，提供按 modelName 的
+     * 兜底查找；同名多厂商时返回首个匹配（与 getFirstChatModel 遍历顺序一致）。
+     * </p>
+     *
+     * @param modelName API 模型名称（如 glm-5.2）
+     * @param type      模型类型（如 chat）
+     * @return 匹配的模型配置，未找到返回 null
+     */
+    public LlmModelConfig getModelByName(String modelName, String type) {
+        for (LlmVendorConfig vendor : vendors.values()) {
+            if (vendor.getModels() != null) {
+                for (LlmModelConfig model : vendor.getModels()) {
+                    if (model.getModelName().equals(modelName) && model.getType().equals(type)) {
+                        return model;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
     public LlmModelConfig getFirstChatModel() {
         for (LlmVendorConfig vendor : vendors.values()) {
             if (vendor.getModels() != null) {

@@ -6,13 +6,14 @@ import SessionList from '@/components/SessionList.vue';
 import ChatWindow from '@/components/ChatWindow.vue';
 import NavBar from '@/components/NavBar.vue';
 import KnowledgeBasePage from '@/components/KnowledgeBasePage.vue';
+import WorkflowPage from '@/components/WorkflowPage.vue';
 import SettingsPage from '@/components/SettingsPage.vue';
 
 const store = useSessionStore();
 const llmStore = useLlmStore();
 
-/** 当前激活的视图（AC-001：对话/知识库/设置 导航切换） */
-const currentView = ref<'chat' | 'knowledge' | 'settings'>('chat');
+/** 当前激活的视图（AC-001：对话/知识库/编排/设置 导航切换；P2 新增 workflow） */
+const currentView = ref<'chat' | 'knowledge' | 'workflow' | 'settings'>('chat');
 
 /** 从对话页引导跳转到设置视图（ChatWindow 空状态引导，AC-035） */
 function navigateToConfig() {
@@ -46,6 +47,9 @@ onMounted(() => {
 
     <!-- 知识库页面（Task-11 完整实现） -->
     <KnowledgeBasePage v-else-if="currentView === 'knowledge'" />
+
+    <!-- 编排页面（P2 新增，AC-032） -->
+    <WorkflowPage v-else-if="currentView === 'workflow'" />
 
     <!-- 设置页面（LLM 配置 + MCP 服务，Task-08/09） -->
     <SettingsPage v-else />

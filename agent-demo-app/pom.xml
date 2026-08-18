@@ -34,6 +34,18 @@
             <artifactId>agent-demo-mcp</artifactId>
         </dependency>
 
+        <!-- LangChain4j Agentic - 多 Agent 编排 -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-agentic</artifactId>
+        </dependency>
+
+        <!-- Spring Web MVC（SseEmitter 流式推送） -->
+        <dependency>
+            <groupId>org.springframework</groupId>
+            <artifactId>spring-webmvc</artifactId>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

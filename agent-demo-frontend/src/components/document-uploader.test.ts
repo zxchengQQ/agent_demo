@@ -4,11 +4,13 @@ import { mount, flushPromises } from '@vue/test-utils';
 import { createPinia, setActivePinia } from 'pinia';
 import DocumentUploader from '@/components/DocumentUploader.vue';
 
-// Mock rag store，仅 mock uploadDocument action（AC-007）
+// Mock rag store，仅 mock uploadDocument action（AC-007）；
+// currentKnowledgeBaseId 置为已选择状态（组件上传前有知识库前置校验）
 const mockUploadDocument = vi.fn();
 vi.mock('@/stores/rag', () => ({
   useRagStore: () => ({
     uploadDocument: mockUploadDocument,
+    currentKnowledgeBaseId: 'kb-test',
   }),
 }));
 

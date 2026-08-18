@@ -39,10 +39,7 @@ public class ModelFactory {
     }
 
     public ChatModel getChatModelByModelId(String modelId) {
-        LlmModelConfig model = configStore.getModel(modelId);
-        if (model == null || !"chat".equals(model.getType())) {
-            throw new BusinessException(ErrorCode.LLM_MODEL_NOT_FOUND, "模型不存在或类型不是 chat: " + modelId);
-        }
+        LlmModelConfig model = resolveChatModel(modelId);
         LlmVendorConfig vendor = configStore.getVendor(model.getVendorId());
         String cacheKey = vendor.getId() + ":" + model.getModelName();
         return chatModelCache.computeIfAbsent(cacheKey, k -> createChatModel(vendor, model.getModelName()));
@@ -57,10 +54,7 @@ public class ModelFactory {
     }
 
     public StreamingChatModel getStreamingChatModelByModelId(String modelId) {
-        LlmModelConfig model = configStore.getModel(modelId);
-        if (model == null || !"chat".equals(model.getType())) {
-            throw new BusinessException(ErrorCode.LLM_MODEL_NOT_FOUND, "模型不存在或类型不是 chat: " + modelId);
-        }
+        LlmModelConfig model = resolveChatModel(modelId);
         LlmVendorConfig vendor = configStore.getVendor(model.getVendorId());
         String cacheKey = vendor.getId() + ":" + model.getModelName();
         return streamingModelCache.computeIfAbsent(cacheKey, k -> createStreamingChatModel(vendor, model.getModelName()));
@@ -75,10 +69,7 @@ public class ModelFactory {
     }
 
     public ThinkingStreamingChatModel getThinkingStreamingChatModelByModelId(String modelId) {
-        LlmModelConfig model = configStore.getModel(modelId);
-        if (model == null || !"chat".equals(model.getType())) {
-            throw new BusinessException(ErrorCode.LLM_MODEL_NOT_FOUND, "模型不存在或类型不是 chat: " + modelId);
-        }
+        LlmModelConfig model = resolveChatModel(modelId);
         LlmVendorConfig vendor = configStore.getVendor(model.getVendorId());
         String cacheKey = vendor.getId() + ":" + model.getModelName();
         return thinkingModelCache.computeIfAbsent(cacheKey, k -> createThinkingStreamingChatModel(vendor, model.getModelName()));
@@ -136,6 +127,29 @@ public class ModelFactory {
     }
 
     // ========== 私有创建方法 ==========
+
+    /**
+     * 解析 chat 模型配置（记录 id 优先，API 模型名兜底）
+     * <p>
+     * 业务含义：modelId 存在两种引用形式——对话链路由前端模型选择器传模型记录
+     * UUID（存储 id 字段）；预置工作流模板的 AgentDefinition.modelId 引用 API
+     * 模型名（如 glm-5.2）。只按 UUID 查找会导致预置模板 Agent 构建必然报
+     * "配置的模型不存在"，故 id 未命中时按 modelName + chat 类型兜底解析。
+     * </p>
+     *
+     * @param modelId 模型记录 UUID 或 API 模型名
+     * @return chat 类型的模型配置
+     */
+    private LlmModelConfig resolveChatModel(String modelId) {
+        LlmModelConfig model = configStore.getModel(modelId);
+        if (model == null) {
+            model = configStore.getModelByName(modelId, "chat");
+        }
+        if (model == null || !"chat".equals(model.getType())) {
+            throw new BusinessException(ErrorCode.LLM_MODEL_NOT_FOUND, "模型不存在或类型不是 chat: " + modelId);
+        }
+        return model;
+    }
 
     private ChatModel createChatModel(LlmVendorConfig vendor, String modelName) {
         return OpenAiChatModel.builder()

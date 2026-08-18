@@ -514,8 +514,11 @@ export interface ToolsResponse {
 /** 编排模式（对应后端 OrchestrationMode 枚举） */
 export type OrchestrationMode = 'SEQUENTIAL' | 'PARALLEL' | 'CONDITIONAL' | 'LOOP' | 'SUPERVISOR'
 
-/** 工作流执行状态（对应后端 WorkflowExecutionStatus 枚举） */
-export type WorkflowExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TERMINATED' | 'TIMEOUT'
+/**
+ * 工作流执行状态（对应后端 WorkflowExecutionStatus 枚举）
+ * P3 新增：PAUSED（重试耗尽暂停待恢复，非终态，AC-016）
+ */
+export type WorkflowExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TERMINATED' | 'TIMEOUT' | 'PAUSED'
 
 /** 工作流参数定义 */
 export interface WorkflowParameter {
@@ -555,6 +558,34 @@ export interface WorkflowTemplateDetail {
   parallelGroups?: { name: string; agents: WorkflowAgentItem[] }[]
   branches?: { name: string; conditionDescription: string; agents: WorkflowAgentItem[] }[]
   loop?: { maxIterations: number; exitConditionDescription: string; agents: WorkflowAgentItem[] }
+  /** SUPERVISOR 模式：层级编排结构（P3 新增，AC-002/AC-007） */
+  supervisor?: SupervisorDefinitionItem
+}
+
+/**
+ * Supervisor 层级编排定义（模板详情，P3 新增）
+ * 业务含义：主控拆解 Agent + Worker 池 + 主控汇总 Agent + 最大子任务数（AC-007/AC-031）。
+ */
+export interface SupervisorDefinitionItem {
+  maxSubtasks: number
+  planAgent: WorkflowAgentItem
+  workers: WorkflowAgentItem[]
+  summarizeAgent: WorkflowAgentItem
+}
+
+/**
+ * Supervisor 子任务项（supervisor_plan 事件 data.subtasks 元素，P3 新增）
+ * 业务含义：主控拆解出的单个子任务；routed=false 表示未精确/包含命中、按兜底规则派发（AC-007）。
+ */
+export interface SupervisorSubtaskItem {
+  id: number
+  description: string
+  /** 主控指定的目标 Worker 名（可能为空/不精确） */
+  agent: string
+  /** 实际路由到的 Worker 名 */
+  routedAgent: string
+  /** 是否按主控指定路由（false=兜底派发） */
+  routed: boolean
 }
 
 /** 执行历史摘要（对应后端 WorkflowExecutionSummaryResponse） */
@@ -575,6 +606,12 @@ export interface WorkflowStepItem {
   agentName: string
   status: string
   durationMs: number
+  /**
+   * 步骤输出内容（CR-001 Task-31 新增，AC-034）
+   * 业务含义：执行详情接口返回该步骤 Agent 的完整输出，详情面板折叠区展示。
+   * 可选字段，向后兼容（后端不返回时省略，不影响既有消费方）。
+   */
+  output?: string
 }
 
 /** 执行详情（对应后端 WorkflowExecutionResponse） */
@@ -597,4 +634,32 @@ export interface WorkflowStreamCallbacks {
   onWorkflowComplete: (data: { executionId: string; finalResult: string; mode: string; totalDurationMs: number; iterationCount?: number; exitReason?: string }) => void
   onWorkflowFailed: (data: { executionId: string; status: string; error: string }) => void
   onError: (message: string) => void
+
+  // ===== P3 新增回调（均为可选，向前兼容）=====
+
+  /**
+   * 收到 workflow_paused 事件（重试耗尽暂停，AC-016）
+   * 业务含义：工作流进入 PAUSED 待恢复状态，前端展示暂停 UI 与恢复入口。
+   */
+  onWorkflowPaused?: (data: { executionId: string; failedAgent: string; failedIndex: number; error: string; resumable: boolean }) => void
+  /**
+   * 收到 step_skipped 事件（断点恢复跳过已完成步骤，AC-017）
+   * 业务含义：恢复执行时该步骤已完成，直接复用历史输出跳过。
+   */
+  onStepSkipped?: (data: { agentIndex: number; agentName: string; reason: string }) => void
+  /**
+   * 收到 supervisor_plan 事件（主控拆解完成，AC-007）
+   * 业务含义：主控 Agent 将任务拆解为子任务清单，前端初始化子任务卡片列表。
+   */
+  onSupervisorPlan?: (data: { subtasks: SupervisorSubtaskItem[]; totalSubtasks: number }) => void
+  /**
+   * 收到 supervisor_dispatch 事件（主控派发子任务，AC-007）
+   * 业务含义：第 subtaskIndex 个子任务派发给 agentName 对应 Worker（routed=false 为兜底派发）。
+   */
+  onSupervisorDispatch?: (data: { subtaskIndex: number; totalSubtasks: number; description: string; agentName: string; routed: boolean }) => void
+  /**
+   * 收到 supervisor_summary 事件（主控汇总开始，AC-007）
+   * 业务含义：所有子任务完成，主控进入结果汇总阶段。
+   */
+  onSupervisorSummary?: (data: { subtaskCount: number }) => void
 }
