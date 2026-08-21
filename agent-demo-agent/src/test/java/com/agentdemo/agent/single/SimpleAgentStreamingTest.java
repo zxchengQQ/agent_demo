@@ -1,5 +1,6 @@
 package com.agentdemo.agent.single;
 
+import com.agentdemo.agent.core.HumanInteractionManager;
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
@@ -52,7 +53,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 触发 delegate 初始化（调用 chatStream）
         try {
@@ -86,7 +87,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用 chatStream
         TokenStream tokenStream = agent.chatStream("test-session", "你好");

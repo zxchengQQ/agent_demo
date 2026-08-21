@@ -3,6 +3,8 @@ package com.agentdemo.web.controller;
 import com.agentdemo.agent.core.SubTask;
 import com.agentdemo.agent.core.TaskBreakdownStream;
 import com.agentdemo.agent.core.ThinkingTokenStream;
+import com.agentdemo.agent.core.HitlTokenStream;
+import com.agentdemo.agent.core.HumanInteractionManager;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.agent.config.AgentConfig;
@@ -60,16 +62,19 @@ public class AgentController {
     private final ChatMemoryManager memoryManager;
     private final ToolRegistry toolRegistry;
     private final AgentConfig agentConfig;
+    private final HumanInteractionManager humanInteractionManager;
 
     public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent,
                            SessionManager sessionManager, ChatMemoryManager memoryManager,
-                           ToolRegistry toolRegistry, AgentConfig agentConfig) {
+                           ToolRegistry toolRegistry, AgentConfig agentConfig,
+                           HumanInteractionManager humanInteractionManager) {
         this.simpleAgent = simpleAgent;
         this.planAgent = planAgent;
         this.sessionManager = sessionManager;
         this.memoryManager = memoryManager;
         this.toolRegistry = toolRegistry;
         this.agentConfig = agentConfig;
+        this.humanInteractionManager = humanInteractionManager;
     }
 
     /**
@@ -216,6 +221,48 @@ public class AgentController {
             return emitter;
         }
 
+        // 业务含义：检查是否有 pending HITL 交互（用户回复了 Agent 的提问）
+        // 有 pending 时走恢复路径：加载保存的 ReAct 上下文 -> 添加用户回复为 Observation -> 继续推理
+        if (humanInteractionManager.hasPending(effectiveSessionId)) {
+            HitlTokenStream hitlStream = simpleAgent.resumeHITLStream(effectiveSessionId, request.getMessage());
+            if (hitlStream != null) {
+                // 业务含义：注册 HITL 回调并发送 SSE 事件（与首次 HITL 路径一致）
+                HitlTokenStream stream = hitlStream
+                        .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
+                        .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
+                        .onPartialResponse(token -> { sendEvent(emitter, "token", token); fullResponse.append(token); })
+                        .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
+                        .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
+                        .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
+                        .onAskUser((type, question, options, retryCount) -> {
+                            // 业务含义：Agent 再次提问（用户回复仍不清晰），发送 ask_user 事件
+                            sendEvent(emitter, "ask_user", Map.of("type", type, "question", question, "options", options != null ? options : List.of(), "retryCount", retryCount));
+                            sendEvent(emitter, "done", System.currentTimeMillis() - start);
+                            emitter.complete();
+                        })
+                        .onComplete(fullResponseStr -> {
+                            memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
+                            long duration = System.currentTimeMillis() - start;
+                            int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
+                            int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
+                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, inputTokens + outputTokens, true));
+                            sendEvent(emitter, "done", duration);
+                            emitter.complete();
+                        })
+                        .onError(error -> {
+                            log.error("HITL 恢复异常: sessionId={}", effectiveSessionId, error);
+                            sendEvent(emitter, "error", "生成回复时发生错误，请重试");
+                            emitter.complete();
+                        });
+
+                emitter.onTimeout(() -> { stream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
+                emitter.onError(e -> { stream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
+
+                CompletableFuture.runAsync(stream::start);
+                return emitter;
+            }
+        }
+
         // 业务含义：任务拆解分流（CR-002 新增）
         // - enableTaskBreakdown=true：走 PlanAgent.chatTaskBreakdownStream 路径
         // - enableTaskBreakdown=false/null：继续检查 enableThinking 分支
@@ -293,6 +340,45 @@ public class AgentController {
             });
 
             CompletableFuture.runAsync(breakdownStream::start);
+            return emitter;
+        }
+
+        // 业务含义：HITL 人机交互分流
+        // - enableHitl=true：走 HITL ReAct 路径，Agent 可调用 askUser 工具向用户提问/确认
+        // - enableHitl=false/null：继续检查 enableThinking 分支（零回归）
+        if (Boolean.TRUE.equals(request.getEnableHitl())) {
+            HitlTokenStream hitlStream = simpleAgent.chatHITLStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
+                    .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
+                    .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
+                    .onPartialResponse(token -> { sendEvent(emitter, "token", token); fullResponse.append(token); })
+                    .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
+                    .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
+                    .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
+                    .onAskUser((type, question, options, retryCount) -> {
+                        // 业务含义：Agent 调用 askUser 工具暂停执行，发送 ask_user 事件让前端渲染提问卡片
+                        sendEvent(emitter, "ask_user", Map.of("type", type, "question", question, "options", options != null ? options : List.of(), "retryCount", retryCount));
+                        sendEvent(emitter, "done", System.currentTimeMillis() - start);
+                        emitter.complete();
+                    })
+                    .onComplete(fullResponseStr -> {
+                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
+                        long duration = System.currentTimeMillis() - start;
+                        int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
+                        int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
+                        sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, inputTokens + outputTokens, true));
+                        sendEvent(emitter, "done", duration);
+                        emitter.complete();
+                    })
+                    .onError(error -> {
+                        log.error("HITL 流式对话异常: sessionId={}", effectiveSessionId, error);
+                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
+                        emitter.complete();
+                    });
+
+            emitter.onTimeout(() -> { hitlStream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
+            emitter.onError(e -> { hitlStream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
+
+            CompletableFuture.runAsync(hitlStream::start);
             return emitter;
         }
 

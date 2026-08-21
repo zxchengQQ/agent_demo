@@ -490,6 +490,93 @@ describe('MessageItem', () => {
     expect(wrapper.find('.subtask-detail').exists()).toBe(true);
     expect(wrapper.find('.subtask-detail').text()).toContain('分析结果');
   });
+
+  // ========== HITL 人机交互渲染（Task-09，BUG 修复）==========
+
+  /**
+   * BUG 修复核心测试：ask_user 事件后后端立即发送 done，消息 status=complete，
+   * 但 HITL 场景下 ConfirmCard 选项按钮必须可交互（不能 disabled），
+   * 否则用户无法点击选项，前端"未渲染为选项框"。
+   * 修复前 disabled=status!=='incomplete' 导致 status=complete 时按钮全部禁用。
+   */
+  it('confirm 类型 askUserData 渲染选项按钮且 status=complete 时仍可点击（HITL BUG 修复）', () => {
+    const msg: Message = {
+      id: 'hitl-confirm-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      // 模拟 ask_user 事件后 done 事件触发 markComplete 的状态
+      status: 'complete',
+      askUserData: {
+        type: 'confirm',
+        question: '确认删除文件 test.txt？此操作不可恢复。',
+        options: ['确认删除', '取消'],
+        retryCount: 0,
+      },
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 渲染确认卡片
+    expect(wrapper.find('.confirm-card').exists()).toBe(true);
+    expect(wrapper.find('.confirm-question').text()).toBe('确认删除文件 test.txt？此操作不可恢复。');
+    // 选项按钮渲染且非禁用（可交互）
+    const buttons = wrapper.findAll('.confirm-option');
+    expect(buttons).toHaveLength(2);
+    expect(buttons[0].text()).toBe('确认删除');
+    expect(buttons[0].attributes('disabled')).toBeUndefined();
+    expect(buttons[1].attributes('disabled')).toBeUndefined();
+  });
+
+  it('text 类型 askUserData 渲染问题文本（非选项框）', () => {
+    const msg: Message = {
+      id: 'hitl-text-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      askUserData: {
+        type: 'text',
+        question: '请提供订单号，例如：ORD-12345',
+        options: [],
+        retryCount: 0,
+      },
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    expect(wrapper.find('.ask-user-text').exists()).toBe(true);
+    expect(wrapper.find('.ask-user-text').text()).toBe('请提供订单号，例如：ORD-12345');
+    // text 类型不渲染确认卡片
+    expect(wrapper.find('.confirm-card').exists()).toBe(false);
+  });
+
+  it('confirm 选项点击后 emit select 事件（逐层传递到 ChatWindow 发送回复）', async () => {
+    const msg: Message = {
+      id: 'hitl-confirm-2',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      askUserData: {
+        type: 'confirm',
+        question: '确认删除？',
+        options: ['确认删除', '取消'],
+        retryCount: 0,
+      },
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    await wrapper.findAll('.confirm-option')[0].trigger('click');
+    expect(wrapper.emitted('select')?.[0]).toEqual(['确认删除']);
+  });
+
+  it('无 askUserData 时不渲染 HITL 区块（零回归）', () => {
+    const msg: Message = {
+      id: 'hitl-none-1',
+      role: 'assistant',
+      content: '正常回复',
+      createdAt: 0,
+      status: 'complete',
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
 });
 
 describe('MessageInput', () => {

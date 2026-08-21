@@ -4,8 +4,17 @@ import type { Message, SubTaskStatus } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
 import { useMermaid } from '@/composables/useMermaid';
 import KnowledgeSourceBar from './KnowledgeSourceBar.vue';
+import ConfirmCard from './ConfirmCard.vue';
 
 const props = defineProps<{ message: Message }>();
+
+/**
+ * 向上传递 ConfirmCard 的选中事件（Task-09 新增）
+ * 业务含义：用户在 confirm 类型人机交互卡片中选中选项后，逐层传递到 ChatWindow 发送回复消息。
+ */
+const emit = defineEmits<{
+  select: [optionValue: string];
+}>();
 
 /**
  * 推理区块展开状态（AC-022）
@@ -355,6 +364,29 @@ function statusIcon(status: SubTaskStatus): string {
           v-if="props.message.status === 'incomplete' && props.message.content"
           class="stream-cursor"
         ></span>
+      </div>
+
+      <!-- HITL 人机交互区块（Task-09）：助手消息 askUserData 存在时渲染 -->
+      <div
+        v-if="props.message.role === 'assistant' && props.message.askUserData"
+        class="ask-user-block"
+      >
+        <!-- text 类型：显示问题文本为普通消息 -->
+        <div v-if="props.message.askUserData.type === 'text'" class="ask-user-text">
+          {{ props.message.askUserData.question }}
+        </div>
+        <!-- confirm 类型：显示确认卡片 -->
+        <!-- BUG 修复：disabled 不再绑定消息 status。
+             ask_user 事件后后端立即发送 done 使消息 status=complete，
+             若按 status!=='incomplete' 禁用，用户将无法点击选项。
+             askUserData 存在期间始终可交互，防重复点击由 ConfirmCard 内部 isSelected 锁定。 -->
+        <ConfirmCard
+          v-else
+          :question="props.message.askUserData.question"
+          :options="props.message.askUserData.options || []"
+          :disabled="false"
+          @select="emit('select', $event)"
+        />
       </div>
 
       <!-- 状态标记 -->
@@ -739,6 +771,21 @@ function statusIcon(status: SubTaskStatus): string {
   border: none;
   border-top: 1px solid var(--border);
   margin: var(--spacing-sm) 0;
+}
+
+/* ===== Task-09 HITL 人机交互区块样式 ===== */
+.ask-user-block {
+  margin-top: var(--spacing-sm);
+}
+
+.ask-user-text {
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-msg-assistant);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm) var(--radius-md) var(--radius-md) var(--radius-md);
 }
 
 /* CR-001: 图片渲染样式约束（AC-039）*/

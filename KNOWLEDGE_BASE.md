@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v2.9
-> **基线日期**：2026-08-17
+> **文档版本**：v3.1
+> **基线日期**：2026-08-21
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -71,7 +71,8 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
 | MCP 协议 | ✅ 已实现 | MCP 客户端、双传输（stdio+SSE+Streamable HTTP）、动态/静态 Server 管理、ByteBuddy 工具代理 |
 | 多 Agent 协作 | ✅ 已实现 | langchain4j-agentic 编排引擎：串行/并行/条件/循环/Supervisor 五种模式（2026-08-13 应用编排层 P1~P3 交付） |
-| 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（HITL 与拖拽编排规划中） |
+| 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（工作流 HITL 与拖拽编排规划中） |
+| 人机交互 HITL | ✅ 已实现（单 Agent） | askUser 工具 + 显式 ReAct 暂停-恢复 + `ask_user` SSE 事件 + 前端文本/选项卡片双形态（工作流 HITL 下一期扩展） |
 
 > **数据来源**：`specs/SDD-工程业务背景文档.md` 第 2.3 节、`docs/ARCHITECTURE.md`
 
@@ -288,7 +289,7 @@ agent-demo/
         ├── utils/storage.ts              # localStorage 缓存工具（50 会话 FIFO 淘汰）
         ├── types/index.ts                # TypeScript 类型定义（Message.reasoning + StreamCallbacks + KnowledgeBase/DocumentInfo/DocumentStatus 等）
         ├── components/                   # Vue 组件
-        │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector + ToolSelector 集成）/ChatWindow（含知识库选择 + 工具选择状态管理）/SessionList/NavBar
+        │   ├── 对话组件                   # MessageItem/MessageList/MessageInput（含 KnowledgeBaseSelector + ToolSelector 集成）/ChatWindow（含知识库选择 + 工具选择 + HITL 人机交互状态管理）/SessionList/NavBar/ConfirmCard（HITL 确认卡片，Task-09 新增）
         │   ├── 知识库组件                 # KnowledgeBasePage/KnowledgeBaseList/CreateKnowledgeBaseDialog/DocumentList（含状态轮询）/DocumentUploader/KnowledgeBaseSelector
         │   ├── 工具选择组件（CR 新增）    # ToolSelector（工具标签栏 + 下拉选择，位于输入框上方）/ ToolManagementPage（设置页工具管理）
         │   ├── LLM 配置组件               # LlmConfigPage/VendorCard/VendorEditDialog/ModelSelector
@@ -324,9 +325,13 @@ agent-demo/
 agent-demo-agent/
 ├── config/                # AgentConfig（配置属性绑定，含 defaultRole + 提示词默认值作为模板回退）
 ├── core/                  # BaseAgent（Agent 抽象接口）+ ThinkingTokenStream（思考流式接口）+ TaskBreakdownStream（任务拆解三阶段编排流）
-├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词）
+│                          # + HitlTokenStream（HITL 流式接口，继承 ThinkingTokenStream 新增 onAskUser 回调，Task-02 新增）
+│                          # + HumanInteractionManager（HITL pending 状态管理：ConcurrentHashMap 按 sessionId 存储 + @Scheduled 超时清理）
+│                          # + PendingInteraction（暂停交互状态数据结构：消息列表/问题数据/追问计数/模型与工具信息）
+├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词；SCENARIO_HITL="hitl"）
 └── single/                # SimpleAgent（单 Agent 实现，工具按需加载 CR 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键）
                             # + PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
+                            # + HITLReActStream（HITL 显式 ReAct 循环：工具执行前检测 askUser 拦截 -> 暂停保存状态 -> resume 恢复，Task-02 新增）
 ```
 
 **agent-demo-llm**（LLM 接入，CR-003 重构为动态配置模式，移除 Provider 模式）：
@@ -355,10 +360,13 @@ agent-demo-llm/
 
 ```
 agent-demo-tools/
-├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
+├── builtin/               # 内置工具（Calculator/Time/Http/FileRead + AskUserTool，Task-04 新增：@Component + @Tool 占位实现，
+                           #   方法体不执行，由 HITLReActStream 按工具名拦截触发暂停流程）
 └── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展；
-                           #   工具按需加载 CR 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)）
-                           # + ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成）
+                           #   工具按需加载 CR 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)；
+                           #   Task-05 BUG 修复：getDefaultTools 用 LinkedHashSet 按对象去重，避免 TimeTool 多方法重复注册）
+                           # + ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成；
+                           #   Task-05 BUG 修复：mapJavaTypeToJsonType 增加 String[]/List 映射为 array）
 ```
 
 **agent-demo-memory**（记忆系统）：
@@ -674,6 +682,7 @@ sequenceDiagram
 | `session` | 新 sessionId 字符串 | 会话不存在/超时，新建后发送 |
 | `reasoning` | 推理文本片段（CR-001 新增） | 每收到一段推理内容（仅 enableThinking=true 时） |
 | `token` | 文本片段 | 每收到一个 LLM token |
+| `ask_user` | JSON（type/question/options/retryCount，Task-07 新增） | HITL 模式下 Agent 调用 askUser 工具暂停执行时发送，前端据此渲染文本追问或确认卡片 |
 | `done` | 耗时毫秒数 | 流式完整结束 |
 | `error` | 错误描述 | 流式过程异常 |
 
@@ -944,6 +953,7 @@ public class GlobalExceptionHandler {
 | executions | ConcurrentHashMap<String, WorkflowExecution> | WorkflowExecutionService | 工作流执行实例（按 executionId 索引，应用编排层新增） |
 | cancelFlags | ConcurrentHashMap<String, AtomicBoolean> | WorkflowExecutionService | 执行取消标记（终止/超时/SSE 客户端断开时置位，应用编排层新增） |
 | resumableStates | ConcurrentHashMap<String, ResumableExecutionState> | WorkflowExecutionService | PAUSED 断点恢复快照（已完成步骤输出 + AgenticScope 状态，应用编排层 P3 新增） |
+| pendingInteractions | ConcurrentHashMap<String, PendingInteraction> | HumanInteractionManager | HITL 暂停交互状态（按 sessionId 存储消息列表/问题数据/追问计数，Task-01 新增） |
 
 ### 7.3 规划数据库（未来接入）
 
@@ -1299,6 +1309,25 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 81 | BR-APP-014 | 循环工作流必须配置 maxIterations 上限，防止无限循环 | 应用编排 | 🔴 强制 |
 | 82 | BR-APP-SSE-001 | SSE emitter 必须配置为永不超时（`new SseEmitter(0L)`），禁止固定超时值——长任务工作流会被异步超时掐断并导致前端卡"执行中"（2026-08-17 BUG：300s 超时致长任务中断） | Web/应用编排 | 🔴 强制 |
 | 83 | BR-APP-SSE-002 | 前端 SSE 解析必须做断流兜底：流结束但未收到终态事件（complete/failed/paused）时回调 onError 退出"执行中"状态 | 前端编排 | 🔴 强制 |
+
+### 9.16 人机交互 HITL 规则（v3.1 新增）
+
+> **来源**：`specs/features/20260820_agent-human-interaction/agent-human-interaction.md`（AC-N01~H02）+ 技术方案 Sec 6 护栏设计 + 实现记录 6.3
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 84 | BR-HITL-001 | `enableHitl=false`（默认）时走现有 chatStream 路径，行为零回归；`enableHitl=true` 时路由到 `SimpleAgent.chatHITLStream`（显式 ReAct + HITL 暂停-恢复） | Agent 编排 | 🔴 强制 |
+| 85 | BR-HITL-002 | HITL 必须使用显式 ReAct 循环（`HITLReActStream`），不走 AiServices 隐式 ReAct——隐式循环无法暂停/恢复且工具无法获取 sessionId（技术决策 1/2） | Agent 编排 | 🔴 强制 |
+| 86 | BR-HITL-003 | Agent 信息不足/指令有歧义时，必须调用 askUser 工具追问，不得基于猜测推进任务或伪造参数 | Agent 编排 | 🔴 强制 |
+| 87 | BR-HITL-004 | Agent 即将执行有副作用操作（删除文件/修改数据/发送 HTTP 请求）前，必须调用 askUser(type=confirm) 确认，未确认不得执行 | Agent 编排 | 🔴 强制 |
+| 88 | BR-HITL-005 | askUser 工具参数契约：type 仅取 "text"/"confirm"；question 非空；confirm 类型必须提供 2-4 个选项（options），text 类型传空数组 | 工具调用 | 🔴 强制 |
+| 89 | BR-HITL-006 | 同一问题最多追问 3 次（retryCount 0→1→2），第 4 次达上限时返回错误 Observation，LLM 终止任务并告知用户，不得继续追问同一问题 | 工具调用 | 🔴 强制 |
+| 90 | BR-HITL-007 | askUser 调用不消耗 ReAct 迭代次数（暂停状态不计入 `agent.max-iterations=10`），由 HITLReActStream 拦截处理 | Agent 编排 | 🔴 强制 |
+| 91 | BR-HITL-008 | 同一 sessionId 同时只能有一个 pending HITL 交互（HumanInteractionManager 覆盖旧状态）；pending 状态按 sessionId 隔离，不同会话互不影响 | 记忆管理 | 🔴 强制 |
+| 92 | BR-HITL-009 | askUser 工具采用"拦截而非执行"机制：AskUserTool 注册为 @Tool 仅提供 Function Calling Schema，HITLReActStream 检测工具名为 askUser 时拦截，不执行方法体（技术决策 2） | 工具调用 | 🔴 强制 |
+| 93 | BR-HITL-010 | pending 状态随会话超时（30 分钟）清理（HumanInteractionManager @Scheduled），超时后用户消息创建新会话；Controller 检测无 pending 时降级为正常对话不报错 | 记忆管理 | 🔴 强制 |
+| 94 | BR-HITL-011 | 前端渲染由 askUserData.type 决定：type=text 渲染为普通文本提示（用户经输入框自由回复），type=confirm 渲染为 ConfirmCard 选项卡片（用户点击按钮回复，AC-T01/T02） | 前端对话 | 🔴 强制 |
+| 95 | BR-HITL-012 | 前端 HITL 等待态由 askUserData 是否存在决定（不依赖消息 status）：ask_user 事件后 done 使消息 status=complete，但仍视为等待用户输入；用户回复后 clearAskUser 清除 askUserData 并标记 complete（2026-08-21 BUG 修复） | 前端对话 | 🔴 强制 |
 
 ---
 
@@ -1750,6 +1779,7 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.8 | 2026-08-07 | MCP 服务管理页面 + stdio 命令适配 BUG 修复：1.4/2.2/4.1/4.3 节新增设置页面与 MCP 服务管理（SettingsPage/McpServicePage/McpServerCard/McpJsonConfigEditor + api/mcp.ts + stores/mcp.ts + utils/mcp-config.ts JSON 配置解析器）；NavBar 导航从"LLM 配置"迁移为"设置"；后端 McpServerResponse 新增 url/command/args 字段；9.7 节新增 BR-MCP-026（Windows stdio 命令适配 resolveWindowsCommand，npx→npx.cmd）、BR-MCP-027（连接失败消息含根因 rootCauseMessage），新增 9.8 节前端 MCP 服务管理规则 12 条（BR-MCP-FE-001~012），原 9.8~9.12 顺延为 9.9~9.13；12.4 节 MCP 图片排障已更新 |
 | v2.9 | 2026-08-12 | Agent 工具按需加载（feature 2026-08-12）：1.4 能力矩阵工具调用新增按需加载；4.1/4.3 节工程结构更新（ToolRegistry 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)、SimpleAgent 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键、AgentController 新增 GET /api/agent/tools、common 新增 dto/ToolInfo、前端新增 ToolSelector/ToolManagementPage）；9.2 节新增 BR-AGT-011/012，9.3 节新增 BR-TOOL-010~019（共 10 条，工具标识 category:name、通配符、默认工具不可排除、会话级绑定）；10.4 节新增 agent.tools 配置段（default-tools 默认加载 + optional 按需指定） |
 | v3.0 | 2026-08-13 | 应用编排层 P2 多模式编排（feature 2026-08-13）：1.4 能力矩阵多 Agent 协作/工作流编排更新为 ✅ 已实现；4.1 节 agent-demo-app 更新为 P2 完整实现（core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）；9.10 节错误码区间新增 5500-5599 工作流段（含 5506 WORKFLOW_MODE_NOT_SUPPORTED P2 新增）；策略模式三层分离架构（协调层 WorkflowExecutionService + 策略层 WorkflowExecutionStrategy 4 实现 + 基础设施 AgentExecutor/WorkflowEventPublisher/WorkflowContext） |
+| v3.1 | 2026-08-21 | Agent-Human 交互（HITL，feature 20260820_agent-human-interaction）：1.4 能力矩阵新增"人机交互 HITL"行；4.1/4.3 节工程结构更新（agent-demo-agent 新增 HitlTokenStream/HITLReActStream/HumanInteractionManager/PendingInteraction，agent-demo-tools 新增 AskUserTool，前端新增 ConfirmCard.vue，ToolRegistry/ToolSchemaConverter 工具去重与数组类型 BUG 修复）；5.8 节 SSE 事件协议新增 ask_user 事件；7.2 节内存数据结构新增 pendingInteractions；9.16 节新增 12 条 HITL 业务规则（BR-HITL-001~012）；前端 HITL 渲染链路（chat.ts onAskUser 回调 + enableHitl 参数 / session.ts askUserData + isWaitingForUserInput / MessageItem.vue 双形态渲染 / ChatWindow.vue 开关与回复闭环） |
 
 ---
 

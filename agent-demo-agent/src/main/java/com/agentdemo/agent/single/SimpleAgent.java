@@ -2,6 +2,9 @@ package com.agentdemo.agent.single;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.BaseAgent;
+import com.agentdemo.agent.core.HitlTokenStream;
+import com.agentdemo.agent.core.HumanInteractionManager;
+import com.agentdemo.agent.core.PendingInteraction;
 import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.common.enums.AgentType;
@@ -11,8 +14,11 @@ import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
@@ -61,6 +67,7 @@ public class SimpleAgent implements BaseAgent {
     private final ToolSchemaConverter toolSchemaConverter;
     private final ToolExecutor toolExecutor;
     private final PromptTemplateLoader promptTemplateLoader;
+    private final HumanInteractionManager humanInteractionManager;
 
     /**
      * AiServices 代理缓存（按 modelId 隔离，懒加载）
@@ -89,7 +96,8 @@ public class SimpleAgent implements BaseAgent {
                        AgentConfig agentConfig,
                        ToolSchemaConverter toolSchemaConverter,
                        ToolExecutor toolExecutor,
-                       PromptTemplateLoader promptTemplateLoader) {
+                       PromptTemplateLoader promptTemplateLoader,
+                       HumanInteractionManager humanInteractionManager) {
         this.modelFactory = modelFactory;
         this.toolRegistry = toolRegistry;
         this.memoryManager = memoryManager;
@@ -97,6 +105,7 @@ public class SimpleAgent implements BaseAgent {
         this.toolSchemaConverter = toolSchemaConverter;
         this.toolExecutor = toolExecutor;
         this.promptTemplateLoader = promptTemplateLoader;
+        this.humanInteractionManager = humanInteractionManager;
         log.info("SimpleAgent 构造完成（delegate 懒加载，按 modelId 缓存）");
     }
 
@@ -370,7 +379,174 @@ public class SimpleAgent implements BaseAgent {
                 agentConfig.getThinkingMaxIterations());
     }
 
-    // ==================== 工具按需加载方法（带 toolIds 参数） ====================
+    // ==================== HITL 人机交互方法 ====================
+
+    /**
+     * HITL 流式对话（首次调用）
+     * <p>
+     * 业务含义：启动 HITL ReAct 循环，Agent 可调用 askUser 工具向用户提问/确认。
+     * 使用 hitl.txt 场景模板，包含人机交互规则、追问策略和 Few-shot 示例。
+     * </p>
+     *
+     * @param sessionId 会话 ID
+     * @param message   用户消息
+     * @param modelId   模型 ID（null 使用默认模型）
+     * @param toolIds   工具标识列表
+     * @return HitlTokenStream HITL 流式令牌
+     */
+    public HitlTokenStream chatHITLStream(String sessionId, String message, String modelId, List<String> toolIds) {
+        if (agentConfig.isEnableLogging()) {
+            log.info("Agent HITL 流式对话: sessionId={}, message={}, modelId={}", sessionId, message, modelId);
+        }
+
+        ThinkingStreamingChatModel thinkingModel = (modelId != null)
+                ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
+                : modelFactory.getDefaultThinkingStreamingChatModel();
+        List<Object> tools = resolveSessionTools(sessionId, toolIds);
+        // 业务含义：HITL 模式必须包含 askUser 工具（默认工具列表不含它），
+        // 否则 LLM 无法调用 askUser 向用户提问/确认（AC-N01/N02）
+        tools = ensureAskUserTool(tools);
+        // 业务含义：使用 hitl 场景模板（含人机交互规则 + askUser 使用引导 + Few-shot 示例）
+        List<ChatMessage> messages = buildMessagesWithScenario(sessionId, message, tools,
+                PromptTemplateLoader.SCENARIO_HITL);
+        String toolsJson = toolSchemaConverter.convertToJson(tools);
+
+        return new HITLReActStream(
+                thinkingModel,
+                messages,
+                toolsJson,
+                toolExecutor,
+                humanInteractionManager,
+                sessionId,
+                modelId,
+                0,
+                agentConfig.getThinkingMaxIterations());
+    }
+
+    /**
+     * 恢复 HITL 流式对话（用户回复后）
+     * <p>
+     * 业务含义：从 HumanInteractionManager 加载暂停的 ReAct 上下文，
+     * 将用户回复作为 askUser 工具的 Observation 添加到消息列表，
+     * 创建新的 HITLReActStream 继续推理。retryCount +1 用于追问次数上限检查。
+     * </p>
+     *
+     * @param sessionId 会话 ID
+     * @param userReply 用户回复文本
+     * @return HitlTokenStream 恢复的 HITL 流式令牌（无 pending 时返回 null）
+     */
+    public HitlTokenStream resumeHITLStream(String sessionId, String userReply) {
+        PendingInteraction pending = humanInteractionManager.loadInteraction(sessionId);
+        if (pending == null) {
+            log.warn("无 pending HITL 交互: sessionId={}", sessionId);
+            return null;
+        }
+
+        // 业务含义：查找 askUser 工具调用的 ID，用于匹配 ToolExecutionResultMessage
+        String toolCallId = findAskUserToolCallId(pending.getMessages());
+
+        // 将用户回复作为 askUser 工具的 Observation 添加到消息列表
+        pending.getMessages().add(ToolExecutionResultMessage.from(toolCallId, "askUser", userReply));
+
+        // 清除 pending 状态（已恢复）
+        humanInteractionManager.clearInteraction(sessionId);
+
+        ThinkingStreamingChatModel thinkingModel = (pending.getModelId() != null)
+                ? modelFactory.getThinkingStreamingChatModelByModelId(pending.getModelId())
+                : modelFactory.getDefaultThinkingStreamingChatModel();
+
+        log.info("恢复 HITL 流式对话: sessionId={}, retryCount={}", sessionId, pending.getRetryCount() + 1);
+
+        return new HITLReActStream(
+                thinkingModel,
+                pending.getMessages(),
+                pending.getToolsJson(),
+                toolExecutor,
+                humanInteractionManager,
+                sessionId,
+                pending.getModelId(),
+                pending.getRetryCount() + 1,
+                agentConfig.getThinkingMaxIterations());
+    }
+
+    /**
+     * 从消息列表中查找最后一个 askUser 工具调用的 ID
+     * 业务含义：ToolExecutionResultMessage 需匹配原始 ToolExecutionRequest 的 ID，
+     * 否则 LLM 无法正确关联工具结果
+     *
+     * @param messages 消息列表
+     * @return 工具调用 ID（未找到时返回 "askUser"）
+     */
+    private String findAskUserToolCallId(List<ChatMessage> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage msg = messages.get(i);
+            if (msg instanceof AiMessage aiMsg && aiMsg.hasToolExecutionRequests()) {
+                for (ToolExecutionRequest req : aiMsg.toolExecutionRequests()) {
+                    if ("askUser".equals(req.name())) {
+                        return req.id();
+                    }
+                }
+            }
+        }
+        return "askUser";
+    }
+
+    /**
+     * 确保工具列表包含 askUser 工具
+     * <p>
+     * 业务含义：askUser 是 HITL 模式的核心工具，但不在默认工具列表中。
+     * 若用户未显式指定则动态加入，保证 LLM 始终能调用 askUser 向用户提问。
+     * 已包含时（用户显式指定或已存在）直接返回原列表。
+     * </p>
+     *
+     * @param tools 解析后的工具列表
+     * @return 包含 askUser 工具的工具列表
+     */
+    private List<Object> ensureAskUserTool(List<Object> tools) {
+        boolean hasAskUser = tools.stream().anyMatch(t -> findToolMethodNames(t).contains("askUser"));
+        if (!hasAskUser) {
+            try {
+                List<Object> askUserTool = toolRegistry.resolveTools(List.of("builtin:askUser"));
+                tools = new ArrayList<>(tools);
+                tools.addAll(askUserTool);
+                log.info("HITL 模式自动加入 askUser 工具");
+            } catch (Exception e) {
+                log.warn("askUser 工具加载失败: {}", e.getMessage());
+            }
+        }
+        // 业务含义：按 @Tool 方法名去重（mergeDefaults 可能因对象实例不同产生重复工具），
+        // 避免重复工具定义导致 LLM 困惑
+        return dedupeToolsByMethodName(tools);
+    }
+
+    /**
+     * 按 @Tool 方法名去重工具列表
+     * <p>
+     * 业务含义：不同途径（默认工具解析、会话缓存、动态加入）可能返回同一工具的
+     * 不同实例，按方法名去重保证每个工具只出现一次，避免 tools JSON 冗余。
+     * </p>
+     *
+     * @param tools 原始工具列表
+     * @return 去重后的工具列表
+     */
+    private List<Object> dedupeToolsByMethodName(List<Object> tools) {
+        if (tools == null || tools.isEmpty()) {
+            return tools;
+        }
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        List<Object> result = new ArrayList<>();
+        for (Object tool : tools) {
+            List<String> methodNames = findToolMethodNames(tool);
+            // 业务含义：工具对象可能含多个 @Tool 方法（如 MCP 代理对象），
+            // 只要任一方法名未出现过则保留整个对象
+            boolean allSeen = methodNames.stream().allMatch(seen::contains);
+            if (!allSeen) {
+                result.add(tool);
+                seen.addAll(methodNames);
+            }
+        }
+        return result;
+    }
 
     /**
      * 同步对话（支持工具按需加载）
@@ -427,9 +603,30 @@ public class SimpleAgent implements BaseAgent {
      *
      * @param tools 本次会话绑定的工具对象列表（默认 ∪ 指定），描述文本仅基于此列表生成
      */
+    /**
+     * 组装带记忆的 ReAct 消息列表
+     */
     private List<ChatMessage> buildReActMessagesWithMemory(String sessionId, String message, List<Object> tools) {
+        return buildMessagesWithScenario(sessionId, message, tools, PromptTemplateLoader.SCENARIO_REACT);
+    }
+
+    /**
+     * 组装带记忆的消息列表（支持指定场景模板）
+     * <p>
+     * 业务含义：从 PromptTemplateLoader 加载场景模板，替换 {{tools}} 占位符为工具描述文本，
+     * 追加历史记忆和当前用户消息。
+     * </p>
+     *
+     * @param sessionId     会话 ID
+     * @param message       用户消息
+     * @param tools         工具列表
+     * @param scenarioName  场景名称（使用 PromptTemplateLoader.SCENARIO_* 常量）
+     * @return 消息列表
+     */
+    private List<ChatMessage> buildMessagesWithScenario(String sessionId, String message,
+                                                         List<Object> tools, String scenarioName) {
         List<ChatMessage> messages = new ArrayList<>();
-        String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_REACT)
+        String systemPrompt = promptTemplateLoader.composeSystemPrompt(scenarioName)
                 .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText(tools));
         messages.add(SystemMessage.from(systemPrompt));
         messages.addAll(memoryManager.getMemory(sessionId).messages());

@@ -75,19 +75,23 @@ Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层�
 ### 3.8 流式对话（SSE）
 
 - **触发场景**：用户发送消息，期望逐字接收 Agent 回复。
-- **操作步骤**：`POST /api/agent/chat/stream`，请求体含 sessionId（可选）+ message（必填）+ enableThinking（可选，CR-001 新增）。
+- **操作步骤**：`POST /api/agent/chat/stream`，请求体含 sessionId（可选）+ message（必填）+ enableThinking（可选，CR-001 新增）+ enableHitl（可选，20260820 新增）。
 - **系统行为**：
   1. 校验 sessionId，无效则新建并发送 `session` 事件
   2. 记录用户消息到 ChatMemory
-  3. 根据 `enableThinking` 分流：
-     - true：走 `SimpleAgent.chatThinkingStream()`，推送 `reasoning` + `token` 事件
+  3. 入口检测 `humanInteractionManager.hasPending(sessionId)`，有 pending 时走 HITL 恢复路径（加载保存状态 + 用户回复作为 Observation -> 创建新 HITLReActStream -> 继续循环）
+  4. 无 pending 时根据分流标志选择路径：
+     - `enableTaskBreakdown=true`：走 `PlanAgent.chatTaskBreakdownStream()`，推送 `task_*` 系列事件（CR-002）
+     - `enableHitl=true`：走 `SimpleAgent.chatHITLStream()`，Agent 可调用 askUser 工具，推送 `ask_user` 事件暂停等待用户回复（20260820 新增）
+     - `enableThinking=true`：走 `SimpleAgent.chatThinkingStream()`，推送 `reasoning` + `token` 事件
      - false/null：走 `BaseAgent.chatStream()`，推送 `token` 事件
-  4. 流式完成后记录助手回复到 ChatMemory，发送 `done` 事件
-- **SSE 事件协议**：session（新建会话时）/ reasoning（推理片段，CR-001 新增）/ token（文本片段）/ done（完成）/ error（异常）。
+  5. 流式完成后记录助手回复到 ChatMemory，发送 `done` 事件
+- **SSE 事件协议**：session（新建会话时）/ reasoning（推理片段，CR-001 新增）/ thought + action + observation + final-answer（ReAct 推理过程）/ task_*（任务拆解，CR-002 新增）/ ask_user（HITL 提问，20260820 新增，JSON 含 type/question/options/retryCount）/ token（文本片段）/ done（完成）/ error（异常）。
 - **前置条件**：message 不能为空（`@NotBlank`）。
 - **后置结果**：SSE 事件流，客户端逐字接收。
-- **异常处理**：SSE 响应一旦开始写入，异常无法走 `@RestControllerAdvice`，需内部捕获并通过 `error` 事件通知前端。
+- **异常处理**：SSE 响应一旦开始写入，异常无法走 `@RestControllerAdvice`，需内部捕获并通过 `error` 事件通知前端；emitter.onTimeout/onError 时清理 HITL pending 状态。
 - **v2.0 扩展**：AgentController 读取 `ChatRequest.model` 作为 modelId 透传给 SimpleAgent/PlanAgent（chat/chatStream/chatThinkingReActStream/chatTaskBreakdownStream），为空时使用默认模型。
+- **20260820 扩展**：onAskUser 回调发送 `ask_user` 事件后立即发送 `done` 并 `emitter.complete()` 结束当前流；前端据 data.type 渲染文本追问或确认卡片，用户回复（同 sessionId）自动走恢复路径（技术决策 4：复用 /chat/stream 端点，无需专用回复端点）。
 
 ### 3.9 厂商配置管理（CRUD，v2.0 新增）
 
@@ -202,7 +206,7 @@ flowchart TD
 | 接口路径 | HTTP方法 | 功能说明 | 权限要求 | 请求参数 | 响应类型 |
 |---------|---------|---------|---------|---------|---------|
 | `/api/agent/chat` | POST | 同步对话 | 无 | ChatRequest | `Result<ChatResponse>` |
-| `/api/agent/chat/stream` | POST | 流式对话（SSE） | 无 | ChatRequest（含 enableThinking，CR-001 扩展） | `SseEmitter`（text/event-stream） |
+| `/api/agent/chat/stream` | POST | 流式对话（SSE，含 enableThinking/enableTaskBreakdown/enableHitl 分流） | 无 | ChatRequest（含 enableThinking，CR-001 扩展；enableHitl，20260820 新增） | `SseEmitter`（text/event-stream） |
 | `/api/agent/session` | POST | 创建会话 | 无 | 无 | `Result<String>` |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 | path: sessionId | `Result<Boolean>` |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 | path: sessionId | `Result<Void>` |
@@ -224,6 +228,8 @@ flowchart TD
 | sessionId | String | 否 | - | 为空则新建 |
 | message | String | 是 | `@NotBlank`、`@Size(max=4000)` | 用户消息，上限 4000 字符（AC-015） |
 | enableThinking | Boolean | 否 | - | 是否开启深度思考（CR-001 新增，默认 false） |
+| enableTaskBreakdown | Boolean | 否 | - | 是否开启复杂任务拆解（CR-002 新增，默认 false） |
+| enableHitl | Boolean | 否 | - | 是否开启人机交互 HITL（20260820 新增，默认 false；true 时走 chatHITLStream，Agent 可调用 askUser 提问） |
 | model | String | 否 | - | 模型 ID（v2.0 启用为 modelId，可选，为空使用第一个可用 chat 模型） |
 | tools | List&lt;String&gt; | 否 | - | 工具标识列表（工具按需加载 CR 新增，null=沿用会话缓存、非空=指定并缓存、空=清除恢复默认） |
 
@@ -256,6 +262,8 @@ flowchart TD
 | BR-WEB-013 | 厂商配置变更（添加/编辑/删除/同步）后必须清除模型工厂缓存（`clearAllCache`/`clearCacheForVendor`），确保新配置即时生效（v2.0 新增） | 🔴 强制 |
 | BR-WEB-014 | 对话请求 model 字段透传为 modelId，为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
 | BR-WEB-015 | 对话请求 tools 参数先经 `ToolRegistry.resolveTools` 校验，格式错误返回 5102、工具不存在返回 5101，失败通过 SSE `error` 事件返回并终止对话（CR 新增） | 🔴 强制 |
+| BR-WEB-016 | `enableHitl=true` 时路由到 `SimpleAgent.chatHITLStream`；onAskUser 回调发送 `ask_user` SSE 事件（JSON: type/question/options/retryCount）后立即发送 `done` 并 `emitter.complete()` 结束当前流（20260820 新增） | 🔴 强制 |
+| BR-WEB-017 | 请求入口检测 `humanInteractionManager.hasPending(sessionId)`，有 pending 时走 HITL 恢复路径（加载状态 + 用户回复作为 Observation 继续循环），无 pending 时降级为正常对话不报错；emitter.onTimeout/onError 时清理 pending 状态（20260820 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

@@ -1,4 +1,4 @@
-import type { KnowledgeSource, StreamCallbacks, TokenUsage } from '@/types';
+import type { AskUserData, KnowledgeSource, StreamCallbacks, TokenUsage } from '@/types';
 
 /**
  * SSE 流式调用封装
@@ -22,6 +22,7 @@ const API_BASE = '/api/agent';
  * @param modelId 用户选中的模型 ID（Task-22），后端据此路由到对应模型
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
+ * @param enableHitl 是否开启 HITL 人机交互（Task-10），后端据此决定是否通过 ask_user 事件向用户发起交互请求
  */
 export async function streamChat(
   sessionId: string,
@@ -33,13 +34,14 @@ export async function streamChat(
   tools: string[] = [],
   callbacks: StreamCallbacks,
   signal: AbortSignal,
+  enableHitl = false,
 ): Promise<void> {
   let response: Response;
   try {
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId, tools }),
+      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId, tools, enableHitl }),
       signal,
     });
   } catch {
@@ -283,6 +285,16 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
         callbacks.onUsage?.(usageData);
       } catch (e) {
         console.warn('Failed to parse usage event:', e);
+      }
+      break;
+    }
+    case 'ask_user': {
+      // Task-07: HITL 人机交互请求，data 为 JSON（含 type/question/options/retryCount）
+      try {
+        const parsed = JSON.parse(data) as AskUserData;
+        callbacks.onAskUser?.(parsed);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
       }
       break;
     }

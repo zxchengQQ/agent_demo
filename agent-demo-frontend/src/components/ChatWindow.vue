@@ -69,6 +69,13 @@ const enableThinking = ref(false);
 const enableTaskBreakdown = ref(false);
 
 /**
+ * HITL 人机交互开关状态（Task-10 新增）
+ * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，开启后 streamChat 请求携带 enableHitl=true，
+ * 后端据此在执行过程中通过 ask_user 事件向用户发起交互请求。状态在当前会话内保持。
+ */
+const enableHitl = ref(false);
+
+/**
  * 当前会话的知识库选择（Task-09，AC-012/AC-014）
  * 业务含义：从 session store 读取，按会话隔离。空数组表示"自动"模式（Agent 自主检索）。
  */
@@ -263,8 +270,14 @@ async function sendMessage(message: string) {
         onSources: (sources) => {
           store.addKnowledgeSources(assistantMsgId, sources);
         },
+
+        // Task-10: HITL 人机交互请求，将交互数据写入助手消息
+        onAskUser: (data) => {
+          store.setAskUserData(assistantMsgId, data);
+        },
       },
       abortController.signal,
+      enableHitl.value,
     );
   } finally {
     isStreaming.value = false;
@@ -284,12 +297,22 @@ function stopGeneration() {
   abortController?.abort();
   isStreaming.value = false;
 }
+
+/**
+ * 处理 ConfirmCard 选中事件（Task-10 新增）
+ * 业务含义：用户在 confirm 类型人机交互卡片中选中选项后，先清除 askUser 状态
+ * （标记消息 complete 并清除 askUserData），再将选中值作为用户消息发送。
+ */
+function handleConfirmSelect(optionValue: string) {
+  store.clearAskUser(store.currentSessionId);
+  sendMessage(optionValue);
+}
 </script>
 
 <template>
   <div class="chat-window">
     <!-- 消息列表区 -->
-    <MessageList :messages="currentMessages" />
+    <MessageList :messages="currentMessages" @select="handleConfirmSelect" />
 
     <!-- 无可用 chat 模型/未配置 LLM 空状态引导（Task-22）：禁用发送 -->
     <div v-if="!hasChatModels" class="config-guide">
@@ -303,6 +326,8 @@ function stopGeneration() {
       :is-streaming="isStreaming"
       :enable-thinking="enableThinking"
       :enable-task-breakdown="enableTaskBreakdown"
+      :enable-hitl="enableHitl"
+      :is-waiting-for-user-input="store.isWaitingForUserInput"
       :knowledge-bases="ragStore.knowledgeBases"
       :selected-knowledge-bases="selectedKnowledgeBases"
       :selected-tools="selectedTools"
@@ -313,6 +338,7 @@ function stopGeneration() {
       @stop="stopGeneration"
       @toggle-thinking="enableThinking = !enableThinking"
       @toggle-task-breakdown="enableTaskBreakdown = !enableTaskBreakdown"
+      @toggle-hitl="enableHitl = !enableHitl"
       @update:selected-knowledge-bases="handleKnowledgeBasesChange"
       @update:selected-tools="handleToolsChange"
       @update:selected-model="handleModelChange"

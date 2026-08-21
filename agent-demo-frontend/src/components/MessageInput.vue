@@ -12,6 +12,10 @@ const props = withDefaults(defineProps<{
   enableThinking?: boolean;
   /** 是否开启复杂任务拆解（CR-002，AC-012），可选，默认 false 向前兼容 */
   enableTaskBreakdown?: boolean;
+  /** 是否开启 HITL 人机交互（Task-10），可选，默认 false 向前兼容 */
+  enableHitl?: boolean;
+  /** 是否正在等待用户回复 HITL 问题（Task-10），可选，默认 false 向前兼容 */
+  isWaitingForUserInput?: boolean;
   /** 可选知识库列表（Task-08，AC-029），默认空数组 */
   knowledgeBases?: KnowledgeBase[];
   /** 选中的知识库名称列表（Task-08，AC-029），默认空数组 */
@@ -27,6 +31,8 @@ const props = withDefaults(defineProps<{
 }>(), {
   enableThinking: false,
   enableTaskBreakdown: false,
+  enableHitl: false,
+  isWaitingForUserInput: false,
   knowledgeBases: () => [],
   selectedKnowledgeBases: () => [],
   selectedTools: () => [],
@@ -42,6 +48,8 @@ const emit = defineEmits<{
   toggleThinking: [];
   /** 切换复杂任务拆解开关（CR-002，AC-012） */
   toggleTaskBreakdown: [];
+  /** 切换 HITL 人机交互开关（Task-10） */
+  toggleHitl: [];
   /** 知识库选择变更（Task-08，AC-029） */
   'update:selectedKnowledgeBases': [value: string[]];
   /** 工具选择变更（工具按需加载） */
@@ -144,7 +152,7 @@ function handleKeydown(e: KeyboardEvent) {
         ref="textareaRef"
         v-model="inputText"
         class="textarea"
-        :placeholder="isStreaming ? '生成中...' : '输入消息，Enter 发送，Shift+Enter 换行'"
+        :placeholder="isStreaming ? '生成中...' : props.isWaitingForUserInput ? '请回复上方问题...' : '输入消息，Enter 发送，Shift+Enter 换行'"
         :disabled="isStreaming || !hasModels"
         rows="1"
         @input="autoResize"
@@ -200,6 +208,14 @@ function handleKeydown(e: KeyboardEvent) {
         @click="emit('toggleTaskBreakdown')"
       >
         📋 任务拆解
+      </button>
+      <!-- HITL 人机交互 toggle（Task-10）：开启时高亮，与深度思考/任务拆解独立共存 -->
+      <button
+        class="btn-hitl"
+        :class="{ active: props.enableHitl }"
+        @click="emit('toggleHitl')"
+      >
+        🤝 人机交互
       </button>
       <span v-if="isOverLimit" class="char-warn">
         消息长度不能超过 {{ MAX_LENGTH }} 字符
@@ -396,6 +412,30 @@ function handleKeydown(e: KeyboardEvent) {
 
 /* 开启时高亮 */
 .btn-task-breakdown.active {
+  border-color: var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+/* HITL 人机交互 toggle 按钮（Task-10）- 与 btn-thinking/btn-task-breakdown 样式对称 */
+.btn-hitl {
+  padding: 2px var(--spacing-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-hitl:hover {
+  border-color: var(--accent-dim);
+  color: var(--accent);
+}
+
+.btn-hitl.active {
   border-color: var(--accent);
   background: var(--accent-dim);
   color: var(--accent);

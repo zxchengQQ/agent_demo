@@ -390,7 +390,11 @@ public class ToolRegistry {
         if (defaultToolIds == null || defaultToolIds.isEmpty()) {
             return List.of();
         }
-        List<Object> result = new ArrayList<>();
+        // 业务含义：同一工具 Bean 可能被多个 id 命中（如 TimeTool 同时含
+        // getCurrentTime/getCurrentTimeByZone/getCurrentDate 三个 @Tool 方法），
+        // 若逐 id 直接 addAll 会导致同一实例重复加入，AiServices 构建时报
+        // "Duplicated definition for tool"。故用 LinkedHashSet 按对象去重。
+        Set<Object> result = new LinkedHashSet<>();
         for (String id : defaultToolIds) {
             try {
                 result.addAll(resolveTools(List.of(id)));
@@ -398,7 +402,7 @@ public class ToolRegistry {
                 log.error("默认工具不存在: {}，跳过加载", id);
             }
         }
-        return result;
+        return new ArrayList<>(result);
     }
 
     /** 推断工具类别 */

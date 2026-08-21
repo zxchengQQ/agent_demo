@@ -480,4 +480,99 @@ describe('Session Store', () => {
       expect(raw).not.toContain('doubao-seed-2.0-pro');
     });
   });
+
+  // ========== HITL 人机交互状态管理（Task-07/08，BUG 修复）==========
+
+  /** 辅助：创建带助手消息的会话并返回 sessionId */
+  function setupAssistantMessage(store: ReturnType<typeof useSessionStore>, msgId: string): string {
+    const sessionId = store.sessions[0].sessionId;
+    store.addMessage(sessionId, {
+      id: msgId,
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+    });
+    return sessionId;
+  }
+
+  describe('HITL 人机交互状态管理', () => {
+    it('setAskUserData 将交互数据写入指定消息（ask_user 事件触发）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-1');
+      store.setAskUserData('msg-hitl-1', {
+        type: 'confirm',
+        question: '确认删除文件 test.txt？',
+        options: ['确认删除', '取消'],
+        retryCount: 0,
+      });
+      const found = store.sessions[0].messages.find((m) => m.id === 'msg-hitl-1');
+      expect(found?.askUserData?.type).toBe('confirm');
+      expect(found?.askUserData?.question).toBe('确认删除文件 test.txt？');
+      expect(found?.askUserData?.options).toEqual(['确认删除', '取消']);
+    });
+
+    /**
+     * BUG 修复核心测试：ask_user 事件后后端立即发送 done，消息 status 为 complete，
+     * 但 HITL 场景下消息仍处于"等待用户输入"状态。
+     * 修复前 isWaitingForUserInput 要求 status === 'incomplete'，此处返回 false 导致输入框不进入等待态。
+     */
+    it('isWaitingForUserInput 在 askUserData 存在且 status=complete 时返回 true（HITL BUG 修复）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-2');
+      store.setAskUserData('msg-hitl-2', {
+        type: 'confirm',
+        question: '确认删除文件？',
+        options: ['是', '否'],
+        retryCount: 0,
+      });
+      // 模拟 ask_user 事件后 done 事件触发 markComplete（后端行为）
+      store.markComplete('msg-hitl-2');
+      expect(store.sessions[0].messages[0].status).toBe('complete');
+      // 即使 status=complete，仍应视为等待用户输入
+      expect(store.isWaitingForUserInput).toBe(true);
+    });
+
+    it('isWaitingForUserInput 无 askUserData 时返回 false', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-3');
+      expect(store.isWaitingForUserInput).toBe(false);
+    });
+
+    it('clearAskUser 清除 askUserData 并标记消息 complete（用户回复后）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-4');
+      store.setAskUserData('msg-hitl-4', {
+        type: 'text',
+        question: '请提供订单号',
+        options: [],
+        retryCount: 0,
+      });
+      expect(store.isWaitingForUserInput).toBe(true);
+      store.clearAskUser(store.sessions[0].sessionId);
+      const found = store.sessions[0].messages.find((m) => m.id === 'msg-hitl-4');
+      expect(found?.askUserData).toBeUndefined();
+      expect(found?.status).toBe('complete');
+      expect(store.isWaitingForUserInput).toBe(false);
+    });
+
+    it('setAskUserData 不持久化 askUserData 到 localStorage（仅实时展示）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-5');
+      store.setAskUserData('msg-hitl-5', {
+        type: 'confirm',
+        question: '确认？',
+        options: ['是', '否'],
+        retryCount: 0,
+      });
+      const raw = localStorage.getItem('agent-demo:sessions');
+      expect(raw).not.toBeNull();
+      expect(raw).not.toContain('askUserData');
+    });
+  });
 });

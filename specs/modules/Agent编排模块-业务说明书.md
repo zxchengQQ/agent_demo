@@ -58,6 +58,21 @@ Agent 编排模块（agent-demo-agent）是 AI Agent 示例项目的核心能力
 - **前置条件**：ARK_API_KEY 已配置，方舟 Coding Plan 地址支持 thinking 参数。
 - **后置结果**：SSE 流推送顺序为 reasoning（可选）-> token（多个）-> done。
 
+### 3.6 人机交互 HITL 对话（20260820 迭代新增）
+
+- **触发场景**：用户开启"🤝 人机交互"开关（enableHitl=true）发送消息，Agent 在任务执行中需要向用户提问/确认时。
+- **操作步骤**：AgentController 根据 `enableHitl=true` 调用 `SimpleAgent.chatHITLStream(sessionId, message, modelId, toolIds)` 替代 `chatStream`，返回 `HitlTokenStream`。
+- **系统行为**：
+  1. `chatHITLStream` 内部构建消息列表（hitl.txt 场景模板 + 历史记忆 + 当前用户消息），`ensureAskUserTool` 强制将 AskUserTool 加入工具列表（`dedupeToolsByMethodName` 按方法名去重，默认工具不含 askUser 时动态加入）
+  2. `HITLReActStream` 显式 ReAct 循环（参考 ReActThinkingStream）：LLM 生成 Thought -> Action -> 执行工具 -> Observation 回填 -> 继续
+  3. **askUser 拦截**：工具执行前检测工具名为 "askUser" 时，不执行 ToolExecutor，而是保存消息列表到 `HumanInteractionManager` 并触发 `onAskUser` 回调（发送 `ask_user` SSE 事件），Agent 暂停
+  4. **恢复**：用户回复（同 sessionId）时 Controller 检测 `hasPending` 走 `resumeHITLStream`，加载保存状态 + 用户回复作为 Observation -> 创建新 HITLReActStream -> 继续循环
+  5. 追问计数：`retryCount >= 3` 时不触发 onAskUser，返回错误 Observation 让 LLM 终止任务
+- **业务规则**：HITL 使用场景模板 "hitl"（BR-AGT-013）；askUser 调用不消耗 ReAct 迭代次数（BR-AGT-014）；同一会话同时只能有一个 pending 交互（BR-AGT-015）
+- **前置条件**：enableHitl=true；hitl.txt 场景模板可加载（缺失回退到 AgentConfig 默认值）。
+- **后置结果**：SSE 流可包含 thought/action/observation/ask_user/token/done 事件；ask_user 事件后流结束等待用户回复。
+- **零回归**：enableHitl=false（默认）时走现有 chatStream 路径，行为不变。
+
 ## 4. 业务流程串联
 
 ```mermaid
@@ -105,15 +120,19 @@ flowchart TD
 - **PlanAgent**：任务拆解 Agent（任务编排，非 BaseAgent 接口）。v2.0 新增 `chatTaskBreakdownStream(sessionId, message, enableThinking, modelId)` 重载方法（原三参方法保留，modelId 传 null），内部将 modelId 透传给 `TaskBreakdownStream`，按其选择各阶段思考流式模型。
 - **TaskBreakdownStream**：三阶段任务编排流（规划 -> 执行 -> 总结）接口/实现，v2.0 新增 `modelId` 字段与构造器，各阶段通过 `getThinkingStreamingChatModelByModelId(modelId)`（有指定 modelId）或 `getDefaultThinkingStreamingChatModel()`（modelId 为空）获取思考模型。
 - **ThinkingTokenStream**：思考流式接口（CR-001 新增），定义 `onPartialThinking`/`onPartialResponse`/`onComplete`/`onError` 四个回调 + `start()` 方法，区别于 LangChain4j TokenStream 仅回调 content。
+- **HitlTokenStream**：HITL 流式接口（20260820 新增），继承 ThinkingTokenStream，覆盖父接口方法使链式调用可用，新增 `onAskUser(AskUserConsumer)` 回调（携带 type/question/options/retryCount）。
+- **HITLReActStream**：HITL 显式 ReAct 循环实现（20260820 新增，参考 ReActThinkingStream），核心差异：工具执行前检测工具名是否为 askUser -> 拦截并保存消息列表到 HumanInteractionManager -> 触发 onAskUser 回调暂停；`resume(sessionId, userReply)` 从保存状态恢复 ReAct 循环。
+- **HumanInteractionManager**：人机交互管理器（20260820 新增），ConcurrentHashMap 按 sessionId 存储 pending 交互状态，提供 save/load/clear/hasPending/getRetryCount 方法 + @Scheduled 30 分钟超时清理。
+- **PendingInteraction**：暂停交互状态数据结构（20260820 新增），含消息列表/askUserType/question/options/retryCount/timestamp/modelId/tools/toolsJson。
 - **AgentConfig**：配置属性绑定（`agent.*`），含 maxIterations/chatMemoryWindowSize/defaultRole/enableLogging/fileAllowedDir。`defaultRole` 指定默认角色模板（对应 `prompts/roles/` 目录文件名）。旧提示词字段（defaultSystemPrompt 等）保留为模板缺失时的最终回退。
-- **PromptTemplateLoader**：提示词模板加载器，从 classpath 加载 `prompts/roles/{role}.txt` + `prompts/scenarios/{scenario}.txt`，组合为最终系统提示词（角色 + "\n\n" + 场景）。模板缺失时三级回退：指定角色 -> general 角色 -> AgentConfig 默认值。
+- **PromptTemplateLoader**：提示词模板加载器，从 classpath 加载 `prompts/roles/{role}.txt` + `prompts/scenarios/{scenario}.txt`，组合为最终系统提示词（角色 + "\n\n" + 场景）。模板缺失时三级回退：指定角色 -> general 角色 -> AgentConfig 默认值。20260820 新增 `SCENARIO_HITL = "hitl"` 场景常量。
 
 ## 8. API 接口清单
 
 | 接口路径 | HTTP方法 | 功能说明 | 权限要求 |
 |---------|---------|---------|---------|
 | `/api/agent/chat` | POST | 同步对话 | 无（学习示例） |
-| `/api/agent/chat/stream` | POST | 流式对话（SSE，含 enableThinking 分流，CR-001 扩展） | 无 |
+| `/api/agent/chat/stream` | POST | 流式对话（SSE，含 enableThinking 分流 CR-001 + enableHitl HITL 分流 20260820 扩展） | 无 |
 | `/api/agent/session` | POST | 创建会话 | 无 |
 | `/api/agent/session/{sessionId}` | GET | 查询会话是否存在 | 无 |
 | `/api/agent/session/{sessionId}/memory` | DELETE | 清空会话记忆 | 无 |
@@ -135,6 +154,9 @@ flowchart TD
 | BR-AGT-010 | Agent delegate 按 modelId 隔离缓存（ConcurrentHashMap），不同 modelId 使用独立 delegate；modelId 为空时使用默认模型（第一个可用 chat 模型）（v2.0 新增） | 🔴 强制 |
 | BR-AGT-011 | Agent delegate 缓存键为 modelId + toolsFingerprint，不同工具集使用独立 delegate；工具按需加载时默认工具不可排除（默认 ∪ 指定）（CR 新增） | 🔴 强制 |
 | BR-AGT-012 | 会话级工具绑定按 sessionId 缓存（sessionToolIds），首次指定后后续轮次沿用；空数组清除恢复默认（CR 新增） | 🔴 强制 |
+| BR-AGT-013 | HITL 模式使用场景模板 "hitl"（含 askUser 使用规则 + 追问策略 + Few-shot 示例），通过 PromptTemplateLoader 组合提示词（20260820 新增） | 🔴 强制 |
+| BR-AGT-014 | HITL 模式使用显式 ReAct 循环（HITLReActStream），askUser 调用不消耗 ReAct 迭代次数；默认工具不含 askUser 时由 ensureAskUserTool 强制加入并按方法名去重（20260820 新增） | 🔴 强制 |
+| BR-AGT-015 | HITL pending 交互状态按 sessionId 隔离，同一会话同时只能有一个 pending；恢复时加载保存状态 + 用户回复作为 Observation 继续循环（20260820 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

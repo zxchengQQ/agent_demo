@@ -182,6 +182,12 @@ public class ToolSchemaConverter {
         if (type == boolean.class || type == Boolean.class) {
             return "boolean";
         }
+        if (type.isArray()) {
+            return "array";
+        }
+        if (type == List.class || type == java.util.Collection.class) {
+            return "array";
+        }
         return "string";
     }
 }

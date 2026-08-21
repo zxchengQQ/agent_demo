@@ -64,6 +64,17 @@ public class ChatRequest {
     private Boolean enableTaskBreakdown = false;
 
     /**
+     * 是否开启人机交互（HITL）模式，默认 false
+     * <p>
+     * 业务含义：前端"HITL"开关状态，true 时后端走 HITL ReAct 路径
+     * （Agent 可调用 askUser 工具向用户提问/确认，推送 ask_user 事件），
+     * null/false 时走原有路径（零回归）。
+     * 用户回复 HITL 问题时无需设置此标志（Controller 自动检测 pending 状态恢复）。
+     * </p>
+     */
+    private Boolean enableHitl = false;
+
+    /**
      * 用户指定的知识库名称列表（可选）
      * <p>
      * 业务含义：前端知识库选择器选中的知识库名称。为空或 null 时 Agent 自主决策；

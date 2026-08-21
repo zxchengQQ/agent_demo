@@ -135,6 +135,59 @@ class ToolRegistryTest {
         assertNull(toolRegistry.getTool("NotExisted"));
     }
 
+    @Test
+    @DisplayName("getDefaultTools 对同一多方法工具去重（避免 Duplicated definition）")
+    void getDefaultToolsShouldDeduplicateMultiMethodTool() {
+        // given: 注册一个含多个 @Tool 方法的工具（模拟 TimeTool：getCurrentTime/getCurrentTimeByZone/getCurrentDate）
+        MultiMethodTool tool = new MultiMethodTool();
+        toolRegistry.register(tool);
+        assertEquals(1, toolRegistry.size());
+
+        // when: 三个方法名分别作为默认工具 id 解析
+        List<Object> defaultTools = toolRegistry.getDefaultTools(List.of(
+                "builtin:methodA", "builtin:methodB", "builtin:methodC"));
+
+        // then: 同一工具实例只应出现一次（按对象去重）
+        assertEquals(1, defaultTools.size(), "多方法同一工具应只保留一个实例");
+        assertEquals(tool, defaultTools.get(0));
+    }
+
+    @Test
+    @DisplayName("getDefaultTools 对同一多方法工具去重后不改变方法解析")
+    void getDefaultToolsShouldStillResolveAllMethods() {
+        // given
+        MultiMethodTool tool = new MultiMethodTool();
+        toolRegistry.register(tool);
+
+        // when
+        List<Object> defaultTools = toolRegistry.getDefaultTools(List.of(
+                "builtin:methodA", "builtin:methodB"));
+
+        // then: 方法名解析成功（不抛 TOOL_NOT_FOUND），且只保留一个实例
+        assertEquals(1, defaultTools.size(), "两个方法名命中同一工具应只保留一个实例");
+        assertEquals(tool, defaultTools.get(0), "解析结果应为该工具实例");
+    }
+
+    /**
+     * 测试用多方法工具类（模拟 TimeTool 场景）
+     */
+    public static class MultiMethodTool {
+        @Tool("方法 A")
+        public String methodA() {
+            return "A";
+        }
+
+        @Tool("方法 B")
+        public String methodB() {
+            return "B";
+        }
+
+        @Tool("方法 C")
+        public String methodC() {
+            return "C";
+        }
+    }
+
     /**
      * 测试用工具类
      */

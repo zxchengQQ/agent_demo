@@ -87,6 +87,21 @@ export interface SubTask {
   error?: string;
 }
 
+/**
+ * HITL 人机交互数据（Task-07 新增）
+ * 业务含义：后端通过 ask_user SSE 事件向用户发起交互请求，前端据 type 渲染不同 UI。
+ */
+export interface AskUserData {
+  /** 交互类型：text=文本输入，confirm=选项确认 */
+  type: 'text' | 'confirm';
+  /** 向用户展示的问题文本 */
+  question: string;
+  /** confirm 类型的可选项列表（text 类型无此字段） */
+  options?: string[];
+  /** 重试次数（0=首次提问，>0=用户回答不合规后重新提问） */
+  retryCount: number;
+}
+
 /** 单条消息 */
 export interface Message {
   /** 消息唯一 ID（前端生成） */
@@ -125,6 +140,13 @@ export interface Message {
    * 可选字段，向前兼容旧数据（未使用知识库的旧消息 knowledgeSources 为 undefined）。
    */
   knowledgeSources?: KnowledgeSource[];
+  /**
+   * HITL 人机交互数据（Task-07 新增）
+   * 业务含义：后端 ask_user 事件触发时写入，前端据 type 渲染文本输入或选项确认卡片。
+   * 不持久化到 localStorage（仅当前会话实时展示），刷新后清除。
+   * 用户回复后由 clearAskUser 清除并标记消息 complete。
+   */
+  askUserData?: AskUserData;
 }
 
 /**
@@ -244,6 +266,16 @@ export interface StreamCallbacks {
    * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
    */
   onSources?: (sources: KnowledgeSource[]) => void;
+
+  // ===== Task-07 新增：HITL 人机交互回调 =====
+
+  /**
+   * 收到 ask_user 事件（HITL 人机交互请求）
+   * 业务含义：Agent 在执行过程中需要用户输入或确认时，通过 ask_user 事件向用户发起提问。
+   * 前端据 data.type 渲染文本输入框或选项确认卡片，用户回复后作为新消息发送。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onAskUser?: (data: AskUserData) => void;
 }
 
 // ===== RAG 知识库类型定义（Task-01，关联 AC-003/AC-005/AC-009）=====

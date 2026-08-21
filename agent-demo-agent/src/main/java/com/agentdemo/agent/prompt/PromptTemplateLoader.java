@@ -29,6 +29,7 @@ public class PromptTemplateLoader {
     public static final String SCENARIO_TASK_PLAN = "task-plan";
     public static final String SCENARIO_TASK_EXECUTE = "task-execute";
     public static final String SCENARIO_TASK_SUMMARY = "task-summary";
+    public static final String SCENARIO_HITL = "hitl";
 
     private static final String ROLES_DIR = "prompts/roles/";
     private static final String SCENARIOS_DIR = "prompts/scenarios/";
@@ -112,6 +113,7 @@ public class PromptTemplateLoader {
             case SCENARIO_TASK_PLAN -> agentConfig.getTaskBreakdownPlanPrompt();
             case SCENARIO_TASK_EXECUTE -> agentConfig.getTaskExecutionSystemPrompt();
             case SCENARIO_TASK_SUMMARY -> agentConfig.getTaskSummaryPrompt();
+            case SCENARIO_HITL -> agentConfig.getThinkingReactSystemPrompt();
             default -> agentConfig.getDefaultSystemPrompt();
         };
     }

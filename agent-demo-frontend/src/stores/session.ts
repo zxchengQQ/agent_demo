@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia';
-import type { SessionRecord, Message, ReactStep, SubTaskStatus, SubTaskReactStep, TokenUsage, KnowledgeSource } from '@/types';
+import type { AskUserData, SessionRecord, Message, ReactStep, SubTaskStatus, SubTaskReactStep, TokenUsage, KnowledgeSource } from '@/types';
 import * as storage from '@/utils/storage';
 
 /**
@@ -48,6 +48,22 @@ export const useSessionStore = defineStore('session', {
      */
     toolsBySession: {} as Record<string, string[]>,
   }),
+
+  getters: {
+    /**
+     * 是否正在等待用户输入（HITL，Task-08 新增，BUG 修复）
+     * 业务含义：当前会话最后一条消息有 askUserData 时，表示 Agent 发起了人机交互请求，
+     * 正在等待用户回复。修复前额外要求 status === 'incomplete'，但 ask_user 事件后
+     * 后端立即发送 done 使消息 status=complete（SSE 流结束），导致该 getter 错误返回 false，
+     * 输入框不进入"请回复上方问题..."等待态。
+     */
+    isWaitingForUserInput(state): boolean {
+      const session = state.sessions.find((s) => s.sessionId === state.currentSessionId);
+      if (!session || session.messages.length === 0) return false;
+      const lastMsg = session.messages[session.messages.length - 1];
+      return !!lastMsg.askUserData;
+    },
+  },
 
   actions: {
     /**
@@ -351,6 +367,39 @@ export const useSessionStore = defineStore('session', {
       if (session) {
         session.updatedAt = Date.now();
         this.sessions.sort((a, b) => b.updatedAt - a.updatedAt);
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    // ===== Task-08 新增：HITL 人机交互状态管理 =====
+
+    /**
+     * 设置消息的 askUserData（ask_user 事件触发）
+     * 业务含义：后端通过 ask_user 事件发起人机交互请求时，将交互数据写入助手消息。
+     * 不持久化到 localStorage（askUserData 仅用于当前会话实时展示），故不调用 saveSessions。
+     */
+    setAskUserData(messageId: string, data: AskUserData) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          msg.askUserData = data;
+          return;
+        }
+      }
+    },
+
+    /**
+     * 清除会话中待回复的 askUser 数据（用户回复后调用）
+     * 业务含义：用户回复了 Agent 的人机交互请求后，标记消息 complete 并清除 askUserData，
+     * 使 isWaitingForUserInput getter 返回 false，输入框恢复正常状态。
+     */
+    clearAskUser(sessionId: string) {
+      const session = this.sessions.find((s) => s.sessionId === sessionId);
+      if (!session || session.messages.length === 0) return;
+      const lastMsg = session.messages[session.messages.length - 1];
+      if (lastMsg.askUserData) {
+        lastMsg.status = 'complete';
+        lastMsg.askUserData = undefined;
         storage.saveSessions(this.sessions);
       }
     },

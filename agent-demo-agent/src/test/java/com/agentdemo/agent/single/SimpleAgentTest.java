@@ -1,5 +1,6 @@
 package com.agentdemo.agent.single;
 
+import com.agentdemo.agent.core.HumanInteractionManager;
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
@@ -86,7 +87,7 @@ class SimpleAgentTest {
 
         return new TestableSimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig,
                 mock(ToolSchemaConverter.class), mock(ToolExecutor.class),
-                new PromptTemplateLoader(agentConfig));
+                new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
     }
 
     /**
@@ -102,8 +103,9 @@ class SimpleAgentTest {
                             AgentConfig agentConfig,
                             ToolSchemaConverter toolSchemaConverter,
                             ToolExecutor toolExecutor,
-                            PromptTemplateLoader promptTemplateLoader) {
-            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader);
+                            PromptTemplateLoader promptTemplateLoader,
+                            HumanInteractionManager humanInteractionManager) {
+            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader, humanInteractionManager);
             this.toolRegistry = toolRegistry;
         }
 

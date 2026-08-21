@@ -1,8 +1,9 @@
 package com.agentdemo.agent.single;
 
+import com.agentdemo.agent.core.HumanInteractionManager;
+import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
-import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
@@ -63,7 +64,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用 chatThinkingStream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "你好");
@@ -101,7 +102,7 @@ class SimpleAgentThinkingStreamTest {
         String systemPrompt = "你是测试助手";
         agentConfig.setThinkingSystemPrompt(systemPrompt);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用 chatThinkingStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "你好");
@@ -157,7 +158,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用原有 chatStream（不调用 start 避免触发真实 LLM）
         TokenStream tokenStream = agent.chatStream("test-session", "你好");
@@ -197,7 +198,7 @@ class SimpleAgentThinkingStreamTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用 chatThinkingStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingStream("test-session", "帮我查一下今天的新闻");
@@ -276,7 +277,7 @@ class SimpleAgentThinkingStreamTest {
 
         ToolExecutor toolExecutor = mock(ToolExecutor.class);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
 
         // when: 调用 chatThinkingReActStream 并 start 触发 model.stream
         ThinkingTokenStream stream = agent.chatThinkingReActStream("test-session", "你好");

@@ -12,12 +12,12 @@ const STORAGE_KEY = 'agent-demo:sessions';
 const MAX_SESSIONS = 50;
 
 /**
- * 序列化前剥离 reactSteps 字段（内部辅助方法）
- * 业务含义：ReAct 推理过程仅用于当前会话实时展示，不持久化到 localStorage（仅持久化 content）。
- * 使用解构复制避免修改内存中的原始对象。
+ * 序列化前剥离非持久化字段（内部辅助方法）
+ * 业务含义：ReAct 推理过程（reactSteps）和 HITL 交互数据（askUserData）仅用于当前会话实时展示，
+ * 不持久化到 localStorage。使用解构复制避免修改内存中的原始对象。
  */
-function stripReactSteps(messages: Message[]): Omit<Message, 'reactSteps'>[] {
-  return messages.map(({ reactSteps: _reactSteps, ...rest }) => rest);
+function stripNonPersistentFields(messages: Message[]): Omit<Message, 'reactSteps' | 'askUserData'>[] {
+  return messages.map(({ reactSteps: _reactSteps, askUserData: _askUserData, ...rest }) => rest);
 }
 
 /**
@@ -41,10 +41,10 @@ export function loadSessions(): SessionRecord[] {
  * 业务含义：按 updatedAt 倒序后截断保留前 50 个（AC-016）
  */
 export function saveSessions(sessions: SessionRecord[]): void {
-  // 序列化时剥离 reactSteps（ReAct 推理过程不持久化，仅保留 content）
+  // 序列化时剥离 reactSteps 和 askUserData（非持久化字段，仅保留 content）
   const stripped = sessions.map((s) => ({
     ...s,
-    messages: stripReactSteps(s.messages),
+    messages: stripNonPersistentFields(s.messages),
   }));
   const sorted = [...stripped].sort((a, b) => b.updatedAt - a.updatedAt);
   const trimmed = sorted.slice(0, MAX_SESSIONS);

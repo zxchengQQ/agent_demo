@@ -7,6 +7,11 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
+/** 向上传递 ConfirmCard 选中事件（Task-10 新增） */
+const emit = defineEmits<{
+  select: [optionValue: string];
+}>();
+
 const listRef = ref<HTMLDivElement | null>(null);
 
 /** 自动滚动到底部（AC-020） */
@@ -44,6 +49,7 @@ watch(
       v-for="msg in props.messages"
       :key="msg.id"
       :message="msg"
+      @select="emit('select', $event)"
     />
   </div>
 </template>
