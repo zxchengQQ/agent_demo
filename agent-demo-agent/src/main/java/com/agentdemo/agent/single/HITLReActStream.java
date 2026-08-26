@@ -168,7 +168,16 @@ public class HITLReActStream implements HitlTokenStream {
         try {
             runReActLoop();
         } catch (Exception e) {
-            log.error("HITL ReAct 循环异常", e);
+            // 业务含义：区分"协调层 HITL 暂停信号"与"真实运行异常"——
+            // WorkflowHITLException（位于 agent-demo-app 模块）是工作流 tool_confirm/checkpoint/askUser
+            // 暂停的控制流信号，由协调层捕获进入 WAITING_USER，属正常业务暂停而非运行错误，
+            // 故降级为 DEBUG 记录，避免 ERROR 误导排查（2026-08-26 优化日志观感）。
+            // 用全限定类名判断而非 instanceof（agent 模块依赖方向相反，不可见 app 模块类型）。
+            if ("com.agentdemo.app.service.WorkflowHITLException".equals(e.getClass().getName())) {
+                log.debug("HITL ReAct 循环收到暂停信号（由协调层处理）: {}", e.getMessage());
+            } else {
+                log.error("HITL ReAct 循环异常", e);
+            }
             if (errorConsumer != null) {
                 errorConsumer.accept(e);
             }

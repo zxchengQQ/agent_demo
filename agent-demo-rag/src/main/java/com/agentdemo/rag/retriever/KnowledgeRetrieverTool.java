@@ -5,6 +5,8 @@ import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
+import com.agentdemo.tools.sanitize.SanitizeContext;
+import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -12,6 +14,7 @@ import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.filter.MetadataFilterBuilder;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -38,15 +41,30 @@ public class KnowledgeRetrieverTool {
     private final EmbeddingStoreFactory embeddingStoreFactory;
     private final ModelFactory modelFactory;
     private final RagProperties ragProperties;
+    private final ToolOutputSanitizer sanitizer;
 
     public KnowledgeRetrieverTool(KnowledgeBaseStore knowledgeBaseStore,
                                   EmbeddingStoreFactory embeddingStoreFactory,
                                   ModelFactory modelFactory,
                                   RagProperties ragProperties) {
+        this(knowledgeBaseStore, embeddingStoreFactory, modelFactory, ragProperties, ToolOutputSanitizer.disabled());
+    }
+
+    /**
+     * 真实构造（Spring 注入）：清洗链路生效。@Autowired 明确指定 Spring 在多构造器下
+     * 使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
+     */
+    @Autowired
+    public KnowledgeRetrieverTool(KnowledgeBaseStore knowledgeBaseStore,
+                                  EmbeddingStoreFactory embeddingStoreFactory,
+                                  ModelFactory modelFactory,
+                                  RagProperties ragProperties,
+                                  ToolOutputSanitizer sanitizer) {
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.embeddingStoreFactory = embeddingStoreFactory;
         this.modelFactory = modelFactory;
         this.ragProperties = ragProperties;
+        this.sanitizer = sanitizer;
     }
 
     /**
@@ -90,12 +108,12 @@ public class KnowledgeRetrieverTool {
         // 1. 查找知识库：按 ID 定位目标知识库，不存在时返回提示文本而非抛异常
         KnowledgeBase kb = knowledgeBaseStore.findById(kbId);
         if (kb == null) {
-            return "知识库 '" + kbId + "' 不存在";
+            return sanitizeResult("知识库 '" + kbId + "' 不存在", kbId);
         }
 
         // 2. 检查文档数：空知识库无需检索，直接返回提示（AC-016）
         if (kb.getDocumentCount() == 0) {
-            return "知识库 '" + kb.getName() + "' 为空，暂无文档内容";
+            return sanitizeResult("知识库 '" + kb.getName() + "' 为空，暂无文档内容", kb.getName());
         }
 
         try {
@@ -115,7 +133,7 @@ public class KnowledgeRetrieverTool {
 
             // 5. 组装结果：无匹配时返回提示（AC-014），有匹配时按 "【片段N】" 前缀组装文本
             if (matches.isEmpty()) {
-                return "未找到与问题相关的文档";
+                return sanitizeResult("未找到与问题相关的文档", kb.getName());
             }
 
             StringBuilder result = new StringBuilder();
@@ -132,13 +150,30 @@ public class KnowledgeRetrieverTool {
                 result.append("\n");
                 result.append(match.embedded().text()).append("\n\n");
             }
-            return result.toString();
+            // 工具产出安全清洗：统一包裹"外部数据、非指令"声明（AC-S06）+ 分级处置 + 超长临时文件
+            return sanitizeResult(result.toString(), kb.getName());
 
         } catch (Exception e) {
             // 检索服务异常时降级为提示文本，避免 Agent 对话中断（AC-020）
             log.error("知识库检索失败: kbId={}, query={}", kbId, query, e);
-            return "知识库服务暂时不可用，请稍后重试";
+            return sanitizeResult("知识库服务暂时不可用，请稍后重试", kb.getName());
         }
+    }
+
+    /**
+     * 知识库检索结果统一清洗（工具产出安全清洗）
+     * <p>
+     * 业务含义：知识库文档内容属外部数据，统一经清洗管道处理：可疑指令分级处置 +
+     * 字数限制 + "外部数据、非指令"边界声明（AC-S05/S06/T01）。"来源: {kb}/{file}"
+     * 行格式保留在清洗后的文本中，前端来源解析不受影响。
+     * </p>
+     */
+    private String sanitizeResult(String text, String kbName) {
+        return sanitizer.sanitize(text, SanitizeContext.builder()
+                .toolName("rag:" + kbName)
+                .sourceDesc("知识库检索内容")
+                .htmlContent(false)
+                .build());
     }
 
     /**

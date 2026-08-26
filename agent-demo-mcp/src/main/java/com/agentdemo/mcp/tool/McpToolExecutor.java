@@ -6,11 +6,14 @@ import com.agentdemo.mcp.client.McpClientEntry;
 import com.agentdemo.mcp.client.McpClientRegistry;
 import com.agentdemo.mcp.client.McpTransportWrapper;
 import com.agentdemo.mcp.entity.McpServerStatus;
+import com.agentdemo.tools.sanitize.SanitizeContext;
+import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.mcp.client.McpClient;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -37,6 +40,7 @@ public class McpToolExecutor {
 
     private final McpClientRegistry clientRegistry;
     private final McpContentParser contentParser;
+    private final ToolOutputSanitizer sanitizer;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -48,8 +52,19 @@ public class McpToolExecutor {
             "3. 建议重新描述需求或使用其他工具获取文本信息。";
 
     public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser) {
+        this(clientRegistry, contentParser, ToolOutputSanitizer.disabled());
+    }
+
+    /**
+     * 真实构造（Spring 注入）：清洗链路生效。@Autowired 明确指定 Spring 在多构造器下
+     * 使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
+     */
+    @Autowired
+    public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser,
+                           ToolOutputSanitizer sanitizer) {
         this.clientRegistry = clientRegistry;
         this.contentParser = contentParser;
+        this.sanitizer = sanitizer;
     }
 
     /**
@@ -109,7 +124,7 @@ public class McpToolExecutor {
         }
 
         // 6. 统一从 Wrapper 缓存解析原始响应（CR-002）
-        return parseFromWrapper(entry);
+        return parseFromWrapper(entry, serverName, toolName);
     }
 
     /**
@@ -117,30 +132,48 @@ public class McpToolExecutor {
      * <p>
      * 业务含义：取代 CR-001 的 extractResultText + extractFromRawResponse 双重解析路径，
      * 所有内容类型（text/image/audio/resource/structuredContent/unknown）统一委托
-     * McpContentParser 解析。Wrapper 缓存为空或解析失败时返回降级提示。
+     * McpContentParser 解析。解析结果（含降级提示）统一经 ToolOutputSanitizer 清洗包裹后返回，
+     * 使 MCP Server（外部不可信数据源）的返回内容作为数据而非指令进入上下文（AC-S06）。
      * </p>
      *
-     * @param entry MCP 客户端聚合对象
-     * @return 解析后的文本，或降级提示
+     * @param entry      MCP 客户端聚合对象
+     * @param serverName MCP Server 名称
+     * @param toolName   工具原始名称
+     * @return 清洗后的文本，或清洗后的降级提示
      */
-    private String parseFromWrapper(McpClientEntry entry) {
+    private String parseFromWrapper(McpClientEntry entry, String serverName, String toolName) {
         McpTransportWrapper wrapper = entry.getTransportWrapper();
         if (wrapper == null) {
             log.warn("parseFromWrapper: entry 无 McpTransportWrapper");
-            return FALLBACK_MESSAGE;
+            return sanitizeMcpResult(FALLBACK_MESSAGE, serverName, toolName);
         }
         String rawResponse = wrapper.getLastRawResponse();
         wrapper.clearCachedResponse();
         if (rawResponse == null || rawResponse.isBlank()) {
             log.warn("parseFromWrapper: Wrapper 缓存为空");
-            return FALLBACK_MESSAGE;
+            return sanitizeMcpResult(FALLBACK_MESSAGE, serverName, toolName);
         }
         String parsed = contentParser.parse(rawResponse);
         if (parsed != null) {
-            return parsed;
+            return sanitizeMcpResult(parsed, serverName, toolName);
         }
         // 解析失败时回退到降级提示
-        return FALLBACK_MESSAGE;
+        return sanitizeMcpResult(FALLBACK_MESSAGE, serverName, toolName);
+    }
+
+    /**
+     * MCP 工具结果统一清洗（工具产出安全清洗）
+     * <p>
+     * 业务含义：MCP Server 返回值属外部不可信数据源，统一经清洗管道处理：
+     * 可疑指令分级处置 + 字数限制 + "外部数据、非指令"边界声明（AC-S05/S06/T01）。
+     * </p>
+     */
+    private String sanitizeMcpResult(String text, String serverName, String toolName) {
+        return sanitizer.sanitize(text, SanitizeContext.builder()
+                .toolName("mcp:" + serverName + "/" + toolName)
+                .sourceDesc("MCP 工具返回内容")
+                .htmlContent(false)
+                .build());
     }
 
     /**

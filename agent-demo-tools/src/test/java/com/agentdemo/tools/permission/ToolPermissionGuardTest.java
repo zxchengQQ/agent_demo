@@ -1,13 +1,18 @@
 package com.agentdemo.tools.permission;
 
 import com.agentdemo.tools.builtin.CalculatorTool;
+import com.agentdemo.tools.builtin.FileReadTool;
 import com.agentdemo.tools.registry.ToolIdResolver;
+import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
+import com.agentdemo.tools.sanitize.ToolSanitizeProperties;
 import dev.langchain4j.agent.tool.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static com.agentdemo.tools.permission.ToolPermissionLevel.ALLOW;
@@ -177,6 +182,38 @@ class ToolPermissionGuardTest {
         } catch (NoSuchMethodException e) {
             throw new AssertionError("包装类应包含 calculate(String) 方法", e);
         }
+    }
+
+    @Test
+    @DisplayName("扩展签名后的 FileReadTool 包装保真：readFile 三参数/参数名/描述一致（T14 回归）")
+    void wrapperSchemaFidelityForExtendedFileReadTool() throws Exception {
+        // 业务含义：readFile 签名扩展为 (path, offset, maxChars) 后，ByteBuddy 包装层
+        // 必须按新签名生成包装方法，参数名/描述与原方法逐字段一致（LangChain4j ToolSpecification 保真）
+        Path dataDir = tempDir.resolve("data");
+        Files.createDirectories(dataDir);
+        FileReadTool original = new FileReadTool(
+                ToolOutputSanitizer.disabled(), new ToolSanitizeProperties(), dataDir.toString());
+        permissionService.registerDefault("builtin:readFile", ALLOW);
+
+        Object wrapper = guard.wrap(original);
+        Class<?> wrapperClass = wrapper.getClass();
+
+        assertThat(wrapperClass.getSimpleName()).isEqualTo("FileReadTool$PermissionGuard");
+        java.lang.reflect.Method wrapped = wrapperClass.getMethod("readFile", String.class, Integer.class, Integer.class);
+        assertThat(wrapped.getAnnotation(Tool.class)).isNotNull();
+        assertThat(wrapped.getParameters()[0].getName()).isEqualTo("path");
+        assertThat(wrapped.getParameters()[1].getName()).isEqualTo("offset");
+        assertThat(wrapped.getParameters()[2].getName()).isEqualTo("maxChars");
+        // 描述（@Tool 注解值）与原方法一致
+        java.lang.reflect.Method originalMethod = FileReadTool.class
+                .getMethod("readFile", String.class, Integer.class, Integer.class);
+        assertThat(String.join(" ", wrapped.getAnnotation(Tool.class).value()))
+                .isEqualTo(String.join(" ", originalMethod.getAnnotation(Tool.class).value()));
+
+        // ALLOW 委托路径：分页读取正常返回（直通清洗器，结果与直调一致）
+        Files.writeString(dataDir.resolve("a.txt"), "hello world", StandardCharsets.UTF_8);
+        String result = invoke(wrapper, "readFile", "a.txt", Integer.valueOf(0), Integer.valueOf(5));
+        assertThat(result).isEqualTo("hello world");
     }
 
     // ==================== 测试辅助 ====================

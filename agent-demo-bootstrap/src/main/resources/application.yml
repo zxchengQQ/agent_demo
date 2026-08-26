@@ -29,6 +29,30 @@ agent:
   thinking-max-iterations: 8  # 深度思考 ReAct 模式最大迭代次数
   enable-logging: true
   file-allowed-dir: ./data
+  # 工具产出清洗配置
+  # 业务含义：对数据获取类工具（HTTP/文件/MCP/知识库）的产出实施"清洗 + 边界声明 + 字数限制"，
+  # 使工具结果作为数据而非指令进入 LLM 上下文，超长内容前缀进入上下文、剩余保存临时文件供模型分段回读。
+  tool:
+    sanitize:
+      enabled: true          # 清洗总开关：false 时所有工具产出直通返回原文（回退开关）
+      max-chars: 4000        # 工具产出进入上下文的最大字符数，超过则前缀+临时文件指引
+      # 临时文件目录：必须位于 agent.file-allowed-dir（./data）内，否则 Agent 无法通过 readFile 回读剩余内容
+      temp-dir: ./data/tool-output
+      temp-retention-hours: 24  # 临时文件保留时长（小时），写入时机会式清理超期文件
+      # MIME 白名单（HttpTool 响应）：非白名单类型不返回原文，返回可读提示
+      allowed-mime-types:
+        - text/html
+        - application/xhtml+xml
+        - text/plain
+        - text/markdown
+        - application/json
+        - application/xml
+        - text/xml
+        - application/*+json
+        - application/*+xml
+      # 模式规则组默认在 ToolSanitizeProperties 中定义，可通过以下配置覆盖注入：
+      # suspicious-patterns: ["..."]   # 一般可疑（命中保留原文+警示标记）
+      # high-risk-patterns: ["..."]    # 高危（命中移除+占位标记）
   # 工具按需加载配置
   tools:
     # 默认加载的工具（Agent 始终可用，无需 API 指定）
