@@ -67,6 +67,7 @@ public class TaskBreakdownSupervisorTemplate {
                                 .roleName("general")
                                 .scenarioName("app-supervisor-plan")
                                 .interfaceClass(SupervisorPlanAgent.class)
+                                .hitlEnabled(true)
                                 .build())
                         // Worker 池：复用 P1 三个 Agent 接口。
                         // AC-031 原语义为 Worker 用 lite 快模型控成本，当前环境仅配置 glm-5.2，
@@ -80,6 +81,7 @@ public class TaskBreakdownSupervisorTemplate {
                                         .roleName("general")
                                         .scenarioName("app-research")
                                         .interfaceClass(ResearchAgent.class)
+                                        .hitlEnabled(true)
                                         .build(),
                                 AgentDefinition.builder()
                                         .name("分析")
@@ -89,6 +91,7 @@ public class TaskBreakdownSupervisorTemplate {
                                         .roleName("general")
                                         .scenarioName("app-analysis")
                                         .interfaceClass(AnalysisAgent.class)
+                                        .hitlEnabled(true)
                                         .build(),
                                 AgentDefinition.builder()
                                         .name("总结")
@@ -98,6 +101,7 @@ public class TaskBreakdownSupervisorTemplate {
                                         .roleName("general")
                                         .scenarioName("app-summary")
                                         .interfaceClass(SummaryAgent.class)
+                                        .hitlEnabled(true)
                                         .build()
                         ))
                         // AC-031：主控汇总用强模型（综合报告质量），与拆解主控同为 glm-5.2
@@ -109,6 +113,7 @@ public class TaskBreakdownSupervisorTemplate {
                                 .roleName("general")
                                 .scenarioName("app-supervisor-summarize")
                                 .interfaceClass(SupervisorSummarizeAgent.class)
+                                .hitlEnabled(true)
                                 .build())
                         .maxSubtasks(5)
                         .build())

@@ -34,6 +34,12 @@
             <artifactId>spring-web</artifactId>
         </dependency>
 
+        <!-- ByteBuddy（工具权限包装层：动态生成 @Tool 包装类，BOM 统一管理版本） -->
+        <dependency>
+            <groupId>net.bytebuddy</groupId>
+            <artifactId>byte-buddy</artifactId>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

@@ -7,9 +7,13 @@ const props = defineProps<{
   messages: Message[];
 }>();
 
-/** 向上传递 ConfirmCard 选中事件（Task-10 新增） */
+/** 向上传递 AskUserCard 回复事件（unified-chat-mode Task-17：值语义=用户回复，选项值与输入文本统一） */
 const emit = defineEmits<{
-  select: [optionValue: string];
+  reply: [value: string];
+  /** 工具权限确认：批准（Task-17，AC-N03） */
+  approve: [];
+  /** 工具权限确认：拒绝（Task-17，AC-S02） */
+  deny: [];
 }>();
 
 const listRef = ref<HTMLDivElement | null>(null);
@@ -49,7 +53,9 @@ watch(
       v-for="msg in props.messages"
       :key="msg.id"
       :message="msg"
-      @select="emit('select', $event)"
+      @reply="emit('reply', $event)"
+      @approve="emit('approve')"
+      @deny="emit('deny')"
     />
   </div>
 </template>

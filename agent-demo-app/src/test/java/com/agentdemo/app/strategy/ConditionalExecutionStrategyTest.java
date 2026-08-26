@@ -83,7 +83,7 @@ class ConditionalExecutionStrategyTest {
     @Test
     void execute_shouldRunOnlyFirstMatchingBranch() throws Exception {
         // 问题短 → 命中"简单回答"分支（第一个条件满足）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("简单回答内容");
 
         WorkflowTemplate template = routingTemplate();
@@ -94,13 +94,13 @@ class ConditionalExecutionStrategyTest {
 
         assertEquals("简单回答内容", result);
         // 仅执行 1 个 Agent（简单分支），不执行复杂分支的 2 个 Agent
-        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
     }
 
     @Test
     void execute_shouldRunSecondBranchWhenFirstNotMatch() throws Exception {
         // 问题长 → 分支1 不满足，命中分支2（复杂拆解，2 个 Agent）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("研究结果", "总结结果");
 
         WorkflowTemplate template = routingTemplate();
@@ -111,7 +111,7 @@ class ConditionalExecutionStrategyTest {
                 emitter, execution, null, new AtomicBoolean(false));
 
         // 执行 2 个 Agent（研究 + 总结）
-        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("总结结果", result);
     }
 
@@ -137,7 +137,7 @@ class ConditionalExecutionStrategyTest {
         String result = strategy.execute(noMatchTemplate, Map.of(), emitter, execution, null, new AtomicBoolean(false));
 
         // 不执行任何 Agent，返回空字符串
-        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("", result);
     }
 
@@ -154,7 +154,7 @@ class ConditionalExecutionStrategyTest {
     @Test
     void execute_shouldPassUserInputToFirstAgent_notEmpty() throws Exception {
         // BUG 复现：用户输入的 question 参数应传递给第一个 Agent，而非空字符串
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("回答内容");
 
         WorkflowTemplate template = WorkflowTemplate.builder()
@@ -177,7 +177,7 @@ class ConditionalExecutionStrategyTest {
         strategy.execute(template, Map.of("question", "什么是 Spring Boot"), emitter, execution, null, new AtomicBoolean(false));
 
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertNotEquals("", inputCaptor.getValue(), "Agent 输入不应为空字符串");
         assertEquals("什么是 Spring Boot", inputCaptor.getValue(),
                 "Agent 应收到用户输入的 question 参数值");
@@ -188,7 +188,7 @@ class ConditionalExecutionStrategyTest {
     @Test
     void execute_firstRun_shouldWriteResumeKeys() throws Exception {
         // 首次执行：命中分支的 Agent 写入 done keys（为下次恢复做准备）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("简单回答内容");
 
         WorkflowTemplate template = routingTemplate();
@@ -216,7 +216,7 @@ class ConditionalExecutionStrategyTest {
                 mock(SseEmitter.class), execution, null, new AtomicBoolean(false));
 
         // 简单 Agent 不被调用，直接返回历史输出
-        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("快答历史", result);
     }
 
@@ -224,7 +224,7 @@ class ConditionalExecutionStrategyTest {
     void execute_resumeBranchReplay_shouldFollowSameBranchAsFirstRun() throws Exception {
         // 恢复场景：复杂分支第 1 个 Agent（研究）已完成，question 为长文本
         // 分支条件重放一致（仍走复杂分支）：研究跳过、总结收到历史输出并执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("总结结果");
 
         WorkflowTemplate template = routingTemplate();
@@ -237,12 +237,12 @@ class ConditionalExecutionStrategyTest {
                 mock(SseEmitter.class), execution, null, new AtomicBoolean(false));
 
         // 仅总结 Agent 执行（1 次），研究 Agent 跳过
-        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("总结结果", result);
 
         // 跳过的研究历史输出作为总结 Agent 输入
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("研究历史", inputCaptor.getValue());
     }
 }

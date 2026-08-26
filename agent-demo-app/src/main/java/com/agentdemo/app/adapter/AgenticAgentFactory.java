@@ -69,9 +69,11 @@ public class AgenticAgentFactory {
         }
 
         // 2. 解析工具（toolIds 为空时不调用 ToolRegistry，AC-025 工具预定义）
+        // 业务含义：工作流非 HITL 路径无暂停确认能力，按 ForDirect 过滤（deny+ask 剔除，
+        // 修复非 HITL 双重绕过与 ask 卡死/直执行，AC-S01/AC-E01）
         List<Object> tools = (agentDef.getToolIds() == null || agentDef.getToolIds().isEmpty())
                 ? List.of()
-                : toolRegistry.resolveTools(agentDef.getToolIds());
+                : toolRegistry.resolveToolsForDirect(agentDef.getToolIds());
 
         // 3. 通过 AgenticServices.agentBuilder 构建 Agent
         // 系统提示词由 PromptTemplateLoader 组合角色模板 + 场景模板动态提供

@@ -3,8 +3,8 @@ package com.agentdemo.app.core;
 import lombok.Data;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 工作流执行实例
@@ -35,12 +35,18 @@ public class WorkflowExecution {
     /** 执行上下文（策略创建后挂载；暂停时协调层从此读取恢复所需状态，AC-017） */
     private WorkflowContext context;
 
+    // ===== 工作流 HITL Task-09 新增 =====
+    /** 进入 WAITING_USER 的时间（会话超时清理依据，AC-E01） */
+    private LocalDateTime waitUserTime;
+
     public WorkflowExecution(String executionId, String templateId, String templateName) {
         this.executionId = executionId;
         this.templateId = templateId;
         this.templateName = templateName;
         this.status = WorkflowExecutionStatus.PENDING;
-        this.steps = new ArrayList<>();
+        // 业务含义：并行编排（ParallelExecutionStrategy）多线程并发向 steps 追加步骤，
+        // ArrayList 非线程安全会触发扩容竞态（ArrayIndexOutOfBoundsException），改用写时复制集合保证并发安全
+        this.steps = new CopyOnWriteArrayList<>();
     }
 
     /**
@@ -113,6 +119,35 @@ public class WorkflowExecution {
      * </p>
      */
     public void resumeFromPause() {
+        this.status = WorkflowExecutionStatus.RUNNING;
+    }
+
+    // ===== 工作流 HITL Task-03：等待用户输入状态机（AC-N01/N02/N03）=====
+
+    /**
+     * 标记等待用户输入（HITL 暂停后由协调层调用）
+     * <p>
+     * 业务含义：与 PAUSED（执行失败暂停）不同，WAITING_USER 是"等待用户决策"——
+     * Agent 调用 askUser 或到达 @HumanCheckpoint 检查点后暂停，等待用户回复。
+     * 同为非终态：endTime 不设置，用户回复后恢复为 RUNNING，或主动终止。
+     * </p>
+     */
+    public void waitUser() {
+        this.status = WorkflowExecutionStatus.WAITING_USER;
+        this.finalResult = null;
+        // 业务含义：记录进入 WAITING_USER 的时间——协调层 @Scheduled 清理据此判断
+        // 超 30 分钟未回复的执行置 TIMEOUT（AC-E01）；循环暂停-恢复时每次 waitUser 重新计时
+        this.waitUserTime = LocalDateTime.now();
+    }
+
+    /**
+     * 从等待用户输入恢复（HITL 用户回复后由协调层调用，Task-08）
+     * <p>
+     * 业务含义：与 resumeFromPause（失败暂停恢复）语义对称——WAITING_USER 用户回复后
+     * 状态回 RUNNING，startTime 保留原值（历史总耗时语义），恢复后策略重放续跑。
+     * </p>
+     */
+    public void resumeFromWait() {
         this.status = WorkflowExecutionStatus.RUNNING;
     }
 

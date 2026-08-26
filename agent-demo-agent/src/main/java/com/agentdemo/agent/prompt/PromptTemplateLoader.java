@@ -31,6 +31,9 @@ public class PromptTemplateLoader {
     public static final String SCENARIO_TASK_SUMMARY = "task-summary";
     public static final String SCENARIO_HITL = "hitl";
 
+    /** 场景名：HITL 工具引导段（工作流 HITL 路径三段组合的第三段，含 {{tools}} 占位，Task-14） */
+    public static final String SCENARIO_HITL_GUIDANCE = "hitl-guidance";
+
     private static final String ROLES_DIR = "prompts/roles/";
     private static final String SCENARIOS_DIR = "prompts/scenarios/";
 
@@ -96,9 +99,12 @@ public class PromptTemplateLoader {
     }
 
     /**
-     * 加载场景模板
+     * 加载场景模板（公开单段加载，供 AgentExecutor 加载 hitl-guidance 引导段，Task-14）
+     *
+     * @param scenarioName 场景名称（使用 SCENARIO_* 常量）
+     * @return 场景模板内容，文件不存在时返回 null（调用方需处理降级）
      */
-    private String loadScenarioTemplate(String scenarioName) {
+    public String loadScenarioTemplate(String scenarioName) {
         return loadTemplate(SCENARIOS_DIR + scenarioName + ".txt");
     }
 

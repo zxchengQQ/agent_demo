@@ -122,7 +122,8 @@ describe('ChatWindow 模型选择集成', () => {
 
     expect(streamChat).toHaveBeenCalled();
     const callArgs = vi.mocked(streamChat).mock.calls[0];
-    expect(callArgs[5]).toBe('model-a');
+    // unified-chat-mode：签名改为 (sessionId, message, knowledgeBases, modelId, ...)
+    expect(callArgs[3]).toBe('model-a');
   });
 
   it('发送后记录 lastUsedModelId', async () => {
@@ -139,7 +140,8 @@ describe('ChatWindow 模型选择集成', () => {
 
     // 发送携带 model-b，并记录 lastUsedModelId
     const callArgs = vi.mocked(streamChat).mock.calls[0];
-    expect(callArgs[5]).toBe('model-b');
+    // unified-chat-mode：签名改为 (sessionId, message, knowledgeBases, modelId, ...)
+    expect(callArgs[3]).toBe('model-b');
     expect(llmStore.lastUsedModelId).toBe('model-b');
   });
 

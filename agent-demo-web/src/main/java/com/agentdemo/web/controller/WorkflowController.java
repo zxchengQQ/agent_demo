@@ -10,6 +10,7 @@ import com.agentdemo.app.service.WorkflowExecutionService;
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
 import com.agentdemo.common.result.Result;
+import com.agentdemo.web.dto.HITLReplyRequest;
 import com.agentdemo.web.dto.WorkflowDetailResponse;
 import com.agentdemo.web.dto.WorkflowExecuteRequest;
 import com.agentdemo.web.dto.WorkflowExecutionResponse;
@@ -275,6 +276,29 @@ public class WorkflowController {
     public SseEmitter resume(@PathVariable String executionId) {
         SseEmitter emitter = new SseEmitter(0L);
         executionService.resume(executionId, emitter);
+        return emitter;
+    }
+
+    /**
+     * 回复 HITL 暂停（Task-10，AC-N03/AC-S01）
+     * <p>
+     * 业务含义：回复工作流中 Agent 的提问（askUser 模式携带 message）或确认检查点
+     * （checkpoint 模式携带 approved），返回新 SSE 流。message 与 approved 至少一个非 null
+     * （空请求无意义，抛 WORKFLOW_PARAM_MISSING）；执行存在、WAITING_USER 状态、HITL 快照
+     * 等后续校验由 service.hitlReply 完成，异常经全局处理器转 JSON。
+     * SSE 超时与 execute/resume 端点对齐：0 = 永不超时，长任务恢复流不会被掐断。
+     * </p>
+     */
+    @Operation(summary = "回复 HITL 暂停", description = "回复工作流中 Agent 的提问或确认检查点，返回新 SSE 流")
+    @PostMapping(value = "/executions/{executionId}/hitl-reply", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter hitlReply(@PathVariable String executionId, @RequestBody HITLReplyRequest request) {
+        // 业务含义：message 和 approved 至少一个非 null——空请求无法表达"回复了什么"，拒绝执行（AC-N03/AC-S01）
+        if (request.getMessage() == null && request.getApproved() == null) {
+            throw new BusinessException(ErrorCode.WORKFLOW_PARAM_MISSING,
+                    "message 和 approved 至少提供一个");
+        }
+        SseEmitter emitter = new SseEmitter(0L);
+        executionService.hitlReply(executionId, request.getMessage(), request.getApproved(), emitter);
         return emitter;
     }
 }

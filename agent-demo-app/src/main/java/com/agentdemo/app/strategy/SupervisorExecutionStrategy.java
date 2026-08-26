@@ -11,6 +11,7 @@ import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
+import com.agentdemo.app.service.WorkflowHITLState;
 import com.agentdemo.app.service.WorkflowPausedException;
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
@@ -153,8 +154,15 @@ public class SupervisorExecutionStrategy extends AbstractExecutionStrategy {
             } else {
                 // 业务含义：Worker 输入携带原始任务上下文 + 明确的子任务职责，避免 Worker 脱离全局目标
                 String workerInput = "原始任务：\n" + task + "\n\n你负责的子任务：\n" + st.getDescription();
-                output = runStep(routing.worker(), workerInput, emitter, execution, agentIndex,
-                        template.getMaxRetries(), modelId);
+                // 业务含义：HITL 暂停步恢复（Task-08）——该 worker 是用户已确认的检查点暂停步
+                // （hitl key 命中），以恢复方式执行（跳过注解检测）而非重新触发 HITL 死循环（AC-N02/AC-S01）
+                WorkflowHITLState.HitlResume hitlResume = readHitlResume(ctx, routing.worker().getName());
+                if (hitlResume != null) {
+                    output = resumePausedStep(hitlResume, routing.worker(), 0, ctx, emitter, execution, agentIndex);
+                } else {
+                    output = runStep(routing.worker(), workerInput, emitter, execution, agentIndex,
+                            template.getMaxRetries(), modelId);
+                }
                 ctx.write("subtask:" + agentIndex, output);
             }
             results.append("## 子任务 ").append(agentIndex).append("（")
@@ -223,7 +231,7 @@ public class SupervisorExecutionStrategy extends AbstractExecutionStrategy {
         for (int attempt = 0; attempt <= template.getMaxRetries(); attempt++) {
             AgentExecutor.checkCancelled(cancelFlag);
             String planOutput = agentExecutor.executeWithRetry(sup.getPlanAgent(), task,
-                    emitter, 0, template.getMaxRetries(), modelId);
+                    emitter, 0, template.getMaxRetries(), modelId, 0, execution.getExecutionId());
             try {
                 List<Subtask> subtasks = SubtaskParser.parse(planOutput, maxSubtasks);
                 step.complete(planOutput);
@@ -264,7 +272,7 @@ public class SupervisorExecutionStrategy extends AbstractExecutionStrategy {
                 "iteration", 0));
 
         String output = agentExecutor.executeWithRetry(agentDef, input, emitter, agentIndex,
-                maxRetries, modelId);
+                maxRetries, modelId, 0, execution.getExecutionId());
 
         step.complete(output);
         ctxRecordOutput(execution, agentDef.getName(), output);
@@ -281,5 +289,17 @@ public class SupervisorExecutionStrategy extends AbstractExecutionStrategy {
         if (execution.getContext() != null) {
             execution.getContext().recordOutput(agentName, output);
         }
+    }
+
+    /**
+     * 读取 Worker 的 HITL 恢复上下文（supervisor 的 iteration 固定 0）
+     * <p>
+     * 业务含义：命中说明该 worker 是 HITL 暂停步（用户已回复/确认），重放时以恢复方式执行；
+     * 未命中返回 null，走正常执行路径（零回归）。
+     * </p>
+     */
+    private WorkflowHITLState.HitlResume readHitlResume(WorkflowContext ctx, String agentName) {
+        Object resume = ctx.read(hitlResumeKey(0, agentName));
+        return resume instanceof WorkflowHITLState.HitlResume hitlResume ? hitlResume : null;
     }
 }

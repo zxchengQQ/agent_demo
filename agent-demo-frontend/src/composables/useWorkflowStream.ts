@@ -1,6 +1,6 @@
 import { ref } from 'vue';
-import type { SupervisorSubtaskItem, WorkflowStreamCallbacks } from '@/types';
-import { streamExecute, streamResume, terminate } from '@/api/workflow';
+import type { AskUserData, SupervisorSubtaskItem, WorkflowStreamCallbacks } from '@/types';
+import { replyToWorkflow, streamExecute, streamResume, terminate } from '@/api/workflow';
 
 /**
  * 工作流流式执行 composable（CR-001 Task-24，AC-033 前置）
@@ -51,6 +51,22 @@ export function useWorkflowStream() {
   const pausedAgentIndex = ref(-1);
   /** 暂停原因 */
   const pausedError = ref('');
+  /** 是否等待用户回复（HITL，Task-12） */
+  const isWaitingUser = ref(false);
+  /** HITL 暂停模式（askUser=Agent 追问；checkpoint=预设检查点；toolConfirm=ask 级工具确认，Task-17） */
+  const waitingHitlMode = ref<'askUser' | 'checkpoint' | 'toolConfirm'>('askUser');
+  /** 等待回复的 Agent 名（workflow_waiting 事件） */
+  const waitingAgentName = ref('');
+  /** askUser 提问数据（ask_user 事件；供 AskUserCard 渲染） */
+  const askUserData = ref<AskUserData | null>(null);
+  /** ask 级工具确认数据（tool_confirm 事件；供 ConfirmCard 渲染，Task-17） */
+  const toolConfirmData = ref<{
+    agentIndex: number;
+    agentName: string;
+    toolName: string;
+    toolDescription: string;
+    arguments: string;
+  } | null>(null);
 
   let abortController: AbortController | null = null;
 
@@ -131,6 +147,7 @@ export function useWorkflowStream() {
         isPaused.value = false;
         isResuming.value = false;
         isSummarizing.value = false;
+        isWaitingUser.value = false;
         modeProgress.value = data.exitReason ? `退出原因：${data.exitReason}` : '';
       },
       onWorkflowFailed: (data) => {
@@ -138,11 +155,13 @@ export function useWorkflowStream() {
         error.value = data.error || '执行失败';
         isExecuting.value = false;
         isResuming.value = false;
+        isWaitingUser.value = false;
       },
       onError: (message) => {
         error.value = message;
         isExecuting.value = false;
         isResuming.value = false;
+        isWaitingUser.value = false;
       },
       // ===== P3 新增回调 =====
       onWorkflowPaused: (data) => {
@@ -172,6 +191,45 @@ export function useWorkflowStream() {
       onSupervisorSummary: () => {
         isSummarizing.value = true;
       },
+      // ===== 工作流 HITL 新增回调（Task-12）=====
+      onAskUser: (data) => {
+        // 业务含义：Agent 暂停前推送提问数据，组装为 AskUserCard 可渲染的形态
+        // （后端 type 为 "text"/"confirm"，options 为空列表时确认型选项不展示）
+        askUserData.value = {
+          type: (data.type === 'confirm' ? 'confirm' : 'text') as 'text' | 'confirm',
+          kind: 'askUser',
+          question: data.question || '',
+          options: data.options ?? [],
+          retryCount: data.retryCount ?? 0,
+        };
+      },
+      onWorkflowWaiting: (data) => {
+        // 业务含义：工作流进入 WAITING_USER 等待用户回复，SSE 流随之结束；
+        // 置等待态（执行结束 + 横幅显示），等待用户通过 replyToHitl 回复
+        isWaitingUser.value = true;
+        waitingHitlMode.value = data.hitlMode;
+        waitingAgentName.value = data.agentName;
+        currentExecutionId.value = data.executionId;
+        isExecuting.value = false;
+        isResuming.value = false;
+      },
+      onToolConfirm: (data) => {
+        // 业务含义：ask 级工具被 Agent 调用触发权限拦截，后端推送工具四要素 +
+        // 暂停步骤，填充 ConfirmCard 渲染数据；与 workflow_waiting(hitlMode=toolConfirm) 成对出现
+        toolConfirmData.value = {
+          agentIndex: data.agentIndex,
+          agentName: data.agentName,
+          toolName: data.toolName,
+          toolDescription: data.toolDescription,
+          arguments: data.arguments,
+        };
+      },
+      onWorkflowResumed: () => {
+        // 业务含义：用户回复后执行恢复，隐藏等待横幅（isExecuting 由回复时置 true）
+        isWaitingUser.value = false;
+        askUserData.value = null;
+        toolConfirmData.value = null;
+      },
     };
   }
 
@@ -187,6 +245,12 @@ export function useWorkflowStream() {
     modeProgress.value = '';
     isExecuting.value = true;
     isPaused.value = false;
+    // 业务含义：重置 HITL 等待状态，避免上一次执行的等待横幅残留导致新执行卡住
+    isWaitingUser.value = false;
+    waitingHitlMode.value = 'askUser';
+    waitingAgentName.value = '';
+    askUserData.value = null;
+    toolConfirmData.value = null;
 
     abortController = new AbortController();
     await streamExecute(templateId, params, modelId, buildCallbacks(), abortController.signal);
@@ -222,7 +286,24 @@ export function useWorkflowStream() {
     }
     isPaused.value = false;
     isExecuting.value = false;
+    isWaitingUser.value = false;
     statusLabel.value = 'TERMINATED';
+  }
+
+  /**
+   * 回复 HITL 暂停并恢复执行（工作流 HITL，Task-12，AC-N01/AC-N03）
+   * 业务含义：等待态下用户通过交互卡片回复（askUser 传 message / checkpoint 传 approved），
+   * 发起 hitl-reply 新 SSE 流；若存在并行排队 HITL，后端会先推送下一条
+   * workflow_waiting 使横幅重新出现，否则推送 workflow_resumed 恢复正常执行。
+   * 回复发起即置 isExecuting 防连点；等待态 isExecuting 为 false 才可进入。
+   */
+  async function replyToHitl(message: string | null, approved: boolean | null): Promise<void> {
+    if (!currentExecutionId.value || isExecuting.value) return;
+    isExecuting.value = true;
+    isWaitingUser.value = false;
+    error.value = '';
+    abortController = new AbortController();
+    await replyToWorkflow(currentExecutionId.value, message, approved, buildCallbacks(), abortController.signal);
   }
 
   /** 停止执行（AC-022，主动 abort） */
@@ -251,11 +332,17 @@ export function useWorkflowStream() {
     pausedAgentName,
     pausedAgentIndex,
     pausedError,
+    isWaitingUser,
+    waitingHitlMode,
+    waitingAgentName,
+    askUserData,
+    toolConfirmData,
     // 方法
     initAgents,
     startExecution,
     resumeExecution,
     terminateExecution,
+    replyToHitl,
     stopExecution,
   };
 }

@@ -1,6 +1,7 @@
 package com.agentdemo.app.template;
 
 import com.agentdemo.app.core.AgentDefinition;
+import com.agentdemo.app.core.BranchDefinition;
 import com.agentdemo.app.core.OrchestrationMode;
 import com.agentdemo.app.core.ParallelGroup;
 import com.agentdemo.app.core.WorkflowContext;
@@ -199,5 +200,29 @@ class WorkflowTemplatesTest {
         List<WorkflowTemplate> all = registry.listTemplates();
         assertEquals(5, all.size(), "预置模板总数应为 5（P1 串行不在此 registry 实例 + P2 三个 + P3 一个）");
         assertNotNull(registry.getTemplate("task-breakdown-supervisor"));
+    }
+
+    // ===== Task-16 验证标准：3 模板所有 AgentDefinition.hitlEnabled=true（决策 4 全部启用） =====
+
+    @Test
+    void smartRouting_allAgents_shouldHitlEnabled() {
+        WorkflowTemplate template = registry.getTemplate("smart-routing");
+        for (BranchDefinition branch : template.getBranches()) {
+            for (AgentDefinition agent : branch.getAgents()) {
+                assertTrue(agent.isHitlEnabled(), "SmartRouting Agent 应启用 HITL: " + agent.getName());
+            }
+        }
+    }
+
+    @Test
+    void taskBreakdownSupervisor_allAgents_shouldHitlEnabled() {
+        WorkflowTemplate template = registry.getTemplate("task-breakdown-supervisor");
+        assertTrue(template.getSupervisor().getPlanAgent().isHitlEnabled(),
+                "主控拆解 Agent 应启用 HITL");
+        assertTrue(template.getSupervisor().getSummarizeAgent().isHitlEnabled(),
+                "主控汇总 Agent 应启用 HITL");
+        for (AgentDefinition worker : template.getSupervisor().getWorkers()) {
+            assertTrue(worker.isHitlEnabled(), "Worker 应启用 HITL: " + worker.getName());
+        }
     }
 }

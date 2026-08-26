@@ -103,7 +103,7 @@ class SupervisorExecutionStrategyTest {
 
     /** 按 Agent 名分发输出的通用 stub */
     private void stubByAgentName(String planOutput) {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> {
                     AgentDefinition def = inv.getArgument(0);
                     return switch (def.getName()) {
@@ -179,10 +179,10 @@ class SupervisorExecutionStrategyTest {
 
         assertEquals("汇总报告", result, "应返回主控汇总输出");
         // 4 次调用：主控拆解 + 研究 + 分析 + 主控汇总
-        verify(agentExecutor, times(4)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(4)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         // 研究 Worker 收到子任务 1 描述，分析 Worker 收到子任务 2 描述
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(4)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(4)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         List<String> inputs = inputCaptor.getAllValues();
         assertTrue(inputs.get(0).contains("AI 综述"), "主控拆解输入应为原始任务");
         assertTrue(inputs.get(1).contains("调研资料"), "研究 Worker 输入应含子任务 1 描述");
@@ -200,7 +200,7 @@ class SupervisorExecutionStrategyTest {
                 emitter, runningExecution(template), null, new AtomicBoolean(false));
 
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(4)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(4)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         String workerInput = inputCaptor.getAllValues().get(1);
         assertTrue(workerInput.contains("原始任务"), "子任务输入应含原始任务，实际: " + workerInput);
         assertTrue(workerInput.contains("你负责的子任务"), "子任务输入应含子任务描述前缀，实际: " + workerInput);
@@ -267,7 +267,7 @@ class SupervisorExecutionStrategyTest {
     @Test
     void execute_planParseFail_thenRetryShouldSucceed() throws Exception {
         // 第 1 次拆解输出非 JSON，第 2 次合法（maxRetries=1 -> 2 次机会）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("抱歉，我无法输出 JSON", PLAN_JSON_2, "输出:研究", "输出:分析", "汇总报告");
         WorkflowTemplate template = supervisorTemplate();
 
@@ -276,12 +276,12 @@ class SupervisorExecutionStrategyTest {
 
         assertEquals("汇总报告", result);
         verify(agentExecutor, times(2)).executeWithRetry(eq(template.getSupervisor().getPlanAgent()),
-                anyString(), any(), eq(0), anyInt(), any());
+                anyString(), any(), eq(0), anyInt(), any(), anyInt(), anyString());
     }
 
     @Test
     void execute_planParseAllFail_shouldThrowWorkflowPausedException() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("我不会输出 JSON", "依然不是 JSON");
         WorkflowTemplate template = supervisorTemplate();
 
@@ -309,10 +309,10 @@ class SupervisorExecutionStrategyTest {
         assertEquals("汇总报告", result);
         // 主控拆解不重新调用；子任务 1（研究）跳过；仅子任务 2（分析）+ 汇总执行
         verify(agentExecutor, never()).executeWithRetry(eq(template.getSupervisor().getPlanAgent()),
-                anyString(), any(), anyInt(), anyInt(), any());
-        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+                anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertTrue(inputCaptor.getAllValues().get(1).contains("历史输出1"),
                 "汇总输入应含跳过子任务的历史输出");
         // plan 与子任务 1 均推 step_skipped

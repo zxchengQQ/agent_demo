@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   WorkflowExecutionDetail,
   WorkflowExecutionSummary,
   WorkflowStreamCallbacks,
@@ -130,7 +130,49 @@ export async function streamResume(
 }
 
 /**
- * 解析 SSE 流并分发事件（streamExecute/streamResume 共用）
+ * 回复 HITL 暂停并恢复执行（SSE，工作流 HITL，AC-N03/AC-S01）
+ * 业务含义：用户回复工作流中 Agent 的提问（askUser 模式传 message）或确认检查点
+ * （checkpoint 模式传 approved），后端重放执行并推送新 SSE 事件流；
+ * 若存在并行排队 HITL，后端会先推送下一条 workflow_waiting。
+ * 与 streamExecute/streamResume 共用 SSE 解析循环，abort 行为一致。
+ *
+ * @param executionId 等待回复的执行 ID
+ * @param message 用户回复文本（askUser 模式；checkpoint 模式为 null）
+ * @param approved 检查点确认结果（checkpoint 模式：true=执行 / false=拒绝；askUser 模式为 null）
+ * @param callbacks SSE 事件回调（与 streamExecute 相同）
+ * @param signal AbortController.signal，用于停止
+ */
+export async function replyToWorkflow(
+  executionId: string,
+  message: string | null,
+  approved: boolean | null,
+  callbacks: WorkflowStreamCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}/executions/${executionId}/hitl-reply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, approved }),
+      signal,
+    });
+  } catch {
+    if (signal.aborted) return;
+    callbacks.onError('回复失败，请稍后重试');
+    return;
+  }
+
+  if (!response.ok) {
+    callbacks.onError('回复失败，请检查执行状态后重试');
+    return;
+  }
+
+  await parseSseStream(response, callbacks, signal);
+}
+
+/**
+ * 解析 SSE 流并分发事件（streamExecute/streamResume/replyToWorkflow 共用）
  * 按 SSE 规范：事件以空行分隔，event: 为事件名，data: 为 JSON。
  *
  * 业务含义（断流兜底）：服务端提前关闭流（如 emitter 超时/后端异常）时
@@ -195,8 +237,16 @@ async function parseSseStream(
   }
 }
 
-/** 终态事件集合：收到任一事件表示流会正常收尾（done 不再视为异常断流） */
-const TERMINAL_EVENTS = new Set(['workflow_complete', 'workflow_failed', 'workflow_paused']);
+/**
+ * 终态事件集合：收到任一事件表示流会正常收尾（done 不再视为异常断流）
+ * workflow_waiting：等待用户回复时后端主动关闭流，亦属正常收尾
+ */
+const TERMINAL_EVENTS = new Set([
+  'workflow_complete',
+  'workflow_failed',
+  'workflow_paused',
+  'workflow_waiting',
+]);
 
 /**
  * 处理工作流 SSE 事件
@@ -252,6 +302,20 @@ function handleWorkflowEvent(event: string, data: string, callbacks: WorkflowStr
     // ===== P3 新增事件（可选回调，未注册时静默跳过）=====
     case 'workflow_paused':
       callbacks.onWorkflowPaused?.(parsed as never);
+      break;
+    // ===== 工作流 HITL 新增事件（Task-11/12，可选回调）=====
+    case 'ask_user':
+      callbacks.onAskUser?.(parsed as never);
+      break;
+    case 'workflow_waiting':
+      callbacks.onWorkflowWaiting?.(parsed as never);
+      break;
+    case 'workflow_resumed':
+      callbacks.onWorkflowResumed?.(parsed as never);
+      break;
+    // ===== 工作流 ask 级工具确认事件（Task-17，可选回调）=====
+    case 'tool_confirm':
+      callbacks.onToolConfirm?.(parsed as never);
       break;
     case 'step_skipped':
       callbacks.onStepSkipped?.(parsed as never);

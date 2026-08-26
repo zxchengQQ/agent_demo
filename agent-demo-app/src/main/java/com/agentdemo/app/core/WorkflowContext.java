@@ -17,6 +17,17 @@ import java.util.concurrent.atomic.AtomicInteger;
  */
 public class WorkflowContext {
 
+    /**
+     * 并行 HITL 排队列表 key（Task-09，AC-E02）
+     * <p>
+     * 业务含义：并行编排下多个分组 Agent 同时 askUser 时，第一个 HITL 异常传播给协调层
+     * （进入 WAITING_USER），其余写入本 key 的排队列表（List&lt;WorkflowHITLException&gt;）。
+     * 用户每次 hitlReply 恢复时协调层按序消费——队列清空才真正重放策略执行，
+     * 保证同一 executionId 同时只有一个 WAITING_USER。
+     * </p>
+     */
+    public static final String PENDING_HITL_KEY = "pendingHitls";
+
     /** 命名状态存储 */
     private final Map<String, Object> state = new ConcurrentHashMap<>();
 

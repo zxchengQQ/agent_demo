@@ -139,13 +139,28 @@ class WorkflowP3IntegrationTest {
         });
     }
 
-    /** 等待异步执行到达非 RUNNING 状态（PAUSED/COMPLETED 均视为到达） */
+    /** 等待异步执行到达非 RUNNING 状态（PAUSED/COMPLETED 均视为到达）；到达检查点时批准继续（AC-N02） */
     private WorkflowExecution awaitNotRunning(String executionId) {
+        return awaitNotRunning(executionId, mock(SseEmitter.class));
+    }
+
+    /**
+     * 等待异步执行到达非 RUNNING 状态
+     *
+     * @param executionId   执行 ID
+     * @param hitlEmitter   HITL 检查点批准时复用的事件发射器（null 使用 mock，仅记录批准后的事件）
+     */
+    private WorkflowExecution awaitNotRunning(String executionId, SseEmitter hitlEmitter) {
         long deadline = System.currentTimeMillis() + 10000;
         WorkflowExecution execution = null;
         while (System.currentTimeMillis() < deadline) {
             execution = service.getExecution(executionId);
-            if (execution != null && execution.getStatus() != WorkflowExecutionStatus.RUNNING
+            // ResearchAgent 标注 @HumanCheckpoint（Task-13）：检查点暂停为 WAITING_USER，批准后继续
+            if (execution.getStatus() == WorkflowExecutionStatus.WAITING_USER) {
+                service.hitlReply(executionId, null, true, hitlEmitter != null ? hitlEmitter : mock(SseEmitter.class));
+                continue;
+            }
+            if (execution.getStatus() != WorkflowExecutionStatus.RUNNING
                     && execution.getStatus() != WorkflowExecutionStatus.PENDING) {
                 return execution;
             }
@@ -186,14 +201,17 @@ class WorkflowP3IntegrationTest {
         RecordingEmitter emitter = new RecordingEmitter();
         String executionId = service.execute(template, Map.of("task", "写一份分类算法调研报告"), emitter, null);
 
-        WorkflowExecution execution = awaitNotRunning(executionId);
+        // 研究 Worker 标注 @HumanCheckpoint：执行前暂停，awaitNotRunning 批准后继续（复用 emitter 记录后续事件）
+        WorkflowExecution execution = awaitNotRunning(executionId, emitter);
         assertEquals(WorkflowExecutionStatus.COMPLETED, execution.getStatus(), "Supervisor 工作流应执行完成");
         assertEquals("综合报告", execution.getFinalResult());
 
         // 事件序列：step_start(拆解) -> supervisor_plan -> supervisor_dispatch*2 -> step_start/step_complete(Worker)
         //           -> supervisor_summary -> step_start/step_complete(汇总) -> workflow_complete
+        // 注意：研究 Worker 标注 @HumanCheckpoint 后检查点批准恢复会重放 Supervisor 流程，
+        //       dispatch 在原流（1 次）+ 恢复流（2 次）累计出现，故断言 >= 2（两个子任务各调度一次）
         assertTrue(emitter.eventNames.contains("step_start"), "缺少拆解步骤 step_start，实际: " + emitter.eventNames);
-        assertEquals(2, emitter.count("supervisor_dispatch"), "应调度 2 个子任务，实际: " + emitter.eventNames);
+        assertTrue(emitter.count("supervisor_dispatch") >= 2, "应调度 2 个子任务，实际: " + emitter.eventNames);
         assertOrder(emitter, "step_start", "supervisor_plan");
         assertOrder(emitter, "supervisor_plan", "supervisor_dispatch");
         // 全部调度完成后才进入汇总：最后一次调度在 supervisor_summary 之前，且之后仍有 Worker/汇总的完成事件
@@ -246,8 +264,9 @@ class WorkflowP3IntegrationTest {
         RecordingEmitter firstEmitter = new RecordingEmitter();
         String executionId = service.execute(template, Map.of("topic", "AI"), firstEmitter, null);
 
-        // 第一阶段：分析 Agent 重试耗尽 -> PAUSED（非 FAILED）+ workflow_paused 事件
-        WorkflowExecution paused = awaitNotRunning(executionId);
+        // 第一阶段：研究 Agent 检查点暂停 -> 批准后执行；分析 Agent 重试耗尽 -> PAUSED（非 FAILED）+ workflow_paused 事件
+        // 注意：分析失败发生在批准后的恢复流中，故复用 firstEmitter 记录（workflow_resumed/step_error/workflow_paused）
+        WorkflowExecution paused = awaitNotRunning(executionId, firstEmitter);
         assertEquals(WorkflowExecutionStatus.PAUSED, paused.getStatus(), "重试耗尽后应暂停而非失败（AC-016）");
         assertTrue(firstEmitter.eventNames.contains("workflow_paused"), "原流应推送 workflow_paused 事件");
         assertTrue(firstEmitter.eventNames.contains("step_error"), "重试耗尽应推送 step_error 事件");

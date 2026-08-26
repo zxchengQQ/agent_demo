@@ -2,6 +2,8 @@ package com.agentdemo.tools.builtin;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.tools.permission.DefaultToolPermission;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
@@ -13,6 +15,7 @@ import org.springframework.stereotype.Component;
  * </p>
  */
 @Component
+@DefaultToolPermission(ToolPermissionLevel.ALLOW)
 public class CalculatorTool {
 
     /**

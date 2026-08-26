@@ -2,59 +2,59 @@ package com.agentdemo.agent.core;
 
 import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
+import com.agentdemo.agent.single.HITLReActStream;
+import com.agentdemo.agent.single.SessionToolResolver;
+import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
-import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.output.TokenUsage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
- * 任务拆解三阶段编排流（CR-002 新增）
+ * 任务拆解三阶段编排流（CR-002 新增，unified-chat-mode 改造）
  * <p>
- * 业务含义：在单次 SSE 连接中完成三阶段编排：
- * 1. Phase 1 规划：LLM 同步调用获取 JSON 子任务列表
- * 2. Phase 2 执行：逐个子任务手动 ReAct 流式循环
- * 3. Phase 3 总结：LLM 流式调用生成最终总结
+ * 业务含义：在单次 SSE 连接中完成拆解执行编排（规划已上移至 TaskPlanJudge）：
+ * 1. 启动：注入的 tasks 推送 onPlan（外部注入，不再内部规划）
+ * 2. 执行：逐个子任务委托 {@link HITLReActStream} 执行 ReAct 循环（含 askUser 拦截能力）
+ * 3. 总结：LLM 流式调用生成最终总结
  * </p>
  * <p>
- * 设计模式：参考 {@link com.agentdemo.agent.single.ReActThinkingStream}，链式回调 + start() 同步执行。
- * Controller 注册回调后调用 start()，所有回调在 start() 内同步触发。
+ * unified-chat-mode 改造要点（技术方案 1.6.2）：
+ * ① 构造改为外部注入 tasks / 已解析工具列表 / toolsJson / HumanInteractionManager；
+ * ② 删除内部规划（planTasks/parseTaskPlan/extractJsonArray）与降级直答（streamDirectAnswer，
+ *    统一模式直答由 UnifiedChatStream 承担）；
+ * ③ 子任务执行委托 HITLReActStream（复用 askUser 拦截逻辑，DRY）；
+ * ④ 新增暂停信号 {@link BreakdownPausedException}：子任务 askUser 拦截后 attachBreakdownContext
+ *    并中止编排，触发 onAskUser，不触发 onComplete；
+ * ⑤ 新增恢复入口 {@link #resumeFromPending(String)}：加载 pending 拆解上下文，重放 onPlan +
+ *    已完成子任务 onTaskComplete，续跑当前子任务与剩余子任务；
+ * ⑥ enableThinking 字段删除（统一模式恒开启，task_reasoning/summary reasoning 无条件推送）；
+ * ⑦ 新增 onAskUser 回调。
  * </p>
  * <p>
- * 关联 AC：AC-001~AC-016
+ * 关联 AC：AC-001~AC-016、AC-T05（子任务暂停-恢复）、AC-M02（上下文连续性）
  * </p>
  */
 public class TaskBreakdownStream {
 
     private static final Logger log = LoggerFactory.getLogger(TaskBreakdownStream.class);
 
-    private final ObjectMapper objectMapper = new ObjectMapper();
-
     // ==================== 依赖 ====================
     private final String sessionId;
     private final String message;
-    private final boolean enableThinking;
     /** 模型 ID（null 表示使用默认模型） */
     private final String modelId;
     private final ModelFactory modelFactory;
@@ -63,11 +63,20 @@ public class TaskBreakdownStream {
     private final ToolSchemaConverter toolSchemaConverter;
     private final ToolExecutor toolExecutor;
     private final PromptTemplateLoader promptTemplateLoader;
+    private final HumanInteractionManager humanInteractionManager;
+
+    /** 拆解子任务列表（外部注入，规划上移至 TaskPlanJudge） */
+    private List<SubTask> tasks;
+
+    /** 已解析工具列表（含 askUser，直答/拆解共用同一份） */
+    private final List<Object> tools;
+
+    /** 工具 JSON Schema（单次请求内一次生成复用） */
+    private final String toolsJson;
 
     // ==================== 回调消费者 ====================
     // 规划阶段
     private PlanConsumer onPlan;
-    private Runnable onNoBreakdown;
 
     // 子任务执行阶段
     private TaskStartConsumer onTaskStart;
@@ -84,6 +93,9 @@ public class TaskBreakdownStream {
     private TokenConsumer onSummaryToken;
     private ReasoningConsumer onSummaryReasoning;
 
+    // HITL 暂停（子任务执行中 askUser 拦截）
+    private AskUserConsumer onAskUser;
+
     // 生命周期
     private Runnable onComplete;
     private ErrorConsumer onError;
@@ -93,26 +105,31 @@ public class TaskBreakdownStream {
 
     // ==================== 构造器 ====================
 
-    public TaskBreakdownStream(String sessionId, String message, boolean enableThinking,
-                               ModelFactory modelFactory, ChatMemoryManager memoryManager,
-                               AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
-                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader) {
-        this(sessionId, message, enableThinking, null, modelFactory, memoryManager,
-                agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader);
-    }
-
     /**
-     * 带 modelId 的构造器（Phase 2 新增）
+     * 统一构造器（unified-chat-mode：外部注入 tasks/tools/toolsJson/HumanInteractionManager）
      *
-     * @param modelId 模型 ID（null 使用默认模型）
+     * @param sessionId              会话 ID
+     * @param message                用户消息（已剥离 /plan 前缀）
+     * @param modelId                模型 ID（null 使用默认模型）
+     * @param modelFactory           模型工厂
+     * @param memoryManager          记忆管理器
+     * @param agentConfig            Agent 配置
+     * @param toolSchemaConverter    工具 Schema 转换器
+     * @param toolExecutor           工具执行器
+     * @param promptTemplateLoader   提示词模板加载器
+     * @param humanInteractionManager 人机交互管理器（子任务暂停-恢复）
+     * @param tools                  已解析工具列表（含 askUser）
+     * @param toolsJson              工具 JSON Schema
+     * @param tasks                  拆解子任务列表（可为空集合，由 startWithTasks 设置）
      */
-    public TaskBreakdownStream(String sessionId, String message, boolean enableThinking, String modelId,
+    public TaskBreakdownStream(String sessionId, String message, String modelId,
                                ModelFactory modelFactory, ChatMemoryManager memoryManager,
                                AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
-                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader) {
+                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
+                               HumanInteractionManager humanInteractionManager,
+                               List<Object> tools, String toolsJson, List<SubTask> tasks) {
         this.sessionId = sessionId;
         this.message = message;
-        this.enableThinking = enableThinking;
         this.modelId = modelId;
         this.modelFactory = modelFactory;
         this.memoryManager = memoryManager;
@@ -120,17 +137,16 @@ public class TaskBreakdownStream {
         this.toolSchemaConverter = toolSchemaConverter;
         this.toolExecutor = toolExecutor;
         this.promptTemplateLoader = promptTemplateLoader;
+        this.humanInteractionManager = humanInteractionManager;
+        this.tools = tools;
+        this.toolsJson = toolsJson;
+        this.tasks = tasks;
     }
 
     // ==================== 链式 Setter ====================
 
     public TaskBreakdownStream onPlan(PlanConsumer consumer) {
         this.onPlan = consumer;
-        return this;
-    }
-
-    public TaskBreakdownStream onNoBreakdown(Runnable runnable) {
-        this.onNoBreakdown = runnable;
         return this;
     }
 
@@ -189,6 +205,12 @@ public class TaskBreakdownStream {
         return this;
     }
 
+    /** HITL 暂停回调（子任务执行中 askUser 拦截） */
+    public TaskBreakdownStream onAskUser(AskUserConsumer consumer) {
+        this.onAskUser = consumer;
+        return this;
+    }
+
     public TaskBreakdownStream onComplete(Runnable runnable) {
         this.onComplete = runnable;
         return this;
@@ -199,7 +221,7 @@ public class TaskBreakdownStream {
         return this;
     }
 
-    // ==================== start() 核心流程 ====================
+    // ==================== 取消与启动 ====================
 
     /**
      * 取消编排（BUG 修复）
@@ -214,43 +236,47 @@ public class TaskBreakdownStream {
     }
 
     /**
-     * 启动三阶段编排
+     * 以外部注入的 tasks 启动拆解执行
      * <p>
-     * 业务含义：同步执行规划 -> 执行 -> 总结三阶段，通过回调与 Controller 通信。
-     * 异常时触发 onError，不抛出异常到调用方。
+     * 业务含义：统一模式拆解路径入口（自动拆解/强制拆解共用）。tasks 已在构造时注入，
+     * 直接推送 onPlan 并进入执行。
      * </p>
      */
     public void start() {
-        try {
-            // ===== Phase 1: 规划 =====
-            List<SubTask> tasks = planTasks();
+        startWithTasks(this.tasks);
+    }
 
-            if (tasks.isEmpty()) {
-                // LLM 判断无需拆解，降级为普通对话（AC-002, AC-009）
-                if (onNoBreakdown != null) {
-                    onNoBreakdown.run();
-                }
-                // 降级路径：直接流式回答用户消息（Task-05 实现）
-                streamDirectAnswer();
-                if (onComplete != null) {
-                    onComplete.run();
-                }
-                return;
+    /**
+     * 设置子任务列表并启动拆解执行
+     * <p>
+     * 业务含义：供 UnifiedChatStream 在规划判断后调用（规划已上移至 TaskPlanJudge）。
+     * </p>
+     *
+     * @param tasks 子任务列表（非空，空列表应走直答路径由 UnifiedChatStream 处理）
+     */
+    public void startWithTasks(List<SubTask> tasks) {
+        if (tasks == null || tasks.isEmpty()) {
+            log.warn("startWithTasks 收到空任务列表，跳过执行: sessionId={}", sessionId);
+            if (onComplete != null) {
+                onComplete.run();
             }
-
-            // 规划成功，推送子任务列表（AC-001）
+            return;
+        }
+        this.tasks = tasks;
+        try {
+            // 推送任务计划（AC-001）
             if (onPlan != null) {
                 onPlan.accept(tasks);
             }
 
             // BUG 修复：emitter 超时/断开时取消后续执行
             if (cancelled) {
-                log.info("任务拆解已取消，跳过 Phase 2 执行: sessionId={}", sessionId);
+                log.info("任务拆解已取消，跳过执行: sessionId={}", sessionId);
                 return;
             }
 
-            // ===== Phase 2: 逐个子任务执行（Task-04 实现）=====
-            boolean allSuccess = executeAllSubTasks(tasks);
+            // ===== 逐个子任务执行 =====
+            boolean allSuccess = executeAllSubTasks(tasks, new ArrayList<>());
 
             if (!allSuccess) {
                 // 子任务执行失败，不生成总结（AC-006）
@@ -262,16 +288,21 @@ public class TaskBreakdownStream {
 
             // BUG 修复：emitter 超时/断开时取消后续执行
             if (cancelled) {
-                log.info("任务拆解已取消，跳过 Phase 3 总结: sessionId={}", sessionId);
+                log.info("任务拆解已取消，跳过总结: sessionId={}", sessionId);
                 return;
             }
 
-            // ===== Phase 3: 总结（Task-05 实现）=====
-            streamSummary(tasks);
+            // ===== 总结 =====
+            streamSummary();
 
             if (onComplete != null) {
                 onComplete.run();
             }
+        } catch (BreakdownPausedException e) {
+            // 业务含义：子任务 askUser 拦截导致的暂停信号，编排在此中止
+            // onAskUser 已在 executeAllSubTasks 内触发，onComplete 不触发（SSE 流由
+            // ask_user + done 结束，等待用户回复后经 resumeFromPending 续跑）
+            log.info("任务拆解暂停于子任务: sessionId={}, index={}", sessionId, e.getTaskIndex());
         } catch (Exception e) {
             log.error("任务拆解编排异常: sessionId={}", sessionId, e);
             if (onError != null) {
@@ -280,136 +311,121 @@ public class TaskBreakdownStream {
         }
     }
 
-    // ==================== Phase 1: 规划 ====================
+    // ==================== 恢复入口 ====================
 
     /**
-     * 规划阶段：调用 LLM 同步获取子任务列表
+     * 从暂停点恢复拆解执行（用户回复后）
      * <p>
-     * 业务含义：使用规划提示词 + 用户消息，调用 ChatModel.chat() 同步获取 LLM 响应，
-     * 解析 JSON 数组为 SubTask 列表。解析失败或空列表时返回空列表（触发降级）。
+     * 业务含义：加载 pending（messages + 拆解上下文），追加用户回复 Observation，
+     * 重放 onPlan + 已完成子任务 onTaskComplete（新 SSE 流重建进度视图，决策 5），
+     * 续跑当前子任务与剩余子任务，最后总结。pending 缺失/损坏时降级为普通统一流程
+     * （不抛异常，技术方案 3.3）。
      * </p>
      *
-     * @return 子任务列表（空列表表示无需拆解）
+     * @param userReply 用户回复文本
      */
-    private List<SubTask> planTasks() {
-        // 业务含义：按 modelId 选择 ChatModel，null 时使用默认模型
-        ChatModel chatModel = (modelId != null)
-                ? modelFactory.getChatModelByModelId(modelId)
-                : modelFactory.getDefaultChatModel();
-
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_PLAN)));
-        messages.add(UserMessage.from(message));
-
-        ChatResponse response = chatModel.chat(messages);
-        String responseText = response.aiMessage().text();
-
-        log.info("任务拆解规划响应: sessionId={}, responseLength={}", sessionId,
-                responseText != null ? responseText.length() : 0);
-
-        return parseTaskPlan(responseText);
-    }
-
-    /**
-     * 解析 LLM 返回的 JSON 为子任务列表
-     * <p>
-     * 业务含义：尝试从 LLM 响应中提取 JSON 数组并解析为 SubTask 列表。
-     * 支持 markdown 代码块包裹的 JSON。解析失败返回空列表（AC-009 降级）。
-     * 子任务数量超过上限时截断（AC-008, AC-013）。
-     * </p>
-     *
-     * @param responseText LLM 返回的文本
-     * @return 解析后的子任务列表（空列表表示无需拆解或解析失败）
-     */
-    List<SubTask> parseTaskPlan(String responseText) {
-        if (responseText == null || responseText.trim().isEmpty()) {
-            return Collections.emptyList();
+    public void resumeFromPending(String userReply) {
+        PendingInteraction pending = humanInteractionManager.loadInteraction(sessionId);
+        if (pending == null) {
+            // 降级：pending 缺失，无法恢复，交由 UnifiedChatStream 走普通流程
+            log.warn("resumeFromPending 失败：sessionId={} 无 pending 状态，降级普通流程", sessionId);
+            throw new IllegalStateException("无 pending 拆解状态，需降级普通流程");
+        }
+        if (!PendingInteraction.MODE_BREAKDOWN.equals(pending.getMode())) {
+            log.warn("resumeFromPending 失败：sessionId={} pending.mode={}，非 breakdown 模式", sessionId, pending.getMode());
+            throw new IllegalStateException("pending 非 breakdown 模式，需降级普通流程");
         }
 
-        String json = extractJsonArray(responseText);
-        if (json == null) {
-            return Collections.emptyList();
-        }
+        List<SubTask> savedTasks = pending.getSubTasks();
+        int currentTaskIndex = pending.getCurrentTaskIndex();
+        List<String> subtaskResults = new ArrayList<>(pending.getSubtaskResults());
+
+        // 业务含义：查找 askUser 工具调用 ID，将用户回复作为 Observation 追加到暂停时 ReAct 上下文
+        List<ChatMessage> resumeMessages = new ArrayList<>(pending.getMessages());
+        String toolCallId = findAskUserToolCallId(resumeMessages);
+        resumeMessages.add(ToolExecutionResultMessage.from(toolCallId, "askUser", userReply));
+
+        // 清除 pending（已恢复，防重复恢复）
+        humanInteractionManager.clearInteraction(sessionId);
+
+        log.info("恢复拆解执行: sessionId={}, currentTaskIndex={}, 已完成子任务数={}",
+                sessionId, currentTaskIndex, subtaskResults.size());
 
         try {
-            JsonNode array = objectMapper.readTree(json);
-            if (!array.isArray()) {
-                return Collections.emptyList();
+            // 决策 5：重放 onPlan + 已完成子任务 onTaskComplete（新 SSE 流重建进度视图）
+            if (onPlan != null) {
+                onPlan.accept(savedTasks);
             }
-
-            List<SubTask> tasks = new ArrayList<>();
-            for (JsonNode node : array) {
-                String title = node.path("title").asText("");
-                if (title.isEmpty()) {
-                    continue;
+            for (int i = 0; i < currentTaskIndex && i < savedTasks.size(); i++) {
+                if (onTaskComplete != null) {
+                    onTaskComplete.accept(savedTasks.get(i).index());
                 }
-                tasks.add(new SubTask(tasks.size() + 1, title));
             }
 
-            // 子任务数量上限校验（AC-008, AC-013）
-            int maxSubtasks = agentConfig.getTaskBreakdownMaxSubtasks();
-            if (tasks.size() > maxSubtasks) {
-                log.info("子任务数量 {} 超过上限 {}，截断", tasks.size(), maxSubtasks);
-                tasks = new ArrayList<>(tasks.subList(0, maxSubtasks));
+            // 续跑：从当前子任务（含用户回复 Observation）到最后一个子任务
+            boolean allSuccess = executeAllSubTasks(savedTasks, currentTaskIndex,
+                    subtaskResults, resumeMessages, pending.getRetryCount() + 1);
+
+            if (!allSuccess) {
+                if (onComplete != null) {
+                    onComplete.run();
+                }
+                return;
             }
 
-            return tasks;
+            if (cancelled) {
+                log.info("拆解恢复后已取消，跳过总结: sessionId={}", sessionId);
+                return;
+            }
+
+            streamSummary();
+
+            if (onComplete != null) {
+                onComplete.run();
+            }
+        } catch (BreakdownPausedException e) {
+            // 恢复后再次暂停（子任务再次 askUser）
+            log.info("拆解恢复后再次暂停: sessionId={}, index={}", sessionId, e.getTaskIndex());
         } catch (Exception e) {
-            log.warn("解析子任务 JSON 失败，降级为普通对话: {}", e.getMessage());
-            return Collections.emptyList();
-        }
-    }
-
-    /**
-     * 从 LLM 响应文本中提取 JSON 数组
-     * <p>
-     * 业务含义：LLM 可能返回纯 JSON 或带 markdown 标记的 JSON。
-     * 先尝试直接解析，失败后用正则提取 [...] 部分。
-     * </p>
-     *
-     * @param text LLM 响应文本
-     * @return JSON 数组字符串，无法提取时返回 null
-     */
-    private String extractJsonArray(String text) {
-        String trimmed = text.trim();
-
-        // 尝试直接解析
-        try {
-            JsonNode node = objectMapper.readTree(trimmed);
-            if (node.isArray()) {
-                return trimmed;
+            log.error("拆解恢复异常: sessionId={}", sessionId, e);
+            if (onError != null) {
+                onError.accept(e);
             }
-        } catch (Exception ignored) {
-            // 不是合法 JSON，继续尝试正则提取
         }
-
-        // 正则提取 [...] 部分（处理 markdown 代码块包裹的情况）
-        Pattern pattern = Pattern.compile("\\[.*?\\]", Pattern.DOTALL);
-        Matcher matcher = pattern.matcher(trimmed);
-        if (matcher.find()) {
-            return matcher.group();
-        }
-
-        return null;
     }
 
-    // ==================== Phase 2: 子任务执行（Task-04 实现）====================
+    // ==================== Phase 2: 子任务执行 ====================
 
     /**
-     * 执行所有子任务
+     * 执行所有子任务（首次启动）
      * <p>
-     * 业务含义：遍历子任务列表，逐个执行 ReAct 循环。
-     * 某个子任务失败时，取消剩余子任务并返回 false（AC-006）。
-     * 每个子任务完成后将结果写入会话记忆，供后续子任务获取上下文。
+     * 业务含义：遍历子任务列表，逐个子任务创建 HITLReActStream 执行 ReAct 循环
+     * （委托而非复制拦截逻辑，决策 3）。askUser 拦截时 attachBreakdownContext 并抛出
+     * BreakdownPausedException 中止编排。子任务失败时取消剩余子任务（AC-006）。
      * </p>
      *
-     * @param tasks 子任务列表
+     * @param tasks           子任务列表
+     * @param subtaskResults  已完成子任务结果收集器（按序）
      * @return true=全部成功，false=有子任务失败
      */
-    private boolean executeAllSubTasks(List<SubTask> tasks) {
-        List<String> subtaskResults = new ArrayList<>();
+    private boolean executeAllSubTasks(List<SubTask> tasks, List<String> subtaskResults) {
+        return executeAllSubTasks(tasks, 0, subtaskResults, null, 0);
+    }
 
-        for (int i = 0; i < tasks.size(); i++) {
+    /**
+     * 执行所有子任务（支持恢复起点与初始消息上下文）
+     *
+     * @param tasks            子任务列表
+     * @param startIndex       开始执行的子任务 index（0-based，恢复时从 currentTaskIndex 起）
+     * @param subtaskResults   已完成子任务结果收集器（按序，恢复时含前序结果）
+     * @param initialMessages  初始消息上下文（首次=null 走记忆构建；恢复=pending.messages + 用户回复 Observation）
+     * @param initialRetryCount 初始追问计数（恢复时 = pending.retryCount + 1）
+     * @return true=全部成功，false=有子任务失败
+     */
+    private boolean executeAllSubTasks(List<SubTask> tasks, int startIndex,
+                                       List<String> subtaskResults, List<ChatMessage> initialMessages,
+                                       int initialRetryCount) {
+        for (int i = startIndex; i < tasks.size(); i++) {
             SubTask task = tasks.get(i);
 
             // BUG 修复：emitter 超时/断开时取消剩余子任务
@@ -429,7 +445,11 @@ public class TaskBreakdownStream {
             }
 
             try {
-                String result = executeSubTaskWithReAct(task, subtaskResults);
+                // 业务含义：子任务委托 HITLReActStream 执行（含 askUser 拦截能力）。
+                // 恢复时仅当前暂停子任务（i == startIndex）续用暂停时上下文（initialMessages），
+                // 后续子任务走记忆构建（前序结果已写入会话记忆 + previousResults 拼接）。
+                String result = executeSubTask(task, subtaskResults, i,
+                        (i == startIndex) ? initialMessages : null, initialRetryCount);
                 subtaskResults.add(result);
 
                 // 将子任务结果写入会话记忆，供后续子任务和总结阶段获取上下文
@@ -440,9 +460,13 @@ public class TaskBreakdownStream {
                 if (onTaskComplete != null) {
                     onTaskComplete.accept(task.index());
                 }
+            } catch (BreakdownPausedException e) {
+                // 业务含义：子任务 askUser 拦截暂停。已由 executeSubTask 内部完成
+                // attachBreakdownContext（含 tasks/currentTaskIndex/已完成结果），
+                // 此处向上抛出中止编排，onAskUser 已触发。
+                throw e;
             } catch (Exception e) {
                 log.error("子任务执行失败: index={}, title={}", task.index(), task.title(), e);
-                // 推送子任务失败事件（AC-006）
                 if (onTaskFailed != null) {
                     onTaskFailed.accept(task.index(), e.getMessage());
                 }
@@ -453,7 +477,6 @@ public class TaskBreakdownStream {
                         onTaskCancelled.accept(tasks.get(j).index());
                     }
                 }
-
                 return false;
             }
         }
@@ -462,29 +485,33 @@ public class TaskBreakdownStream {
     }
 
     /**
-     * 执行单个子任务的 ReAct 循环
+     * 执行单个子任务（委托 HITLReActStream）
      * <p>
-     * 业务含义：构造子任务执行消息（系统提示词 + 工具描述 + 历史记忆 + 子任务描述），
-     * 调用 ArkThinkingStreamingChatModel.stream() 进行 ReAct 循环。
-     * 每轮根据 finishReason 决定继续还是终止：
-     * - stop: 子任务完成，返回累积的完整回答
-     * - tool_calls: 执行工具，回填消息，继续循环
-     * 达到 maxIterations 时返回已累积的部分内容。
+     * 业务含义：构造子任务消息（task-execute 场景系统提示词 + 历史记忆 + 子任务描述/恢复上下文），
+     * 创建 HITLReActStream 并适配回调：onPartialThinking -> onTaskReasoning、
+     * onPartialResponse -> onTaskToken、onPartialThought -> onTaskThought、
+     * onAction/onObservation -> onTaskAction/onTaskObservation、onComplete -> 返回结果。
+     * askUser 拦截时 HITLReActStream 保存 ReAct 上下文（mode 未知），本方法在 onAskUser 回调中
+     * attachBreakdownContext 补充拆解上下文并抛出 BreakdownPausedException 中止编排。
      * </p>
      *
-     * @param task            子任务
-     * @param previousResults 之前子任务的执行结果列表
+     * @param task             子任务
+     * @param previousResults  之前子任务结果列表
+     * @param taskIndex        当前子任务在任务列表中的 index（0-based，用于暂停上下文记录）
+     * @param initialMessages  初始消息上下文（首次=null 走记忆构建；恢复=pending.messages + 用户回复 Observation）
+     * @param retryCount       初始追问计数
      * @return 子任务执行结果文本
      */
-    private String executeSubTaskWithReAct(SubTask task, List<String> previousResults) {
+    private String executeSubTask(SubTask task, List<String> previousResults, int taskIndex,
+                                  List<ChatMessage> initialMessages, int retryCount) {
         // 业务含义：按 modelId 选择思考流式模型，null 时使用默认模型
         ThinkingStreamingChatModel thinkingModel = (modelId != null)
                 ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
                 : modelFactory.getDefaultThinkingStreamingChatModel();
 
-        // 构造系统提示词：执行提示词 + 动态工具描述（{{tools}} 占位符运行时替换）
+        // 构造系统提示词：task-execute 场景 + 动态工具描述（{{tools}} 占位符运行时替换，BR-AGT-009）
         String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_EXECUTE)
-                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText());
+                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText(tools));
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(systemPrompt));
@@ -502,201 +529,124 @@ public class TaskBreakdownStream {
         }
         messages.add(UserMessage.from(userMessage.toString()));
 
-        String toolsJson = toolSchemaConverter.convertToJson();
+        // 业务含义：恢复执行时（当前子任务）直接续用暂停时上下文（含用户回复 Observation），
+        // 不重建消息列表，保证上下文无损（AC-M01/M02）
+        if (initialMessages != null) {
+            messages = initialMessages;
+        }
+
         int maxIterations = agentConfig.getTaskExecutionMaxIterations();
 
-        int iteration = 0;
-        StringBuilder fullResponse = new StringBuilder();
+        final String[] resultHolder = {""};
+        final boolean[] paused = {false};
 
-        while (iteration < maxIterations) {
-            // BUG 修复：emitter 超时/断开时退出 ReAct 循环
-            if (cancelled) {
-                log.info("子任务 ReAct 循环已取消: index={}, iteration={}", task.index(), iteration);
-                return fullResponse.toString();
+        HITLReActStream hitlStream = new HITLReActStream(
+                thinkingModel,
+                messages,
+                toolsJson,
+                toolExecutor,
+                humanInteractionManager,
+                sessionId,
+                modelId,
+                retryCount,
+                maxIterations);
+
+        // 回调适配：HITL 事件 -> task_* 事件（技术方案 1.6.4）
+        hitlStream.onPartialThinking(thinking -> {
+            // 统一模式恒开启思考，task_reasoning 无条件推送（原 enableThinking 删除）
+            if (onTaskReasoning != null) {
+                onTaskReasoning.accept(task.index(), thinking);
             }
-            iteration++;
-            final int currentIteration = iteration;
-
-            IterationResult result = new IterationResult();
-            ThinkingStreamHandler handler = createTaskHandler(task, result, currentIteration, fullResponse);
-
-            // 同步调用 LLM（model.stream 内部会阻塞直到 SSE 流读取完毕）
-            thinkingModel.stream(messages, toolsJson, handler);
-
-            // 检查错误
-            if (result.error != null) {
-                throw new RuntimeException("子任务执行失败: " + result.error.getMessage(), result.error);
+        });
+        hitlStream.onPartialResponse(token -> {
+            if (onTaskToken != null) {
+                onTaskToken.accept(task.index(), token);
             }
-
-            // 根据 finishReason 决定下一步
-            if ("stop".equals(result.finishReason)) {
-                // LLM 给出最终回答，子任务完成
-                return fullResponse.toString();
-            } else if ("tool_calls".equals(result.finishReason)) {
-                // 推送本轮 ReAct 思考（AC-005: 子任务执行详情）
-                if (!result.content.isEmpty() && onTaskThought != null) {
-                    onTaskThought.accept(task.index(), result.content.toString(), currentIteration);
-                }
-                // 执行工具调用并回填消息
-                executeToolCalls(task, result.toolCalls, currentIteration, messages);
+            resultHolder[0] = resultHolder[0] + token;
+        });
+        hitlStream.onPartialThought((content, iteration) -> {
+            // 工具轮 content 归类为 task_thought（技术方案 11.1 风险 5 知悉的行为差异）
+            if (onTaskThought != null) {
+                onTaskThought.accept(task.index(), content, iteration);
             }
+        });
+        hitlStream.onAction((toolName, args, iteration) -> {
+            if (onTaskAction != null) {
+                onTaskAction.accept(task.index(), toolName, args, iteration);
+            }
+        });
+        hitlStream.onObservation((result, iteration) -> {
+            if (onTaskObservation != null) {
+                onTaskObservation.accept(task.index(), result, iteration);
+            }
+        });
+        hitlStream.onAskUser((type, question, options, askRetryCount) -> {
+            // 业务含义：子任务 askUser 拦截暂停。HITLReActStream 已 saveInteraction（ReAct 上下文），
+            // 此处 attachBreakdownContext 补充拆解上下文（决策 4：pending 附加），并触发 onAskUser
+            humanInteractionManager.attachBreakdownContext(sessionId, tasks, taskIndex, previousResults);
+            if (onAskUser != null) {
+                onAskUser.accept(type, question, options, askRetryCount);
+            }
+            // 业务含义：标记暂停。不能在回调内抛异常（HITLReActStream.start() 会捕获并触发
+            // 其 onError，导致暂停信号被吞没/包装），改在 start() 返回后检测 paused 标志再抛
+            paused[0] = true;
+        });
+        hitlStream.onComplete(response -> {
+            resultHolder[0] = response;
+        });
+        hitlStream.onError(error -> {
+            throw new RuntimeException("子任务 ReAct 执行失败: " + error.getMessage(), error);
+        });
+
+        hitlStream.start();
+
+        // 业务含义：HITLReActStream.start() 内部 askUser 拦截后暂停循环并 return（不触发 onComplete）。
+        // 通过 paused 标志（onAskUser 回调中置位）判定暂停，抛 BreakdownPausedException 中止拆解编排。
+        if (paused[0]) {
+            throw new BreakdownPausedException(taskIndex);
         }
-
-        // 达到最大迭代次数，返回已累积的部分内容
-        log.warn("子任务达到最大迭代次数: index={}, maxIterations={}", task.index(), maxIterations);
-        return fullResponse.toString();
+        return resultHolder[0];
     }
 
     /**
-     * 创建 ThinkingStreamHandler，将 LLM 回调桥接到 TaskBreakdownStream 的消费者
+     * 查找最后一个 askUser 工具调用的 ID
      * <p>
-     * 回调映射：
-     * - onPartialThinking -> onTaskReasoning（enableThinking=true 时，AC-011）
-     * - onPartialResponse -> onTaskToken + 累积到 fullResponse（AC-005: 子任务内容片段）
-     * - onToolCalls -> 收集工具调用
-     * - onComplete -> 记录 finishReason
-     * - onError -> 记录异常
-     * </p>
-     */
-    private ThinkingStreamHandler createTaskHandler(SubTask task, IterationResult result,
-                                                     int iteration, StringBuilder fullResponse) {
-        return new ThinkingStreamHandler() {
-            @Override
-            public void onPartialThinking(String thinking) {
-                // 方舟原生推理内容，仅 enableThinking=true 时推送（AC-011）
-                if (enableThinking && onTaskReasoning != null) {
-                    onTaskReasoning.accept(task.index(), thinking);
-                }
-            }
-
-            @Override
-            public void onPartialResponse(String token) {
-                // 正式回复片段，流式推送 + 累积
-                if (onTaskToken != null) {
-                    onTaskToken.accept(task.index(), token);
-                }
-                fullResponse.append(token);
-                result.content.append(token);
-            }
-
-            @Override
-            public void onToolCalls(List<ToolCall> toolCalls) {
-                result.toolCalls.addAll(toolCalls);
-            }
-
-            @Override
-            public void onComplete(String response, String finishReason, TokenUsage tokenUsage) {
-                result.finishReason = finishReason;
-            }
-
-            @Override
-            public void onError(Throwable error) {
-                result.error = error;
-            }
-        };
-    }
-
-    /**
-     * 执行工具调用并回填消息（串行执行，参考 ReActThinkingStream）
-     * <p>
-     * 业务含义：遍历 toolCalls，逐个执行工具，推送 action/observation 事件，
-     * 并回填 assistant 消息（含 tool_calls）和 tool 结果消息到消息列表。
+     * 业务含义：ToolExecutionResultMessage 需匹配原始 ToolExecutionRequest 的 ID，
+     * 否则 LLM 无法正确关联工具结果。
      * </p>
      *
-     * @param task       子任务
-     * @param toolCalls  工具调用列表
-     * @param iteration  当前迭代轮次
-     * @param messages   消息列表（回填工具结果）
+     * @param messages 消息列表
+     * @return 工具调用 ID（未找到时返回 "askUser"）
      */
-    private void executeToolCalls(SubTask task, List<ToolCall> toolCalls, int iteration,
-                                   List<ChatMessage> messages) {
-        // 回填 assistant 消息（含 toolExecutionRequests），供下一轮 LLM 理解上下文
-        List<ToolExecutionRequest> requests = toolCalls.stream()
-                .map(tc -> ToolExecutionRequest.builder()
-                        .id(tc.getId())
-                        .name(tc.getFunctionName())
-                        .arguments(tc.getArguments())
-                        .build())
-                .toList();
-        messages.add(AiMessage.aiMessage("", requests));
-
-        // 串行执行每个工具调用
-        for (ToolCall tc : toolCalls) {
-            // 推送 action 事件（AC-005: 工具调用详情）
-            if (onTaskAction != null) {
-                onTaskAction.accept(task.index(), tc.getFunctionName(), tc.getArguments(), iteration);
+    private String findAskUserToolCallId(List<ChatMessage> messages) {
+        for (int i = messages.size() - 1; i >= 0; i--) {
+            ChatMessage msg = messages.get(i);
+            if (msg instanceof AiMessage aiMsg && aiMsg.hasToolExecutionRequests()) {
+                for (dev.langchain4j.agent.tool.ToolExecutionRequest req : aiMsg.toolExecutionRequests()) {
+                    if ("askUser".equals(req.name())) {
+                        return req.id();
+                    }
+                }
             }
-
-            // 执行工具，失败时返回错误字符串不抛异常（与 ToolExecutor 设计一致）
-            String toolResult = toolExecutor.execute(tc.getFunctionName(), tc.getArguments());
-
-            // 推送 observation 事件（AC-005: 工具结果）
-            if (onTaskObservation != null) {
-                onTaskObservation.accept(task.index(), toolResult, iteration);
-            }
-
-            // 回填 tool 结果消息，供下一轮 LLM 获取工具执行结果
-            messages.add(ToolExecutionResultMessage.from(tc.getId(), tc.getFunctionName(), toolResult));
         }
+        return "askUser";
     }
 
-    /**
-     * 单轮迭代状态收集（用于在 handler 回调和循环主逻辑之间传递状态）
-     */
-    private static class IterationResult {
-        String finishReason;
-        final List<ToolCall> toolCalls = new ArrayList<>();
-        final StringBuilder content = new StringBuilder();
-        Throwable error;
-    }
-
-    // ==================== Phase 3: 总结（Task-05 实现）====================
+    // ==================== Phase 3: 总结 ====================
 
     /**
      * 总结阶段：流式输出最终总结
      * <p>
      * 业务含义：所有子任务完成后，调用 LLM 流式生成最终总结（AC-004）。
      * 总结消息包含总结提示词 + 会话记忆（含子任务执行结果）。
-     * 不传 tools 参数，总结阶段不需要工具调用。
      * </p>
      */
-    private void streamSummary(List<SubTask> tasks) {
+    private void streamSummary() {
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_SUMMARY)));
         // 历史记忆中已包含用户消息和各子任务执行结果
         messages.addAll(memoryManager.getMemory(sessionId).messages());
 
-        streamResponse(messages);
-    }
-
-    /**
-     * 降级路径：直接流式回答用户消息
-     * <p>
-     * 业务含义：LLM 判断无需拆解时，直接以普通对话方式流式回复（AC-002, AC-009）。
-     * 使用思考系统提示词（不提及工具调用，避免模型尝试调用不存在的工具）。
-     * </p>
-     */
-    private void streamDirectAnswer() {
-        List<ChatMessage> messages = new ArrayList<>();
-        messages.add(SystemMessage.from(promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_THINKING)));
-        messages.addAll(memoryManager.getMemory(sessionId).messages());
-        messages.add(UserMessage.from(message));
-
-        streamResponse(messages);
-    }
-
-    /**
-     * 流式输出通用方法（总结阶段和降级路径共用）
-     * <p>
-     * 业务含义：调用 ArkThinkingStreamingChatModel.stream() 流式输出，
-     * 通过 onSummaryToken 回调推送文本片段，通过 onSummaryReasoning 回调推送推理片段。
-     * 不传 tools 参数（总结/降级阶段不需要工具调用）。
-     * LLM 调用失败时抛出 RuntimeException，由 start() 的 catch 块捕获并触发 onError。
-     * </p>
-     *
-     * @param messages 消息列表
-     */
-    private void streamResponse(List<ChatMessage> messages) {
         // 业务含义：按 modelId 选择思考流式模型，null 时使用默认模型
         ThinkingStreamingChatModel thinkingModel = (modelId != null)
                 ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
@@ -706,15 +656,14 @@ public class TaskBreakdownStream {
         ThinkingStreamHandler handler = new ThinkingStreamHandler() {
             @Override
             public void onPartialThinking(String thinking) {
-                // 方舟原生推理内容，仅 enableThinking=true 时推送
-                if (enableThinking && onSummaryReasoning != null) {
+                // 统一模式恒开启思考，summary reasoning 无条件推送
+                if (onSummaryReasoning != null) {
                     onSummaryReasoning.accept(thinking);
                 }
             }
 
             @Override
             public void onPartialResponse(String token) {
-                // 正式回复片段，流式推送
                 if (onSummaryToken != null) {
                     onSummaryToken.accept(token);
                 }
@@ -722,17 +671,17 @@ public class TaskBreakdownStream {
 
             @Override
             public void onToolCalls(List<ToolCall> toolCalls) {
-                // 总结/降级阶段不需要工具调用
+                // 总结阶段不需要工具调用
             }
 
             @Override
             public void onComplete(String fullResponse, String finishReason, TokenUsage tokenUsage) {
-                log.info("流式输出完成: sessionId={}, finishReason={}", sessionId, finishReason);
+                log.info("总结输出完成: sessionId={}, finishReason={}", sessionId, finishReason);
             }
 
             @Override
             public void onError(Throwable error) {
-                log.error("流式输出异常: sessionId={}", sessionId, error);
+                log.error("总结输出异常: sessionId={}", sessionId, error);
                 errorHolder[0] = error;
             }
         };
@@ -740,9 +689,28 @@ public class TaskBreakdownStream {
         // 不带 tools 参数调用 LLM
         thinkingModel.stream(messages, null, handler);
 
-        // 如果 LLM 调用失败，抛出异常由 start() 的 catch 块处理
         if (errorHolder[0] != null) {
-            throw new RuntimeException("流式输出失败: " + errorHolder[0].getMessage(), errorHolder[0]);
+            throw new RuntimeException("总结输出失败: " + errorHolder[0].getMessage(), errorHolder[0]);
+        }
+    }
+
+    /**
+     * 暂停信号（内部异常）
+     * <p>
+     * 业务含义：子任务 askUser 拦截后中止拆解编排的信号。attachBreakdownContext 已在
+     * executeSubTask 的 askUser 回调内完成，onAskUser 已触发，编排在此终止等待用户回复。
+     * </p>
+     */
+    static class BreakdownPausedException extends RuntimeException {
+        private final int taskIndex;
+
+        BreakdownPausedException(int taskIndex) {
+            super("任务拆解暂停于子任务 index=" + taskIndex);
+            this.taskIndex = taskIndex;
+        }
+
+        int getTaskIndex() {
+            return taskIndex;
         }
     }
 
@@ -818,6 +786,12 @@ public class TaskBreakdownStream {
     @FunctionalInterface
     public interface ReasoningConsumer {
         void accept(String reasoning);
+    }
+
+    /** HITL 暂停回调 */
+    @FunctionalInterface
+    public interface AskUserConsumer {
+        void accept(String type, String question, List<String> options, int retryCount);
     }
 
     /** 异常回调 */

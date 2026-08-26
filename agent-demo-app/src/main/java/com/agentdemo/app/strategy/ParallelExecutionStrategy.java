@@ -8,6 +8,7 @@ import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
+import com.agentdemo.app.service.WorkflowHITLException;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -89,18 +90,37 @@ public class ParallelExecutionStrategy extends AbstractExecutionStrategy {
                     parallelExecutor));
         }
 
-        // 等待所有分组完成；解包 CompletableFuture 包装的异常（Cancelled/Timeout/Business），交协调层统一处理
+        // 等待所有分组完成；解包 CompletableFuture 包装的异常（Cancelled/Timeout/Business），交协调层统一处理。
+        // 业务含义：并行 HITL 排队（Task-09，AC-E02）——多个分组 Agent 同时 askUser 时，
+        // 第一个 HITL 异常传播给协调层（进入 WAITING_USER），其余写入 ctx 排队列表
+        // （PENDING_HITL_KEY），用户回复后由协调层按序消费（避免信息丢失，技术方案决策 6）
         List<String> groupOutputs = new ArrayList<>();
+        WorkflowHITLException primaryHitl = null;
+        List<WorkflowHITLException> queuedHitls = new ArrayList<>();
         for (CompletableFuture<String> f : groupFutures) {
             try {
                 groupOutputs.add(f.join());
             } catch (java.util.concurrent.CompletionException e) {
                 Throwable cause = e.getCause() != null ? e.getCause() : e;
-                if (cause instanceof RuntimeException re) {
+                if (cause instanceof WorkflowHITLException he) {
+                    if (primaryHitl == null) {
+                        primaryHitl = he;
+                    } else {
+                        queuedHitls.add(he);
+                    }
+                    groupOutputs.add(null);
+                } else if (cause instanceof RuntimeException re) {
                     throw re;
+                } else {
+                    throw e;
                 }
-                throw e;
             }
+        }
+        if (!queuedHitls.isEmpty()) {
+            ctx.write(WorkflowContext.PENDING_HITL_KEY, new ArrayList<>(queuedHitls));
+        }
+        if (primaryHitl != null) {
+            throw primaryHitl;
         }
 
         String finalResult = summarizeParallel(template, groupOutputs);

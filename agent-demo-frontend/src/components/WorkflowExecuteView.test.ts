@@ -1,18 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import WorkflowExecuteView from './WorkflowExecuteView.vue';
-import { streamExecute, streamResume, terminate } from '@/api/workflow';
+import { streamExecute, streamResume, terminate, replyToWorkflow } from '@/api/workflow';
 import type { WorkflowTemplateDetail, WorkflowStreamCallbacks } from '@/types';
 
 /**
  * WorkflowExecuteView 组件测试（P2 Task-19，AC-004/005/006/008/009/010/022）
  * P3 扩展：暂停 UI 与恢复流程（Task-20，AC-016/AC-017）
+ * Task-18 扩展：toolConfirm 工具确认卡片（AC-H01/AC-H02）
  */
 
 vi.mock('@/api/workflow', () => ({
   streamExecute: vi.fn(),
   streamResume: vi.fn(),
   terminate: vi.fn(),
+  replyToWorkflow: vi.fn(),
 }));
 
 function makeDetail(overrides: Partial<WorkflowTemplateDetail> = {}): WorkflowTemplateDetail {
@@ -470,5 +472,62 @@ describe('WorkflowExecuteView Supervisor 子任务可视化（P3 Task-21，AC-00
     });
     // 子任务卡片与主控面板分离（卡片区独立于 agent-panel）
     expect(wrapper.findAll('.subtask-card')).toHaveLength(2);
+  });
+});
+
+describe('WorkflowExecuteView toolConfirm 工具确认（Task-18，AC-H01/AC-H02）', () => {
+  /** 挂载并执行至 toolConfirm 等待：onToolConfirm + workflow_waiting(hitlMode=toolConfirm) */
+  async function mountUntilToolConfirm() {
+    (streamExecute as ReturnType<typeof vi.fn>).mockImplementation(async (_id, _p, _m, callbacks) => {
+      callbacks.onWorkflowStart({ executionId: 'exec-1', templateName: '质量评分-修订', mode: 'LOOP', agentCount: 1 });
+      callbacks.onToolConfirm?.({
+        agentIndex: 0,
+        agentName: '评分 Agent',
+        toolName: 'httpGet',
+        toolDescription: '发起 HTTP GET 请求',
+        arguments: '{"url":"https://example.com","timeout":5000}',
+      });
+      callbacks.onWorkflowWaiting({
+        executionId: 'exec-1',
+        agentIndex: 0,
+        agentName: '评分 Agent',
+        hitlMode: 'toolConfirm',
+        resumable: true,
+      });
+    });
+    const wrapper = mount(WorkflowExecuteView, { props: { template: makeDetail() } });
+    await wrapper.find('.param-input').setValue('初稿');
+    await wrapper.find('.btn-execute').trigger('click');
+    await vi.waitFor(() => {
+      expect(wrapper.find('.waiting-banner').exists()).toBe(true);
+    });
+    return wrapper;
+  }
+
+  it('hitlMode=toolConfirm 时渲染 ConfirmCard（真实工具名 + 用途 + 格式化参数）', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    // 头部模式文本标记"工具确认"
+    expect(wrapper.find('.waiting-mode').text()).toContain('工具确认');
+    // ConfirmCard 渲染真实工具数据（非检查点占位文案）
+    const card = wrapper.find('.confirm-card');
+    expect(card.exists()).toBe(true);
+    expect(card.text()).toContain('httpGet');
+    expect(card.text()).toContain('发起 HTTP GET 请求');
+    expect(card.text()).toContain('"url"');
+    expect(card.text()).toContain('"timeout"');
+  });
+
+  it('批准触发 replyToHitl(null, true) → replyToWorkflow(executionId, null, true)', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    (replyToWorkflow as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    await wrapper.find('[data-testid="confirm-approve"]').trigger('click');
+    expect(replyToWorkflow).toHaveBeenCalledWith('exec-1', null, true, expect.any(Object), expect.any(AbortSignal));
+  });
+
+  it('拒绝触发 replyToHitl(null, false) → replyToWorkflow(executionId, null, false)', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    (replyToWorkflow as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    await wrapper.find('[data-testid="confirm-deny"]').trigger('click');
+    expect(replyToWorkflow).toHaveBeenCalledWith('exec-1', null, false, expect.any(Object), expect.any(AbortSignal));
   });
 });

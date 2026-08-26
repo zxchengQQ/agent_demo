@@ -6,6 +6,7 @@ import com.agentdemo.agent.core.ThinkingTokenStream;
 import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.thinking.ToolCall;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
 import com.agentdemo.tools.registry.ToolExecutor;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
@@ -24,7 +25,7 @@ import java.util.List;
 /**
  * HITL ReAct 流式令牌流实现
  * <p>
- * 业务含义：在 ReActThinkingStream 基础上增加 askUser 工具拦截能力。
+ * 业务含义：显式 ReAct 循环基础上增加 askUser 工具拦截能力。
  * 当 LLM 调用 askUser 工具时，不执行工具方法，而是保存当前 ReAct 上下文到 HumanInteractionManager，
  * 触发 onAskUser 回调，暂停 ReAct 循环。用户回复后由 AgentController 创建新实例恢复执行。
  * </p>
@@ -33,7 +34,7 @@ import java.util.List;
  * 1. 每轮调用 model.stream(messages, toolsJson, handler)，handler 实时回调 reasoning/thought
  * 2. 收到 finish_reason=tool_calls 时，检查工具名是否为 askUser
  * 3. 若为 askUser：解析参数、保存状态、触发 onAskUser、暂停循环
- * 4. 若为其他工具：正常执行（同 ReActThinkingStream）
+ * 4. 若为其他工具：正常执行
  * 5. 收到 finish_reason=stop 时，推送 final-answer + onComplete，退出循环
  * </p>
  */
@@ -71,6 +72,7 @@ public class HITLReActStream implements HitlTokenStream {
     private CompleteConsumer completeConsumer;
     private ErrorConsumer errorConsumer;
     private AskUserConsumer askUserConsumer;
+    private ToolConfirmConsumer toolConfirmConsumer;
 
     public HITLReActStream(ThinkingStreamingChatModel model,
                            List<ChatMessage> messages,
@@ -97,6 +99,12 @@ public class HITLReActStream implements HitlTokenStream {
     @Override
     public HitlTokenStream onAskUser(AskUserConsumer consumer) {
         this.askUserConsumer = consumer;
+        return this;
+    }
+
+    @Override
+    public HitlTokenStream onToolConfirm(ToolConfirmConsumer consumer) {
+        this.toolConfirmConsumer = consumer;
         return this;
     }
 
@@ -170,8 +178,8 @@ public class HITLReActStream implements HitlTokenStream {
     /**
      * ReAct 循环核心逻辑
      * <p>
-     * 业务含义：与 ReActThinkingStream 相同的 ReAct 循环，但在工具执行阶段
-     * 增加 askUser 拦截逻辑。askUser 被拦截时保存状态并暂停循环。
+     * 业务含义：显式 ReAct 循环，在工具执行阶段增加 askUser 拦截逻辑。
+     * askUser 被拦截时保存状态并暂停循环。
      * </p>
      */
     private void runReActLoop() {
@@ -248,13 +256,17 @@ public class HITLReActStream implements HitlTokenStream {
     }
 
     /**
-     * 执行工具调用，增加 askUser 拦截逻辑
+     * 执行工具调用，增加 askUser 拦截与权限分级拦截逻辑
      * <p>
-     * 业务含义：遍历 toolCalls，若工具名为 askUser 则拦截（保存状态 + 触发回调 + 暂停），
-     * 否则正常执行（同 ReActThinkingStream）。
+     * 业务含义：遍历 toolCalls，按序处理：
+     * 1. askUser 工具豁免拦截（权限恒 ALLOW，AC-S03），先于权限检查保留现有行为；
+     * 2. 其余工具先 checkPermission 裁决——ask 级拦截暂停（AC-N03）、deny 级防御兜底（AC-S01）、
+     *    allow 级正常执行（AC-N02，现有行为零变更）；
+     * 3. 多 toolCall 混合场景：遇到首个 ask 级 toolCall 即暂停，此前已执行的 allow 工具结果
+     *    已在 messages 中（游标完整性），恢复后由 UnifiedChatStream 续跑。
      * </p>
      *
-     * @return true 表示已暂停（askUser 被拦截），false 表示正常执行完毕
+     * @return true 表示已暂停（askUser/ask 级工具被拦截），false 表示正常执行完毕
      */
     private boolean executeToolCalls(List<ToolCall> toolCalls, int iteration) {
         // 回填 assistant 消息（含 toolExecutionRequests）
@@ -274,11 +286,29 @@ public class HITLReActStream implements HitlTokenStream {
             }
 
             if (ASK_USER_TOOL_NAME.equals(tc.getFunctionName())) {
-                // 业务含义：拦截 askUser 调用，不执行工具方法
+                // 业务含义：拦截 askUser 调用，不执行工具方法（豁免工具，权限恒 ALLOW）
                 return handleAskUser(tc, iteration);
             }
 
-            // 正常执行工具（同 ReActThinkingStream）
+            // 业务含义：执行期权限裁决（AC-N03）——askUser 之外的每个 toolCall 先检查权限再执行
+            ToolExecutor.ToolPermissionCheck check = toolExecutor.checkPermission(tc.getFunctionName());
+
+            if (check.level() == ToolPermissionLevel.ASK) {
+                // 业务含义：ask 级工具拦截暂停——保存现场、触发确认回调、暂停循环，
+                // 不添加 ToolExecutionResultMessage（待用户批准后由 UnifiedChatStream 回填）
+                return handleToolConfirm(tc, check, iteration);
+            }
+
+            if (check.level() == ToolPermissionLevel.DENY) {
+                // 业务含义：deny 级防御兜底——正常路径加载期已过滤（AC-T01，LLM 不可见），
+                // 此处为纵深防御第二道防线（AC-S01），记录安全事件日志；
+                // 拒绝文案由 ToolExecutor.execute 内置兜底返回（方法体零触发）
+                log.warn("工具权限 deny 兜底拦截: toolName={}, 调用来源=ReAct 工具循环", tc.getFunctionName());
+            }
+
+            // 正常执行路径：
+            // - ALLOW：直接执行（AC-N02，现有行为零变更）
+            // - DENY：execute 入口兜底返回拒绝文案，不执行方法体
             String toolResult = toolExecutor.execute(tc.getFunctionName(), tc.getArguments());
 
             if (observationConsumer != null) {
@@ -344,6 +374,30 @@ public class HITLReActStream implements HitlTokenStream {
         }
 
         // 业务含义：暂停循环，不添加 ToolExecutionResultMessage（等待用户回复后添加）
+        return true;
+    }
+
+    /**
+     * 处理 ask 级工具权限确认
+     * <p>
+     * 业务含义（决策 2 方案 A：快照职责外移）：ask 级工具调用被拦截时，本类**不保存快照**，
+     * 仅触发 4 参 onToolConfirm 回调（含 toolCallId）后暂停 ReAct 循环（AC-N03）。
+     * 快照持久化由宿主决定——单 Agent 宿主（UnifiedChatStream.registerHitlCallbacks）
+     * 与工作流宿主（AgentExecutor.awaitHitlStream）各自按既有上下文补保存（AC-M02）。
+     * 不添加 ToolExecutionResultMessage，恢复时由宿主按 toolCallId 回填结果消息。
+     * </p>
+     *
+     * @param tc    被拦截的 toolCall
+     * @param check 权限检查结果（含 toolId 与工具描述，描述用于确认卡片展示）
+     * @return true 表示已暂停（等待用户批准/拒绝）
+     */
+    private boolean handleToolConfirm(ToolCall tc, ToolExecutor.ToolPermissionCheck check, int iteration) {
+        // 业务含义：仅触发 4 参回调（toolCallId/工具名/描述/参数），快照由宿主补保存
+        if (toolConfirmConsumer != null) {
+            toolConfirmConsumer.accept(tc.getId(), tc.getFunctionName(), check.toolDescription(), tc.getArguments());
+        }
+
+        // 业务含义：暂停循环，不添加 ToolExecutionResultMessage（等待用户批准/拒绝后由恢复流程回填）
         return true;
     }
 

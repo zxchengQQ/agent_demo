@@ -652,7 +652,7 @@ flowchart LR
 | LangChain4j | 1.17.2 (GA) | AI Agent 框架（核心模块） |
 | langchain4j-open-ai | 1.17.2 (GA) | 火山引擎接入适配器 |
 | langchain4j-mcp | 1.17.2-beta27 | MCP 协议客户端（三传输方式：stdio/SSE/Streamable HTTP） |
-| langchain4j-agentic | 1.17.2-beta27 | 多 Agent 编排引擎（应用编排层：串行/并行/条件/循环/Supervisor + 断点恢复） |
+| langchain4j-agentic | 1.17.2-beta27 | 多 Agent 编排引擎（应用编排层：串行/并行/条件/循环/Supervisor + 断点恢复 + 工作流 HITL 人工确认） |
 | langchain4j-milvus | 1.17.2-beta27 | 向量数据库集成（规划中） |
 | milvus-sdk-java | 2.4.3 | Milvus 客户端（规划中） |
 | MyBatis-Plus | 3.5.7 | ORM（规划中） |

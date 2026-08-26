@@ -30,9 +30,9 @@ class EnumsTest {
     }
 
     @Test
-    void workflowExecutionStatus_shouldContainAllSevenValues() {
-        // P3 新增 PAUSED（可恢复态）：6 -> 7
-        assertEquals(7, WorkflowExecutionStatus.values().length);
+    void workflowExecutionStatus_shouldContainAllEightValues() {
+        // P3 新增 PAUSED（可恢复态）：6 -> 7；工作流 HITL 新增 WAITING_USER：7 -> 8
+        assertEquals(8, WorkflowExecutionStatus.values().length);
         assertTrue(Arrays.stream(WorkflowExecutionStatus.values())
                 .anyMatch(s -> s == WorkflowExecutionStatus.PENDING));
         assertTrue(Arrays.stream(WorkflowExecutionStatus.values())
@@ -47,6 +47,8 @@ class EnumsTest {
                 .anyMatch(s -> s == WorkflowExecutionStatus.TIMEOUT));
         assertTrue(Arrays.stream(WorkflowExecutionStatus.values())
                 .anyMatch(s -> s == WorkflowExecutionStatus.PAUSED));
+        assertTrue(Arrays.stream(WorkflowExecutionStatus.values())
+                .anyMatch(s -> s == WorkflowExecutionStatus.WAITING_USER));
     }
 
     @Test

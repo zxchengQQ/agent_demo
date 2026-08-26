@@ -22,4 +22,15 @@ public class AgentDefinition {
     private String roleName;
     private String scenarioName;
     private Class<?> interfaceClass;
+
+    /**
+     * 是否启用 HITL 显式 ReAct（工作流 HITL）
+     * <p>
+     * 业务含义：模板定义 true 时，AgentExecutor 对该 Agent 的 askUser 场景使用
+     * HITLReActStream（显式 ReAct，支持暂停-恢复）；false（默认）走现有 TokenStream（零回归）。
+     * @HumanCheckpoint 注解检测独立于本字段（AC-N02）。
+     * </p>
+     */
+    @Builder.Default
+    private boolean hitlEnabled = false;
 }

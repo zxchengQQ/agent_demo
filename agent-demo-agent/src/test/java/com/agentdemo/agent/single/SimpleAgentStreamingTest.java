@@ -46,6 +46,9 @@ class SimpleAgentStreamingTest {
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
         when(toolRegistry.size()).thenReturn(0);
+        // 2 参 chatStream 走默认工具 + ForStreaming，须 stub 避免 resolveSessionTools 合并默认工具时空指针
+        when(toolRegistry.getDefaultToolsForStreaming(org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(Collections.emptyList());
 
         ChatMemoryManager memoryManager = mock(ChatMemoryManager.class);
         when(memoryManager.getMemory(anyString())).thenReturn(MessageWindowChatMemory.withMaxMessages(20));
@@ -53,7 +56,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class), new SessionToolResolver(toolRegistry, agentConfig));
 
         // when: 触发 delegate 初始化（调用 chatStream）
         try {
@@ -80,6 +83,9 @@ class SimpleAgentStreamingTest {
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
         when(toolRegistry.size()).thenReturn(0);
+        // 2 参 chatStream 走默认工具 + ForStreaming，须 stub 避免 resolveSessionTools 合并默认工具时空指针
+        when(toolRegistry.getDefaultToolsForStreaming(org.mockito.ArgumentMatchers.anyList()))
+                .thenReturn(Collections.emptyList());
 
         ChatMemoryManager memoryManager = mock(ChatMemoryManager.class);
         when(memoryManager.getMemory(anyString())).thenReturn(MessageWindowChatMemory.withMaxMessages(20));
@@ -87,7 +93,7 @@ class SimpleAgentStreamingTest {
         AgentConfig agentConfig = new AgentConfig();
         agentConfig.setEnableLogging(false);
 
-        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class));
+        SimpleAgent agent = new SimpleAgent(modelFactory, toolRegistry, memoryManager, agentConfig, mock(ToolSchemaConverter.class), mock(ToolExecutor.class), new PromptTemplateLoader(agentConfig), mock(HumanInteractionManager.class), new SessionToolResolver(toolRegistry, agentConfig));
 
         // when: 调用 chatStream
         TokenStream tokenStream = agent.chatStream("test-session", "你好");

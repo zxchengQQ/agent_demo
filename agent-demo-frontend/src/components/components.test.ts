@@ -491,13 +491,14 @@ describe('MessageItem', () => {
     expect(wrapper.find('.subtask-detail').text()).toContain('分析结果');
   });
 
-  // ========== HITL 人机交互渲染（Task-09，BUG 修复）==========
+  // ========== HITL 人机交互渲染（Task-09，BUG 修复；unified-chat-mode Task-17 适配 AskUserCard）==========
 
   /**
    * BUG 修复核心测试：ask_user 事件后后端立即发送 done，消息 status=complete，
-   * 但 HITL 场景下 ConfirmCard 选项按钮必须可交互（不能 disabled），
+   * 但 HITL 场景下选项按钮必须可交互（不能 disabled），
    * 否则用户无法点击选项，前端"未渲染为选项框"。
    * 修复前 disabled=status!=='incomplete' 导致 status=complete 时按钮全部禁用。
+   * unified-chat-mode：ConfirmCard 已由 AskUserCard 替代（类名 .option-row，事件 reply）。
    */
   it('confirm 类型 askUserData 渲染选项按钮且 status=complete 时仍可点击（HITL BUG 修复）', () => {
     const msg: Message = {
@@ -515,18 +516,18 @@ describe('MessageItem', () => {
       },
     };
     const wrapper = mount(MessageItem, { props: { message: msg } });
-    // 渲染确认卡片
-    expect(wrapper.find('.confirm-card').exists()).toBe(true);
-    expect(wrapper.find('.confirm-question').text()).toBe('确认删除文件 test.txt？此操作不可恢复。');
+    // 渲染统一交互卡片
+    expect(wrapper.find('.ask-user-card').exists()).toBe(true);
+    expect(wrapper.find('.question-text').text()).toBe('确认删除文件 test.txt？此操作不可恢复。');
     // 选项按钮渲染且非禁用（可交互）
-    const buttons = wrapper.findAll('.confirm-option');
+    const buttons = wrapper.findAll('.option-row');
     expect(buttons).toHaveLength(2);
-    expect(buttons[0].text()).toBe('确认删除');
+    expect(buttons[0].text()).toContain('确认删除');
     expect(buttons[0].attributes('disabled')).toBeUndefined();
     expect(buttons[1].attributes('disabled')).toBeUndefined();
   });
 
-  it('text 类型 askUserData 渲染问题文本（非选项框）', () => {
+  it('text 类型 askUserData 渲染内嵌输入框（非选项框，AC-T02）', () => {
     const msg: Message = {
       id: 'hitl-text-1',
       role: 'assistant',
@@ -541,13 +542,13 @@ describe('MessageItem', () => {
       },
     };
     const wrapper = mount(MessageItem, { props: { message: msg } });
-    expect(wrapper.find('.ask-user-text').exists()).toBe(true);
-    expect(wrapper.find('.ask-user-text').text()).toBe('请提供订单号，例如：ORD-12345');
-    // text 类型不渲染确认卡片
-    expect(wrapper.find('.confirm-card').exists()).toBe(false);
+    expect(wrapper.find('.question-text').text()).toBe('请提供订单号，例如：ORD-12345');
+    // text 类型渲染输入框而非选项行
+    expect(wrapper.find('.text-area .ask-input').exists()).toBe(true);
+    expect(wrapper.findAll('.option-row')).toHaveLength(0);
   });
 
-  it('confirm 选项点击后 emit select 事件（逐层传递到 ChatWindow 发送回复）', async () => {
+  it('confirm 选项点击后 emit reply 事件（逐层传递到 ChatWindow 发送回复）', async () => {
     const msg: Message = {
       id: 'hitl-confirm-2',
       role: 'assistant',
@@ -562,8 +563,8 @@ describe('MessageItem', () => {
       },
     };
     const wrapper = mount(MessageItem, { props: { message: msg } });
-    await wrapper.findAll('.confirm-option')[0].trigger('click');
-    expect(wrapper.emitted('select')?.[0]).toEqual(['确认删除']);
+    await wrapper.findAll('.option-row')[0].trigger('click');
+    expect(wrapper.emitted('reply')?.[0]).toEqual(['确认删除']);
   });
 
   it('无 askUserData 时不渲染 HITL 区块（零回归）', () => {
@@ -576,6 +577,53 @@ describe('MessageItem', () => {
     };
     const wrapper = mount(MessageItem, { props: { message: msg } });
     expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
+
+  // ===== BUG 修复回归测试：拒绝后权限确认卡片必须锁定为"已拒绝" =====
+  // 复现依据：MessageItem 的 answered 判定原先为 !!approved——拒绝时 approved=false，
+  // !!false=false 导致卡片不锁定、批准/拒绝按钮仍可点击，与批准路径行为不一致。
+  // 正确语义：approved !== undefined 即已决策（true=已批准，false=已拒绝，undefined=待决策）。
+
+  /** 构造 permission 形态消息（kind=permission） */
+  function buildPermissionMsg(approved?: boolean): Message {
+    return {
+      id: 'perm-card-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      askUserData: {
+        type: 'confirm',
+        kind: 'permission',
+        question: '请求使用工具「httpGet」',
+        retryCount: 0,
+        toolName: 'httpGet',
+        toolDescription: '发送 HTTP GET 请求',
+        toolArguments: '{"url":"https://example.com"}',
+        approved,
+      },
+    };
+  }
+
+  it('拒绝后（approved=false）权限卡片锁定为"已拒绝"，按钮隐藏（BUG 修复：拒绝不锁定卡片）', () => {
+    const wrapper = mount(MessageItem, { props: { message: buildPermissionMsg(false) } });
+    // 修复断言：卡片应进入锁定态展示"已拒绝"，而非保留批准/拒绝按钮
+    expect(wrapper.find('.answered-line').text()).toBe('已拒绝');
+    expect(wrapper.find('[data-testid="confirm-approve"]').exists()).toBe(false);
+    expect(wrapper.find('[data-testid="confirm-deny"]').exists()).toBe(false);
+  });
+
+  it('批准后（approved=true）权限卡片锁定为"已批准"（既有行为回归保障）', () => {
+    const wrapper = mount(MessageItem, { props: { message: buildPermissionMsg(true) } });
+    expect(wrapper.find('.answered-line').text()).toBe('已批准');
+    expect(wrapper.find('[data-testid="confirm-approve"]').exists()).toBe(false);
+  });
+
+  it('待决策（approved=undefined）权限卡片显示批准/拒绝按钮（既有行为回归保障）', () => {
+    const wrapper = mount(MessageItem, { props: { message: buildPermissionMsg(undefined) } });
+    expect(wrapper.find('[data-testid="confirm-approve"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="confirm-deny"]').exists()).toBe(true);
+    expect(wrapper.find('.answered-line').exists()).toBe(false);
   });
 });
 
@@ -607,67 +655,36 @@ describe('MessageInput', () => {
     expect(wrapper.find('.char-count').text()).toContain('4000');
   });
 
-  // ===== CR-001 T-27 新增：深度思考 toggle（AC-021）=====
+  // ===== unified-chat-mode Task-19：/plan 前缀命令提示条（AC-N04 可发现性）=====
+  // 注：传入 chat 模型使 textarea 可用（hasModels=true），否则 setValue 不生效
 
-  it('渲染"深度思考"toggle 按钮（AC-021）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableThinking: false } });
-    expect(wrapper.find('.btn-thinking').exists()).toBe(true);
-    expect(wrapper.find('.btn-thinking').text()).toContain('深度思考');
+  it('输入以 / 开头时显示 /plan 提示条（AC-N04）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [chatModel] } });
+    expect(wrapper.find('.plan-hint').exists()).toBe(false);
+
+    await wrapper.find('textarea').setValue('/plan 帮我做个计划');
+    expect(wrapper.find('.plan-hint').exists()).toBe(true);
+    expect(wrapper.find('.plan-hint').text()).toContain('/plan');
   });
 
-  it('点击按钮触发 toggleThinking 事件（AC-021）', async () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableThinking: false } });
-    await wrapper.find('.btn-thinking').trigger('click');
-    expect(wrapper.emitted('toggleThinking')).toBeTruthy();
-    expect(wrapper.emitted('toggleThinking')).toHaveLength(1);
+  it('输入不以 / 开头时不显示 /plan 提示条（AC-N04）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [chatModel] } });
+    await wrapper.find('textarea').setValue('帮我做个计划');
+    expect(wrapper.find('.plan-hint').exists()).toBe(false);
   });
 
-  it('enableThinking=true 时按钮有 active 样式（AC-021）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableThinking: true } });
-    expect(wrapper.find('.btn-thinking').classes()).toContain('active');
+  it('流式中不显示 /plan 提示条（AC-N04）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: true, models: [chatModel] } });
+    await wrapper.find('textarea').setValue('/plan 帮我做个计划');
+    expect(wrapper.find('.plan-hint').exists()).toBe(false);
   });
 
-  it('enableThinking=false 时按钮无 active 样式（AC-021）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableThinking: false } });
-    expect(wrapper.find('.btn-thinking').classes()).not.toContain('active');
-  });
-
-  it('流式中按钮仍可点击切换（AC-021）', async () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: true, enableThinking: false } });
-    await wrapper.find('.btn-thinking').trigger('click');
-    expect(wrapper.emitted('toggleThinking')).toBeTruthy();
-  });
-
-  // ===== CR-002 新增：任务拆解 toggle（AC-012）=====
-
-  it('渲染"任务拆解"toggle 按钮（AC-012, CR-002）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableTaskBreakdown: false } });
-    expect(wrapper.find('.btn-task-breakdown').exists()).toBe(true);
-    expect(wrapper.find('.btn-task-breakdown').text()).toContain('任务拆解');
-  });
-
-  it('点击任务拆解按钮触发 toggleTaskBreakdown 事件（AC-012）', async () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableTaskBreakdown: false } });
-    await wrapper.find('.btn-task-breakdown').trigger('click');
-    expect(wrapper.emitted('toggleTaskBreakdown')).toBeTruthy();
-    expect(wrapper.emitted('toggleTaskBreakdown')).toHaveLength(1);
-  });
-
-  it('enableTaskBreakdown=true 时按钮有 active 样式（AC-012）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableTaskBreakdown: true } });
-    expect(wrapper.find('.btn-task-breakdown').classes()).toContain('active');
-  });
-
-  it('enableTaskBreakdown=false 时按钮无 active 样式（AC-012）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableTaskBreakdown: false } });
-    expect(wrapper.find('.btn-task-breakdown').classes()).not.toContain('active');
-  });
-
-  it('任务拆解按钮与深度思考按钮在同一 .input-footer 容器内（AC-012）', () => {
-    const wrapper = mount(MessageInput, { props: { isStreaming: false, enableThinking: true, enableTaskBreakdown: true } });
-    const footer = wrapper.find('.input-footer');
-    expect(footer.find('.btn-thinking').exists()).toBe(true);
-    expect(footer.find('.btn-task-breakdown').exists()).toBe(true);
+  it('输入为 / 时点击提示条自动补全为 /plan （AC-N04）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [chatModel] } });
+    await wrapper.find('textarea').setValue('/');
+    await wrapper.find('.plan-hint').trigger('click');
+    const textarea = wrapper.find('textarea');
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('/plan ');
   });
 
   // ===== Task-08 新增：知识库选择器集成（AC-011, AC-029）=====
@@ -812,74 +829,6 @@ describe('ChatWindow', () => {
     vi.mocked(getConfigStatus).mockResolvedValue(configStatus);
   });
 
-  it('传递 enableThinking 状态给 MessageInput（AC-021）', () => {
-    const wrapper = mount(ChatWindow, {
-      global: { plugins: [pinia] },
-    });
-    const input = wrapper.findComponent(MessageInput);
-    expect(input.props('enableThinking')).toBe(false);
-  });
-
-  it('点击思考 toggle 更新 enableThinking 状态（AC-021）', async () => {
-    const wrapper = mount(ChatWindow, {
-      global: { plugins: [pinia] },
-    });
-    const input = wrapper.findComponent(MessageInput);
-    expect(input.props('enableThinking')).toBe(false);
-
-    // 点击深度思考按钮
-    await wrapper.find('.btn-thinking').trigger('click');
-
-    expect(input.props('enableThinking')).toBe(true);
-  });
-
-  // ===== CR-002 新增：任务拆解编排（AC-001, AC-012）=====
-
-  it('传递 enableTaskBreakdown 状态给 MessageInput（AC-012, CR-002）', () => {
-    const wrapper = mount(ChatWindow, {
-      global: { plugins: [pinia] },
-    });
-    const input = wrapper.findComponent(MessageInput);
-    expect(input.props('enableTaskBreakdown')).toBe(false);
-  });
-
-  it('点击任务拆解 toggle 更新 enableTaskBreakdown 状态（AC-012）', async () => {
-    const wrapper = mount(ChatWindow, {
-      global: { plugins: [pinia] },
-    });
-    const input = wrapper.findComponent(MessageInput);
-    expect(input.props('enableTaskBreakdown')).toBe(false);
-
-    // 点击任务拆解按钮
-    await wrapper.find('.btn-task-breakdown').trigger('click');
-
-    expect(input.props('enableTaskBreakdown')).toBe(true);
-  });
-
-  it('开启拆解后发送消息，streamChat 第 4 参数为 true（AC-001）', async () => {
-    const { streamChat } = await import('@/api/chat');
-    vi.mocked(streamChat).mockClear();
-
-    const wrapper = mount(ChatWindow, {
-      global: { plugins: [pinia] },
-    });
-
-    // 开启任务拆解
-    await wrapper.find('.btn-task-breakdown').trigger('click');
-
-    // 输入消息并发送
-    await wrapper.find('textarea').setValue('复杂任务');
-    await wrapper.find('.btn-send').trigger('click');
-
-    // 等待异步操作完成
-    await new Promise((resolve) => setTimeout(resolve, 50));
-
-    // 验证 streamChat 被调用，第 4 参数为 true（enableTaskBreakdown）
-    expect(streamChat).toHaveBeenCalled();
-    const callArgs = vi.mocked(streamChat).mock.calls[0];
-    expect(callArgs[3]).toBe(true);
-  });
-
   // ===== Task-09 新增：知识库选择状态管理（AC-012, AC-013, AC-014, AC-015, AC-037）=====
 
   it('从 session store 读取当前会话的知识库选择（AC-012）', () => {
@@ -931,10 +880,10 @@ describe('ChatWindow', () => {
     // 等待异步操作完成
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // 验证 streamChat 第5个参数为知识库选择值
+    // 验证 streamChat 第3个参数为知识库选择值（unified-chat-mode：签名改为 (sessionId, message, knowledgeBases, ...)）
     expect(streamChat).toHaveBeenCalled();
     const callArgs = vi.mocked(streamChat).mock.calls[0];
-    expect(callArgs[4]).toEqual(['产品手册', '常见问题']);
+    expect(callArgs[2]).toEqual(['产品手册', '常见问题']);
   });
 
   it('知识库选择为空数组时 streamChat 传空数组（自动模式，AC-014）', async () => {
@@ -954,10 +903,96 @@ describe('ChatWindow', () => {
     // 等待异步操作完成
     await new Promise((resolve) => setTimeout(resolve, 50));
 
-    // 验证 streamChat 第5个参数为空数组
+    // 验证 streamChat 第3个参数为空数组（unified-chat-mode：签名改为 (sessionId, message, knowledgeBases, ...)）
     expect(streamChat).toHaveBeenCalled();
     const callArgs = vi.mocked(streamChat).mock.calls[0];
-    expect(callArgs[4]).toEqual([]);
+    expect(callArgs[2]).toEqual([]);
+  });
+
+  // ===== BUG 修复回归测试：权限确认批准/拒绝必须发出非空 message 请求 =====
+  // 验证标准来源：BUG（点击确认按钮页面卡死）——handleApprove/handleDeny 原先传
+  // 空 message，被 sendMessage 空消息拦截与后端 @NotBlank 校验双重拒绝，
+  // 请求根本发不出去导致流程卡死。修复后必须携带非空决策文案。
+
+  /** 构造带权限确认卡片的会话状态（模拟 tool_confirm 事件后） */
+  function setupPendingToolConfirm() {
+    const store = useSessionStore();
+    store.createNewSession();
+    const sessionId = store.currentSessionId;
+    store.addMessage(sessionId, {
+      id: 'assistant-msg-1',
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+      reasoning: '',
+    });
+    store.setToolConfirmData('assistant-msg-1', {
+      toolName: 'httpGet',
+      toolDescription: '发送 HTTP GET 请求',
+      arguments: '{"url":"https://example.com"}',
+    });
+    return { store, sessionId };
+  }
+
+  it('点击批准按钮时 streamChat 收到非空 message 且 toolApproved=true（BUG 修复：空消息被拦截导致卡死）', async () => {
+    const { streamChat } = await import('@/api/chat');
+    vi.mocked(streamChat).mockClear();
+
+    const { store } = setupPendingToolConfirm();
+    const beforeCount = store.sessions.find((s) => s.sessionId === store.currentSessionId)!.messages.length;
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+
+    // 模拟 ConfirmCard 点击批准：MessageList emit approve -> ChatWindow handleApprove
+    await wrapper.findComponent(MessageList).vm.$emit('approve');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // 修复断言：请求必须发出（修复前 sendMessage('') 被空消息拦截，streamChat 零调用）
+    expect(streamChat).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(streamChat).mock.calls[0];
+    // message 参数（第2位）非空，通过前端拦截与后端 @NotBlank 校验
+    expect(args[1].trim().length).toBeGreaterThan(0);
+    // toolApproved 参数（最后一位）为 true
+    expect(args[args.length - 1]).toBe(true);
+    // 交互优化：silent 静默恢复——不产生"已批准使用工具"用户消息气泡
+    const session = store.sessions.find((s) => s.sessionId === store.currentSessionId);
+    const userBubbles = session!.messages.filter((m) => m.role === 'user');
+    expect(userBubbles.every((m) => !m.content.includes('已批准使用工具'))).toBe(true);
+    expect(userBubbles.length).toBe(0);
+    expect(session!.messages.length).toBe(beforeCount + 1); // 仅新增助手占位
+    // 卡片决策已记录（approved=true 锁定）
+    const confirmMsg = session!.messages.find((m) => m.askUserData?.kind === 'permission');
+    expect(confirmMsg!.askUserData!.approved).toBe(true);
+  });
+
+  it('点击拒绝按钮时 streamChat 收到非空 message 且 toolApproved=false（BUG 修复回归）', async () => {
+    const { streamChat } = await import('@/api/chat');
+    vi.mocked(streamChat).mockClear();
+
+    const { store } = setupPendingToolConfirm();
+    const beforeCount = store.sessions.find((s) => s.sessionId === store.currentSessionId)!.messages.length;
+    const wrapper = mount(ChatWindow, {
+      global: { plugins: [pinia] },
+    });
+
+    // 模拟 ConfirmCard 点击拒绝：MessageList emit deny -> ChatWindow handleDeny
+    await wrapper.findComponent(MessageList).vm.$emit('deny');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(streamChat).toHaveBeenCalledTimes(1);
+    const args = vi.mocked(streamChat).mock.calls[0];
+    expect(args[1].trim().length).toBeGreaterThan(0);
+    expect(args[args.length - 1]).toBe(false);
+    // 交互优化：silent 静默恢复——不产生"已拒绝使用工具"用户消息气泡
+    const session = store.sessions.find((s) => s.sessionId === store.currentSessionId);
+    const userBubbles = session!.messages.filter((m) => m.role === 'user');
+    expect(userBubbles.every((m) => !m.content.includes('已拒绝使用工具'))).toBe(true);
+    expect(userBubbles.length).toBe(0);
+    expect(session!.messages.length).toBe(beforeCount + 1); // 仅新增助手占位
+    const confirmMsg = session!.messages.find((m) => m.askUserData?.kind === 'permission');
+    expect(confirmMsg!.askUserData!.approved).toBe(false);
   });
 });
 

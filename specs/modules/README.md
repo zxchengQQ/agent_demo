@@ -13,7 +13,7 @@
 | 6 | Web 接口模块 | `agent-demo-web` | [Web接口模块-业务说明书.md](Web接口模块-业务说明书.md) |
 | 7 | RAG 知识库模块 | `agent-demo-rag` + `agent-demo-splitter` | [RAG模块-业务说明书.md](RAG模块-业务说明书.md) |
 | 8 | MCP 协议模块 | `agent-demo-mcp` | [MCP协议模块-业务说明书.md](MCP协议模块-业务说明书.md) |
-| 9 | 应用编排模块 | `agent-demo-app` | [应用编排模块-业务说明书.md](应用编排模块-业务说明书.md)（2026-08-17 新增，应用编排层 P1/P2/P3 交付） |
+| 9 | 应用编排模块 | `agent-demo-app` | [应用编排模块-业务说明书.md](应用编排模块-业务说明书.md)（2026-08-17 新增，应用编排层 P1/P2/P3 交付；2026-08-25 更新，工作流 HITL 迭代） |
 
 ## 模块依赖全景
 

@@ -1,4 +1,4 @@
-import type { AskUserData, KnowledgeSource, StreamCallbacks, TokenUsage } from '@/types';
+import type { AskUserData, KnowledgeSource, StreamCallbacks, TokenUsage, ToolConfirmData } from '@/types';
 
 /**
  * SSE 流式调用封装
@@ -12,36 +12,40 @@ import type { AskUserData, KnowledgeSource, StreamCallbacks, TokenUsage } from '
 const API_BASE = '/api/agent';
 
 /**
- * 流式对话
+ * 流式对话（unified-chat-mode 精简）
  *
  * @param sessionId 会话 ID（首次为空字符串）
  * @param message 用户消息
- * @param enableThinking 是否开启深度思考（CR-001，AC-021），后端据此分流是否推送 reasoning 事件
- * @param enableTaskBreakdown 是否开启复杂任务拆解（CR-002，AC-001），后端据此分流是否执行任务拆解
  * @param knowledgeBases 用户指定的知识库名称列表（空数组=自动模式，AC-012/AC-013/AC-014）
- * @param modelId 用户选中的模型 ID（Task-22），后端据此路由到对应模型
+ * @param modelId 用户选中的模型 ID，后端据此路由到对应模型
+ * @param tools 用户选中的工具 ID 列表
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
- * @param enableHitl 是否开启 HITL 人机交互（Task-10），后端据此决定是否通过 ask_user 事件向用户发起交互请求
+ * @param toolApproved 工具权限确认结果（true=批准/继续执行，false=拒绝/换方案；不携带时不序列化）
  */
 export async function streamChat(
   sessionId: string,
   message: string,
-  enableThinking: boolean,
-  enableTaskBreakdown: boolean,
   knowledgeBases: string[],
   modelId = '',
   tools: string[] = [],
   callbacks: StreamCallbacks,
   signal: AbortSignal,
-  enableHitl = false,
+  toolApproved?: boolean,
 ): Promise<void> {
   let response: Response;
+  // toolApproved 未定义时不写入请求体（undefined 字段被 JSON.stringify 跳过，保证向后兼容）
+  const body: Record<string, unknown> = { sessionId, message, knowledgeBases, model: modelId, tools };
+  if (toolApproved !== undefined) {
+    body.toolApproved = toolApproved;
+  }
   try {
     response = await fetch(`${API_BASE}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId, message, enableThinking, enableTaskBreakdown, knowledgeBases, model: modelId, tools, enableHitl }),
+      // unified-chat-mode：请求体仅含基础字段，四模式融合为统一默认模式
+      // （强制拆解经 /plan 前缀表达，AC-N04）
+      body: JSON.stringify(body),
       signal,
     });
   } catch {
@@ -293,6 +297,18 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       try {
         const parsed = JSON.parse(data) as AskUserData;
         callbacks.onAskUser?.(parsed);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'tool_confirm': {
+      // 工具权限确认请求，data 为 JSON（含 toolName/toolDescription/arguments）
+      // 业务含义：ask 级工具被 Agent 调用时后端推送确认卡片四要素，
+      // 前端渲染卡片等待用户批准/拒绝，事件后流保持打开（pending 挂起），不触发 done。
+      try {
+        const parsed = JSON.parse(data) as ToolConfirmData;
+        callbacks.onToolConfirm?.(parsed);
       } catch {
         // JSON 解析失败时静默跳过（容错）
       }

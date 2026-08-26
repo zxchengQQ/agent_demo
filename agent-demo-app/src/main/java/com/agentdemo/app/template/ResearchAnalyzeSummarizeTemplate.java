@@ -58,6 +58,7 @@ public class ResearchAnalyzeSummarizeTemplate {
                                 .roleName("general")
                                 .scenarioName("app-research")
                                 .interfaceClass(ResearchAgent.class)
+                                .hitlEnabled(true)
                                 .build(),
                         AgentDefinition.builder()
                                 .name("分析 Agent")
@@ -67,6 +68,7 @@ public class ResearchAnalyzeSummarizeTemplate {
                                 .roleName("general")
                                 .scenarioName("app-analysis")
                                 .interfaceClass(AnalysisAgent.class)
+                                .hitlEnabled(true)
                                 .build(),
                         AgentDefinition.builder()
                                 .name("总结 Agent")
@@ -76,6 +78,7 @@ public class ResearchAnalyzeSummarizeTemplate {
                                 .roleName("general")
                                 .scenarioName("app-summary")
                                 .interfaceClass(SummaryAgent.class)
+                                .hitlEnabled(true)
                                 .build()
                 ))
                 .parameters(List.of(
@@ -106,7 +109,9 @@ public class ResearchAnalyzeSummarizeTemplate {
         for (AgentDefinition agent : template.getAgents()) {
             for (String toolId : agent.getToolIds()) {
                 try {
-                    toolRegistry.resolveTools(List.of(toolId));
+                    // 业务含义：ForStreaming 校验（deny/ask 工具存在即通过，不存在/格式错误才抛异常），
+                    // 覆盖 HITL 与非 HITL 两路径的工具存在性（AC-T01 唯一解析入口）
+                    toolRegistry.resolveToolsForStreaming(List.of(toolId));
                 } catch (Exception e) {
                     log.warn("模板 [{}] 中 Agent [{}] 引用的工具 [{}] 未注册，已跳过（原因: {}）",
                             template.getId(), agent.getName(), toolId, e.getMessage());

@@ -44,37 +44,6 @@ public class ChatRequest {
     private Map<String, Object> options;
 
     /**
-     * 是否开启深度思考（CR-001 新增），默认 false
-     * <p>
-     * 业务含义：前端"深度思考"开关状态，true 时后端走思考流式路径（推送 reasoning + token 事件），
-     * null/false 时走原有流式路径（仅 token 事件，零回归）。
-     * </p>
-     */
-    private Boolean enableThinking;
-
-    /**
-     * 是否开启复杂任务拆解模式（CR-002 新增），默认 false
-     * <p>
-     * 业务含义：用户通过前端开关控制，开启后 Agent 先拆解为子任务再逐个执行。
-     * true 时后端走 PlanAgent.chatTaskBreakdownStream 路径（推送 task_* 系列事件），
-     * false/null 时走原有路径（零回归）。
-     * 与 enableThinking 独立共存，可同时为 true（AC-011）。
-     * </p>
-     */
-    private Boolean enableTaskBreakdown = false;
-
-    /**
-     * 是否开启人机交互（HITL）模式，默认 false
-     * <p>
-     * 业务含义：前端"HITL"开关状态，true 时后端走 HITL ReAct 路径
-     * （Agent 可调用 askUser 工具向用户提问/确认，推送 ask_user 事件），
-     * null/false 时走原有路径（零回归）。
-     * 用户回复 HITL 问题时无需设置此标志（Controller 自动检测 pending 状态恢复）。
-     * </p>
-     */
-    private Boolean enableHitl = false;
-
-    /**
      * 用户指定的知识库名称列表（可选）
      * <p>
      * 业务含义：前端知识库选择器选中的知识库名称。为空或 null 时 Agent 自主决策；
@@ -93,4 +62,14 @@ public class ChatRequest {
      * </p>
      */
     private List<String> tools;
+
+    /**
+     * 工具权限确认结果（可选，tool_confirm 恢复专用）
+     * <p>
+     * 业务含义：ask 级工具确认卡片用户操作回传——true=批准（执行待确认工具，AC-N03）、
+     * false=拒绝（回填拒绝文案，AC-S02）。null=普通消息（无权限确认意图），
+     * 现有 HITL askUser 恢复链路零变更（反序列化兼容：旧请求体无此字段可正常解析）。
+     * </p>
+     */
+    private Boolean toolApproved;
 }

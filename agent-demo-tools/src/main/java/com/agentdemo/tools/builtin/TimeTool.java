@@ -1,6 +1,8 @@
 package com.agentdemo.tools.builtin;
 
 import com.agentdemo.common.utils.DateUtils;
+import com.agentdemo.tools.permission.DefaultToolPermission;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
 import dev.langchain4j.agent.tool.Tool;
 import org.springframework.stereotype.Component;
 
@@ -16,6 +18,7 @@ import java.time.format.DateTimeFormatter;
  * </p>
  */
 @Component
+@DefaultToolPermission(ToolPermissionLevel.ALLOW)
 public class TimeTool {
 
     /**

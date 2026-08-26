@@ -8,6 +8,7 @@ import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
 import com.agentdemo.app.service.WorkflowCancelledException;
+import com.agentdemo.app.service.WorkflowHITLState;
 import com.agentdemo.app.template.ResearchAgent;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -20,6 +21,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -27,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -142,14 +145,14 @@ class AbstractExecutionStrategyTest {
 
         assertEquals("历史输出1", result);
         // Agent 未真实执行
-        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         // 推送 step_skipped 事件，data 含 agentIndex/agentName/reason
         publisherMock.verify(() -> WorkflowEventPublisher.send(eq(emitter), eq("step_skipped"), any()));
     }
 
     @Test
     void executeOrSkip_keyMiss_shouldExecuteAndWriteResumeKey() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("新输出");
         WorkflowExecution execution = runningExecution();
         WorkflowContext ctx = strategy.attachOrNewContext(execution);
@@ -159,7 +162,7 @@ class AbstractExecutionStrategyTest {
                 execution, 1, "model-1", new AtomicBoolean(false), 0);
 
         assertEquals("新输出", result);
-        verify(agentExecutor, times(1)).executeWithRetry(any(), eq("输入"), any(), eq(0), eq(1), eq("model-1"));
+        verify(agentExecutor, times(1)).executeWithRetry(any(), eq("输入"), any(), eq(0), eq(1), eq("model-1"), anyInt(), anyString());
         // 恢复 key 写入 + lastOutput 更新 + agentOutputs 记录
         assertEquals("新输出", ctx.read("done:0:研究 Agent"));
         assertEquals("新输出", ctx.readAsString("lastOutput"));
@@ -180,7 +183,7 @@ class AbstractExecutionStrategyTest {
                 execution, 0, null, new AtomicBoolean(false), 0);
 
         assertEquals("", result);
-        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
     }
 
     @Test
@@ -236,7 +239,7 @@ class AbstractExecutionStrategyTest {
 
     @Test
     void executeOrSkip_executePath_shouldPushStepStartAndComplete() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("输出");
         WorkflowExecution execution = runningExecution();
         WorkflowContext ctx = strategy.attachOrNewContext(execution);
@@ -248,5 +251,46 @@ class AbstractExecutionStrategyTest {
         publisherMock.verify(() -> WorkflowEventPublisher.send(eq(emitter), eq("step_start"), any()));
         publisherMock.verify(() -> WorkflowEventPublisher.send(eq(emitter), eq("step_complete"), any()));
         assertTrue(execution.getSteps().get(0).getDurationMs() >= 0);
+    }
+
+    // ===== HITL 恢复 key（Task-08）=====
+
+    @Test
+    void hitlResumeKey_shouldFollowUnifiedRule() {
+        assertEquals("hitl:0:研究 Agent", AbstractExecutionStrategy.hitlResumeKey(0, "研究 Agent"));
+        assertEquals("hitl:2:评分 Agent", AbstractExecutionStrategy.hitlResumeKey(2, "评分 Agent"));
+    }
+
+    @Test
+    void executeOrSkip_hitlResumeKeyHit_应恢复执行暂停步并写完成key() throws Exception {
+        // 业务含义：done key 未命中但 hitl key 命中（用户已回复的 HITL 暂停步）——
+        // 以恢复方式执行（executeHitlResume）而非正常 executeWithRetry，避免重放死循环（AC-N03）
+        WorkflowHITLState hitlState = new WorkflowHITLState(WorkflowHITLState.MODE_ASK_USER,
+                new WorkflowHITLState.AskUserData("text", "请确认输入？", List.of(), 0),
+                new WorkflowHITLState.PendingStep(0, "研究 Agent", "输入", 0), List.of(), 0);
+        WorkflowHITLState.HitlResume resume = new WorkflowHITLState.HitlResume(hitlState, "用户回复", null);
+        when(agentExecutor.executeHitlResume(any(), any(), anyString(), any(), any(), anyInt(), anyString()))
+                .thenReturn("恢复输出");
+
+        WorkflowExecution execution = runningExecution();
+        WorkflowContext ctx = strategy.attachOrNewContext(execution);
+        ctx.write("hitl:0:研究 Agent", resume);
+        SseEmitter emitter = mock(SseEmitter.class);
+
+        String result = strategy.callExecuteOrSkip(agentDef(), "输入", 0, ctx, emitter,
+                execution, 0, null, new AtomicBoolean(false), 0);
+
+        assertEquals("恢复输出", result);
+        // 以恢复方式执行（携带用户回复 + askUser 快照），不走正常重试路径
+        verify(agentExecutor).executeHitlResume(any(), any(), eq("用户回复"), isNull(), any(), anyInt(), anyString());
+        verify(agentExecutor, never()).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
+        // 恢复完成写 done key + 清除 hitl key + lastOutput 同步
+        assertEquals("恢复输出", ctx.read("done:0:研究 Agent"));
+        assertNull(ctx.read("hitl:0:研究 Agent"));
+        assertEquals("恢复输出", ctx.readAsString("lastOutput"));
+        // 步骤记录 + 事件协议与正常执行一致
+        assertEquals(1, execution.getSteps().size());
+        publisherMock.verify(() -> WorkflowEventPublisher.send(eq(emitter), eq("step_start"), any()));
+        publisherMock.verify(() -> WorkflowEventPublisher.send(eq(emitter), eq("step_complete"), any()));
     }
 }

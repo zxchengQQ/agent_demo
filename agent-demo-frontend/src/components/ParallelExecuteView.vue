@@ -3,6 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue';
 import type { WorkflowTemplateDetail } from '@/types';
 import { useWorkflowStream } from '@/composables/useWorkflowStream';
 import type { AgentOutput } from '@/composables/useWorkflowStream';
+import AskUserCard from '@/components/AskUserCard.vue';
+import ConfirmCard from '@/components/ConfirmCard.vue';
 
 /**
  * 并行模式执行视图组件（Task-26，技术方案 Sec 4.5.5）
@@ -37,10 +39,16 @@ const {
   pausedAgentName,
   pausedAgentIndex,
   pausedError,
+  isWaitingUser,
+  waitingHitlMode,
+  waitingAgentName,
+  askUserData,
+  toolConfirmData,
   initAgents,
   startExecution: startStream,
   resumeExecution: resumeStream,
   terminateExecution,
+  replyToHitl,
   stopExecution: stopStream,
 } = useWorkflowStream();
 
@@ -192,15 +200,15 @@ const statusClass = computed(() => {
       </label>
 
       <div class="action-row">
-        <button v-if="!isExecuting" class="btn-execute" @click="startExecution" :disabled="!template.id">
+        <button v-if="!isExecuting && !isWaitingUser" class="btn-execute" @click="startExecution" :disabled="!template.id">
           执行
         </button>
-        <button v-else class="btn-stop" @click="stopExecution">停止</button>
+        <button v-else-if="isExecuting" class="btn-stop" @click="stopExecution">停止</button>
         <!-- 暂停态：恢复执行 / 终止 -->
         <button v-if="isPaused" class="btn-resume" :disabled="isResuming" @click="resumeExecution">
           {{ isResuming ? '恢复中…' : '恢复执行' }}
         </button>
-        <button v-if="isPaused" class="btn-terminate" :disabled="isResuming" @click="terminateExecution">
+        <button v-if="isPaused || isWaitingUser" class="btn-terminate" :disabled="isResuming" @click="terminateExecution">
           终止
         </button>
         <span v-if="statusLabel" class="status-tag" :class="statusClass">
@@ -211,6 +219,33 @@ const statusClass = computed(() => {
       <div v-if="isPaused" class="paused-banner">
         ⏸ 已暂停 · 失败步骤：{{ pausedAgentName }}（步骤 {{ pausedAgentIndex + 1 }}）· 可恢复
         <div class="paused-error">{{ pausedError }}</div>
+      </div>
+      <!-- HITL 等待用户横幅 -->
+      <div v-if="isWaitingUser" class="waiting-banner">
+        <div class="waiting-header">
+          ⏳ 等待用户输入 · 步骤：{{ waitingAgentName }}
+          <span class="waiting-mode">
+            {{ waitingHitlMode === 'checkpoint' ? '（检查点确认）' : waitingHitlMode === 'toolConfirm' ? '（工具确认）' : '（Agent 提问）' }}
+          </span>
+        </div>
+        <AskUserCard
+          v-if="waitingHitlMode === 'askUser' && askUserData"
+          :ask-user-data="askUserData"
+          @reply="(v: string) => replyToHitl(v, null)"
+        />
+        <ConfirmCard
+          v-else-if="waitingHitlMode === 'checkpoint'"
+          :data="{ toolName: waitingAgentName, toolDescription: '工作流检查点：确认是否执行该步骤', arguments: '' }"
+          @approve="replyToHitl(null, true)"
+          @deny="replyToHitl(null, false)"
+        />
+        <!-- toolConfirm 模式：复用 ConfirmCard 渲染真实工具确认数据（Task-18 AC-H01） -->
+        <ConfirmCard
+          v-else-if="waitingHitlMode === 'toolConfirm' && toolConfirmData"
+          :data="{ toolName: toolConfirmData.toolName, toolDescription: toolConfirmData.toolDescription, arguments: toolConfirmData.arguments }"
+          @approve="replyToHitl(null, true)"
+          @deny="replyToHitl(null, false)"
+        />
       </div>
       <div v-if="error" class="error-banner">{{ error }}</div>
     </div>
@@ -411,6 +446,24 @@ const statusClass = computed(() => {
   font-size: 12px;
   color: #ff8f8f;
   word-break: break-word;
+}
+
+.waiting-banner {
+  padding: 10px 12px;
+  background: rgba(255, 166, 61, 0.08);
+  border: 1px solid rgba(255, 166, 61, 0.4);
+  border-radius: 4px;
+}
+.waiting-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  color: #ffa63d;
+}
+.waiting-mode {
+  font-size: 11px;
+  color: var(--text-muted, #8b94a7);
 }
 
 .status-tag {

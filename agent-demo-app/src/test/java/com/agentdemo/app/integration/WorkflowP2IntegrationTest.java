@@ -132,13 +132,18 @@ class WorkflowP2IntegrationTest {
         assertEquals(executionId, history.get(0).getExecutionId());
     }
 
-    /** 等待异步执行完成 */
+    /** 等待异步执行完成（到达检查点时批准继续，AC-N02） */
     private WorkflowExecution awaitTerminal(String executionId) {
         long deadline = System.currentTimeMillis() + 5000;
         WorkflowExecution execution = null;
         while (System.currentTimeMillis() < deadline) {
             execution = service.getExecution(executionId);
-            if (execution != null && execution.getStatus() != WorkflowExecutionStatus.RUNNING) {
+            // 修订 Agent 标注 @HumanCheckpoint（Task-13）：检查点暂停为 WAITING_USER，批准后继续
+            if (execution.getStatus() == WorkflowExecutionStatus.WAITING_USER) {
+                service.hitlReply(executionId, null, true, mock(SseEmitter.class));
+                continue;
+            }
+            if (execution.getStatus() != WorkflowExecutionStatus.RUNNING) {
                 return execution;
             }
             try {

@@ -8,6 +8,8 @@ import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.service.WorkflowCancelledException;
+import com.agentdemo.app.service.WorkflowHITLException;
+import com.agentdemo.app.service.WorkflowHITLState;
 import com.agentdemo.app.template.ResearchAgent;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -21,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -80,7 +83,7 @@ class ParallelExecutionStrategyTest {
     @Test
     void execute_shouldRunAllGroupsAndSummarize() throws Exception {
         // 并发安全：按 Agent 名返回输出（避免 mockito 多值 thenReturn 并发错乱）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, AgentDefinition.class).getName() + "-输出");
 
         WorkflowTemplate template = threeGroupTemplate();
@@ -97,12 +100,12 @@ class ParallelExecutionStrategyTest {
         assertTrue(result.contains("风格审查"));
         assertTrue(result.contains("风格 Agent-输出"));
         // 3 个 Agent 各执行 1 次
-        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
     }
 
     @Test
     void execute_shouldPushGroupEvents() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("A", "B", "C");
 
         WorkflowTemplate template = threeGroupTemplate();
@@ -129,7 +132,7 @@ class ParallelExecutionStrategyTest {
                         ParallelGroup.builder().name("组2").agents(List.of(agentDef("B1"))).build()))
                 .build();
 
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, AgentDefinition.class).getName());
 
         WorkflowExecution execution = runningExecution(template);
@@ -138,7 +141,7 @@ class ParallelExecutionStrategyTest {
         String result = strategy.execute(template, Map.of(), emitter, execution, null, new AtomicBoolean(false));
 
         // 3 个 Agent 全部执行
-        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         // 组1 保留最后一个 Agent（A2）输出，组2 保留 B1 输出
         assertTrue(result.contains("A2"));
         assertTrue(result.contains("B1"));
@@ -147,7 +150,7 @@ class ParallelExecutionStrategyTest {
 
     @Test
     void execute_groupAgentFailure_shouldThrow() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenThrow(new RuntimeException("安全审查失败"));
 
         WorkflowTemplate template = threeGroupTemplate();
@@ -171,7 +174,7 @@ class ParallelExecutionStrategyTest {
     @Test
     void execute_shouldPassUserInputToFirstAgent_notEmpty() throws Exception {
         // BUG 复现：用户输入的 content 参数应传递给每个分组的第一个 Agent，而非空字符串
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, AgentDefinition.class).getName() + "-输出");
 
         WorkflowTemplate template = WorkflowTemplate.builder()
@@ -195,7 +198,7 @@ class ParallelExecutionStrategyTest {
 
         // 捕获所有 executeWithRetry 调用的 input 参数
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
 
         // 每个分组的第一个 Agent 都应收到用户输入，而非空字符串
         for (String capturedInput : inputCaptor.getAllValues()) {
@@ -226,7 +229,7 @@ class ParallelExecutionStrategyTest {
     @Test
     void execute_resume_shouldSkipCompletedAgentsAndKeepGroupEvents() throws Exception {
         // 恢复场景：安全组完整（跳过）、性能组半途（Agent1 跳过 / Agent2 执行）、风格组正常执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, AgentDefinition.class).getName() + "-新输出");
 
         WorkflowTemplate template = resumeTemplate();
@@ -241,7 +244,7 @@ class ParallelExecutionStrategyTest {
 
         // 仅 2 次真实执行：性能 Agent2 + 风格 Agent（安全 Agent 与性能 Agent1 跳过）
         ArgumentCaptor<AgentDefinition> agentCaptor = ArgumentCaptor.forClass(AgentDefinition.class);
-        verify(agentExecutor, times(2)).executeWithRetry(agentCaptor.capture(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(agentCaptor.capture(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         List<String> executedNames = agentCaptor.getAllValues().stream().map(AgentDefinition::getName).toList();
         assertFalse(executedNames.contains("安全 Agent"), "安全 Agent 应整组跳过，实际执行: " + executedNames);
         assertFalse(executedNames.contains("性能 Agent1"), "性能 Agent1 应跳过，实际执行: " + executedNames);
@@ -260,7 +263,7 @@ class ParallelExecutionStrategyTest {
     @Test
     void execute_resume_partialGroupChain_shouldReceiveHistoryInput() throws Exception {
         // 性能组内串联：跳过的性能 Agent1 历史输出应作为性能 Agent2 的输入
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> "执行输出:" + inv.getArgument(1, String.class));
 
         WorkflowTemplate template = resumeTemplate();
@@ -274,7 +277,7 @@ class ParallelExecutionStrategyTest {
 
         // 性能 Agent2 收到"性能1历史"（跳过 Agent 的历史输出衔接组内串联）
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertTrue(inputCaptor.getAllValues().contains("性能1历史"),
                 "性能 Agent2 应收到跳过 Agent1 的历史输出，实际: " + inputCaptor.getAllValues());
     }
@@ -282,7 +285,7 @@ class ParallelExecutionStrategyTest {
     @Test
     void execute_firstRun_shouldWriteResumeKeys() throws Exception {
         // 首次执行：各 Agent 写入 done keys（为恢复做准备）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> inv.getArgument(0, AgentDefinition.class).getName() + "-输出");
 
         WorkflowTemplate template = threeGroupTemplate();
@@ -294,5 +297,37 @@ class ParallelExecutionStrategyTest {
         org.junit.jupiter.api.Assertions.assertNotNull(ctx, "首次执行后 ctx 应挂载到 execution");
         assertEquals("安全 Agent-输出", ctx.read("done:0:安全 Agent"));
         assertEquals("风格 Agent-输出", ctx.read("done:0:风格 Agent"));
+    }
+
+    // ===== Task-09 新增：并行 HITL 排队（AC-E02）=====
+
+    @Test
+    void execute_多分组同时HITL_应传播第一个其余写ctx排队() throws Exception {
+        // 业务含义：并行分组多个 Agent 同时 askUser 时，第一个 HITL 异常传播给协调层
+        // （进入 WAITING_USER），其余写入 ctx 排队列表（PENDING_HITL_KEY），用户回复后按序处理，
+        // 避免信息丢失（技术方案决策 6）
+        WorkflowHITLException hitl = new WorkflowHITLException(
+                new WorkflowHITLState(WorkflowHITLState.MODE_ASK_USER,
+                        new WorkflowHITLState.AskUserData("text", "请确认？", List.of(), 0),
+                        new WorkflowHITLState.PendingStep(0, "安全 Agent", "输入", 0),
+                        List.of(), 0),
+                "Agent 等待用户输入", null);
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
+                .thenThrow(hitl);
+
+        WorkflowTemplate template = threeGroupTemplate();
+        WorkflowExecution execution = runningExecution(template);
+        SseEmitter emitter = mock(SseEmitter.class);
+
+        // 策略抛出第一个 HITL 异常（协调层据此进入 WAITING_USER）
+        assertThrows(WorkflowHITLException.class,
+                () -> strategy.execute(template, Map.of(), emitter, execution, null, new AtomicBoolean(false)));
+
+        // 其余分组 HITL 写入 ctx 排队列表（3 分组：1 个传播 + 2 个排队）
+        com.agentdemo.app.core.WorkflowContext ctx = execution.getContext();
+        org.junit.jupiter.api.Assertions.assertNotNull(ctx, "并行策略应挂载 ctx");
+        Object pending = ctx.read(com.agentdemo.app.core.WorkflowContext.PENDING_HITL_KEY);
+        assertNotNull(pending, "其余分组 HITL 应写入 ctx 排队列表");
+        assertEquals(2, ((List<?>) pending).size());
     }
 }

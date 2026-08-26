@@ -67,7 +67,11 @@ class McpIntegrationTest {
         // 真实 ToolRegistry（Mock ApplicationContext，scanTools 不会找到工具）
         ApplicationContext appCtx = mock(ApplicationContext.class);
         when(appCtx.getBeansWithAnnotation(any())).thenReturn(Collections.emptyMap());
-        toolRegistry = new ToolRegistry(appCtx);
+        toolRegistry = new ToolRegistry(appCtx, mock(com.agentdemo.tools.permission.ToolPermissionService.class),
+                new com.agentdemo.tools.registry.ToolIdResolver(),
+                new com.agentdemo.tools.permission.ToolPermissionGuard(
+                        mock(com.agentdemo.tools.permission.ToolPermissionService.class),
+                        new com.agentdemo.tools.registry.ToolIdResolver()));
 
         // 真实组件链
         McpToolExecutor executor = new McpToolExecutor(clientRegistry, new McpContentParser());

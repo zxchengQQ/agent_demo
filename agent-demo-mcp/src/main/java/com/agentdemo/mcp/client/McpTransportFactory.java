@@ -135,8 +135,14 @@ public class McpTransportFactory {
                 continue;
             }
             for (String ext : new String[]{".cmd", ".bat", ".exe"}) {
-                if (java.nio.file.Files.isRegularFile(java.nio.file.Paths.get(dir, command + ext))) {
-                    return command + ext;
+                try {
+                    if (java.nio.file.Files.isRegularFile(java.nio.file.Paths.get(dir, command + ext))) {
+                        return command + ext;
+                    }
+                } catch (java.nio.file.InvalidPathException e) {
+                    // 业务含义：PATH 中可能存在 Windows 长路径前缀（\\?\）等无法被 Paths.get 解析的目录，
+                    // 跳过该目录继续查找，避免整个命令解析崩溃（TRAE 插件 node 路径即此场景，BUG-20260824）。
+                    log.debug("跳过无法解析的 PATH 目录: {}", dir);
                 }
             }
         }

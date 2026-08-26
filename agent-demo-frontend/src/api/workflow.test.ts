@@ -8,6 +8,7 @@ import {
   terminate,
   streamExecute,
   streamResume,
+  replyToWorkflow,
 } from './workflow';
 import type { WorkflowTemplateSummary, WorkflowStreamCallbacks } from '@/types';
 
@@ -249,6 +250,63 @@ describe('P3 新增 SSE 事件分发（Task-19，AC-016/AC-017/AC-007）', () =>
 
     expect(onSupervisorDispatch).toHaveBeenCalledWith({ subtaskIndex: 1, totalSubtasks: 3, description: '调研', agentName: '研究', routed: true });
     expect(onSupervisorSummary).toHaveBeenCalledWith({ subtaskCount: 3 });
+  });
+
+  it('tool_confirm 事件应分发到 onToolConfirm（五字段载荷，Task-17 AC-H01）', async () => {
+    mockSseStream([
+      {
+        event: 'tool_confirm',
+        data: JSON.stringify({
+          agentIndex: 1,
+          agentName: '研究 Agent',
+          toolName: 'httpGet',
+          toolDescription: '发起 HTTP GET 请求',
+          arguments: '{"url":"https://example.com"}',
+        }),
+      },
+      // tool_confirm 与 workflow_waiting(hitlMode=toolConfirm) 成对出现，此处作为终态收尾
+      {
+        event: 'workflow_waiting',
+        data: JSON.stringify({ executionId: 'exec-1', agentIndex: 1, agentName: '研究 Agent', hitlMode: 'toolConfirm', resumable: true }),
+      },
+    ]);
+    const onToolConfirm = vi.fn();
+    const onWorkflowWaiting = vi.fn();
+    const onError = vi.fn();
+    await streamExecute('tpl-1', {}, '', makeCallbacks({ onToolConfirm, onWorkflowWaiting, onError }), new AbortController().signal);
+
+    expect(onToolConfirm).toHaveBeenCalledTimes(1);
+    expect(onToolConfirm).toHaveBeenCalledWith({
+      agentIndex: 1,
+      agentName: '研究 Agent',
+      toolName: 'httpGet',
+      toolDescription: '发起 HTTP GET 请求',
+      arguments: '{"url":"https://example.com"}',
+    });
+    expect(onWorkflowWaiting).toHaveBeenCalledWith({
+      executionId: 'exec-1',
+      agentIndex: 1,
+      agentName: '研究 Agent',
+      hitlMode: 'toolConfirm',
+      resumable: true,
+    });
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it('replyToWorkflow 发送 POST /hitl-reply 且请求体为 {message, approved}（Task-17 AC-H01）', async () => {
+    mockSseStream([
+      { event: 'workflow_resumed', data: JSON.stringify({ executionId: 'exec-1' }) },
+      { event: 'workflow_complete', data: JSON.stringify({ executionId: 'exec-1', finalResult: 'ok', mode: 'SEQUENTIAL', totalDurationMs: 1 }) },
+    ]);
+    const onWorkflowResumed = vi.fn();
+    await replyToWorkflow('exec-1', null, true, makeCallbacks({ onWorkflowResumed }), new AbortController().signal);
+
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = (global.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe('/api/app/workflows/executions/exec-1/hitl-reply');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(init?.body)).toEqual({ message: null, approved: true });
+    expect(onWorkflowResumed).toHaveBeenCalledTimes(1);
   });
 
   it('未知事件应静默跳过（向后兼容）', async () => {

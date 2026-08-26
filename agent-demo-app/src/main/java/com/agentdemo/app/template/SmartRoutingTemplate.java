@@ -80,6 +80,7 @@ public class SmartRoutingTemplate {
                                                 .roleName("general")
                                                 .scenarioName("app-quick-answer")
                                                 .interfaceClass(QuickAnswerAgent.class)
+                                                .hitlEnabled(true)
                                                 .build()
                                 ))
                                 .build(),
@@ -97,6 +98,7 @@ public class SmartRoutingTemplate {
                                                 .roleName("general")
                                                 .scenarioName("app-research")
                                                 .interfaceClass(ResearchAgent.class)
+                                                .hitlEnabled(true)
                                                 .build(),
                                         AgentDefinition.builder()
                                                 .name("分析 Agent")
@@ -106,6 +108,7 @@ public class SmartRoutingTemplate {
                                                 .roleName("general")
                                                 .scenarioName("app-analysis")
                                                 .interfaceClass(AnalysisAgent.class)
+                                                .hitlEnabled(true)
                                                 .build(),
                                         AgentDefinition.builder()
                                                 .name("总结 Agent")
@@ -115,6 +118,7 @@ public class SmartRoutingTemplate {
                                                 .roleName("general")
                                                 .scenarioName("app-summary")
                                                 .interfaceClass(SummaryAgent.class)
+                                                .hitlEnabled(true)
                                                 .build()
                                 ))
                                 .build()

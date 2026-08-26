@@ -82,16 +82,16 @@ class AgenticAgentFactoryTest {
         StreamingChatModel model = mock(StreamingChatModel.class);
         when(modelFactory.getDefaultStreamingChatModel()).thenReturn(model);
         factory.buildAgent(agentDef(null, List.of()));
-        verify(toolRegistry, never()).resolveTools(any());
+        verify(toolRegistry, never()).resolveToolsForDirect(any());
     }
 
     @Test
     void buildAgent_shouldResolveToolsWhenToolIdsPresent() {
         StreamingChatModel model = mock(StreamingChatModel.class);
         when(modelFactory.getDefaultStreamingChatModel()).thenReturn(model);
-        when(toolRegistry.resolveTools(List.of("builtin:httpGet"))).thenReturn(List.of(new HttpGetTool()));
+        when(toolRegistry.resolveToolsForDirect(List.of("builtin:httpGet"))).thenReturn(List.of(new HttpGetTool()));
         factory.buildAgent(agentDef(null, List.of("builtin:httpGet")));
-        verify(toolRegistry).resolveTools(List.of("builtin:httpGet"));
+        verify(toolRegistry).resolveToolsForDirect(List.of("builtin:httpGet"));
     }
 
     @Test

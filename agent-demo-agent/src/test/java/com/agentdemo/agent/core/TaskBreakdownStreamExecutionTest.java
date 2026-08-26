@@ -7,362 +7,266 @@ import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
-import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.memory.ChatMemory;
-import dev.langchain4j.model.chat.ChatModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.invocation.InvocationOnMock;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * TaskBreakdownStream 子任务执行阶段测试（Task-04）
+ * TaskBreakdownStream 子任务执行测试（unified-chat-mode Task-07/08）
  * <p>
- * 验证标准来源：Task-04 验证标准
- * 关联 AC：AC-001（子任务执行）、AC-003（状态流转）、AC-005（执行详情）、
- *         AC-006（子任务失败）、AC-011（拆解+思考共存）
+ * 验证标准来源：unified-chat-mode 任务规划 Task-07/08 验证标准
+ * 关联 AC：AC-N05（拆解执行）、AC-T05（子任务暂停）、AC-S01（副作用确认）、AC-S02（追问上限）
+ * 业务含义：验证外部注入改造后的拆解执行引擎——按序执行子任务、askUser 拦截暂停
+ * （attachBreakdownContext + onAskUser + onComplete 不触发）、失败即停、子任务结果写记忆。
+ * 子任务执行委托 HITLReActStream，通过 mock thinkingModel.stream 模拟 HITL 行为。
  * </p>
  */
 class TaskBreakdownStreamExecutionTest {
 
     private ModelFactory modelFactory;
-    private ChatModel chatModel;
     private ThinkingStreamingChatModel thinkingModel;
     private ChatMemoryManager memoryManager;
     private AgentConfig agentConfig;
     private ToolSchemaConverter toolSchemaConverter;
     private ToolExecutor toolExecutor;
     private ChatMemory chatMemory;
+    private HumanInteractionManager humanInteractionManager;
 
     @BeforeEach
     void setUp() {
         modelFactory = mock(ModelFactory.class);
-        chatModel = mock(ChatModel.class);
         thinkingModel = mock(ThinkingStreamingChatModel.class);
         memoryManager = mock(ChatMemoryManager.class);
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
         agentConfig = new AgentConfig();
         chatMemory = mock(ChatMemory.class);
+        humanInteractionManager = new HumanInteractionManager();
 
-        when(modelFactory.getDefaultChatModel()).thenReturn(chatModel);
         when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
-        when(toolSchemaConverter.convertToJson()).thenReturn("[]");
-        when(toolSchemaConverter.convertToDescriptionText()).thenReturn("工具描述");
+        when(toolSchemaConverter.convertToJson(anyList())).thenReturn("[]");
+        when(toolSchemaConverter.convertToDescriptionText(anyList())).thenReturn("工具描述");
         when(memoryManager.getMemory(anyString())).thenReturn(chatMemory);
         when(chatMemory.messages()).thenReturn(new ArrayList<>());
+        // 业务含义：业务工具执行返回非空字符串，避免 ToolExecutionResultMessage 构造 NPE
+        when(toolExecutor.execute(anyString(), anyString())).thenReturn("工具执行结果");
+        // 业务含义：httpGet 等业务工具默认 ALLOW 权限（AC-N02），子任务循环可连续执行直至迭代上限
+        when(toolExecutor.checkPermission(anyString())).thenReturn(
+                new ToolExecutor.ToolPermissionCheck(ToolPermissionLevel.ALLOW, "builtin:httpGet", "desc"));
     }
 
-    private TaskBreakdownStream createStream(String message, boolean enableThinking) {
+    private TaskBreakdownStream createStream(List<SubTask> tasks) {
         return new TaskBreakdownStream(
-                "test-session", message, enableThinking,
-                modelFactory, memoryManager, agentConfig,
-                toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
+                "test-session", "复杂任务", null,
+                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                new PromptTemplateLoader(agentConfig), humanInteractionManager,
+                List.of(new Object()), "[]", tasks);
     }
 
-    private void mockPlanResponse(String json) {
-        AiMessage aiMessage = AiMessage.from(json);
-        ChatResponse response = mock(ChatResponse.class);
-        when(response.aiMessage()).thenReturn(aiMessage);
-        when(chatModel.chat(anyList())).thenReturn(response);
-    }
-
-    /** 模拟单轮 LLM 调用（finishReason=stop，无工具调用） */
-    private Object mockSingleRoundStop(InvocationOnMock invocation) {
+    /** 模拟单轮 LLM 调用（finishReason=stop，无工具调用）——子任务正常完成 */
+    private Object mockSubTaskStop(org.mockito.invocation.InvocationOnMock invocation) {
         ThinkingStreamHandler handler = invocation.getArgument(2);
         handler.onPartialResponse("执行结果");
         handler.onComplete("执行结果", "stop", null);
         return null;
     }
 
-    /** 模拟单轮 LLM 调用（finishReason=tool_calls，有工具调用） */
-    private Object mockSingleRoundToolCalls(InvocationOnMock invocation, String toolName, String args) {
+    /** 模拟单轮 LLM 调用（finishReason=tool_calls，调用 askUser）——子任务触发追问 */
+    private Object mockSubTaskAskUser(org.mockito.invocation.InvocationOnMock invocation) {
         ThinkingStreamHandler handler = invocation.getArgument(2);
-        handler.onPartialResponse("需要调用工具");
-
+        handler.onPartialResponse("需要追问");
         ToolCall tc = new ToolCall();
-        tc.setId("call_001");
-        tc.setFunctionName(toolName);
-        tc.setArguments(args);
+        tc.setId("call_ask");
+        tc.setFunctionName("askUser");
+        tc.setArguments("{\"type\":\"text\",\"question\":\"请提供订单号\"}");
         handler.onToolCalls(Collections.singletonList(tc));
-        handler.onComplete("需要调用工具", "tool_calls", null);
+        handler.onComplete("需要追问", "tool_calls", null);
         return null;
     }
 
-    // ========== 验证标准 1: 2个子任务 -> onTaskStart 被调用2次 ==========
+    // ========== Task-07 验证标准：构造注入 + 按序执行 ==========
 
     @Test
-    void shouldTriggerOnTaskStartForEachSubTask() {
-        mockPlanResponse("[{\"title\":\"分析\"},{\"title\":\"执行\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
+    @DisplayName("构造注入 tasks 后 start 按序执行所有子任务（onTaskStart/onTaskComplete 按序触发）")
+    void startWithInjectedTasks_按序执行所有子任务() {
+        List<SubTask> tasks = List.of(new SubTask(1, "分析"), new SubTask(2, "执行"));
+        doAnswer(this::mockSubTaskStop).when(thinkingModel).stream(any(), any(), any());
 
-        TaskBreakdownStream.TaskStartConsumer taskStartConsumer = mock(TaskBreakdownStream.TaskStartConsumer.class);
-
-        createStream("复杂任务", false)
-                .onTaskStart(taskStartConsumer)
-                .start();
-
-        verify(taskStartConsumer).accept(eq(1), eq("分析"));
-        verify(taskStartConsumer).accept(eq(2), eq("执行"));
-    }
-
-    // ========== 验证标准 2: onTaskToken 回调被调用，index 正确 ==========
-
-    @Test
-    void shouldTriggerOnTaskTokenWithCorrectIndex() {
-        mockPlanResponse("[{\"title\":\"分析\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.TaskTokenConsumer tokenConsumer = mock(TaskBreakdownStream.TaskTokenConsumer.class);
-
-        createStream("任务", false)
-                .onTaskToken(tokenConsumer)
-                .start();
-
-        verify(tokenConsumer).accept(eq(1), eq("执行结果"));
-    }
-
-    // ========== 验证标准 3: onTaskComplete 回调被调用 ==========
-
-    @Test
-    void shouldTriggerOnTaskComplete() {
-        mockPlanResponse("[{\"title\":\"分析\"},{\"title\":\"执行\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
+        TaskBreakdownStream.TaskStartConsumer startConsumer = mock(TaskBreakdownStream.TaskStartConsumer.class);
         TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        Runnable completeCallback = mock(Runnable.class);
 
-        createStream("任务", false)
+        createStream(tasks)
+                .onTaskStart(startConsumer)
                 .onTaskComplete(completeConsumer)
+                .onComplete(completeCallback)
                 .start();
 
+        verify(startConsumer).accept(eq(1), eq("分析"));
+        verify(startConsumer).accept(eq(2), eq("执行"));
         verify(completeConsumer).accept(1);
         verify(completeConsumer).accept(2);
+        verify(completeCallback).run();
     }
 
-    // ========== 验证标准 4: 第1个子任务失败 -> onTaskFailed + onTaskCancelled ==========
+    @Test
+    @DisplayName("onPlan 推送外部注入的任务列表")
+    void start_推送onPlan任务列表() {
+        List<SubTask> tasks = List.of(new SubTask(1, "任务A"));
+        doAnswer(this::mockSubTaskStop).when(thinkingModel).stream(any(), any(), any());
+
+        TaskBreakdownStream.PlanConsumer planConsumer = mock(TaskBreakdownStream.PlanConsumer.class);
+        Runnable completeCallback = mock(Runnable.class);
+
+        createStream(tasks)
+                .onPlan(planConsumer)
+                .onComplete(completeCallback)
+                .start();
+
+        verify(planConsumer).accept(tasks);
+        verify(completeCallback).run();
+    }
 
     @Test
-    void shouldTriggerOnTaskFailedAndCancelledWhenFirstTaskFails() {
-        mockPlanResponse("[{\"title\":\"任务1\"},{\"title\":\"任务2\"}]");
+    @DisplayName("子任务结果写记忆格式不变（子任务：{title} + 结果）")
+    void start_子任务结果写记忆() {
+        List<SubTask> tasks = List.of(new SubTask(1, "分析"));
+        doAnswer(this::mockSubTaskStop).when(thinkingModel).stream(any(), any(), any());
 
-        // 第一轮抛异常
+        createStream(tasks).start();
+
+        verify(memoryManager).addUserMessage("test-session", "子任务：分析");
+        verify(memoryManager).addAssistantMessage("test-session", "执行结果");
+    }
+
+    @Test
+    @DisplayName("空任务列表 start 直接完成，不执行")
+    void start_空任务列表_直接完成() {
+        Runnable completeCallback = mock(Runnable.class);
+
+        createStream(Collections.emptyList())
+                .onComplete(completeCallback)
+                .start();
+
+        verify(completeCallback).run();
+        verify(thinkingModel, never()).stream(any(), any(), any());
+    }
+
+    // ========== Task-08 验证标准：askUser 拦截暂停 ==========
+
+    @Test
+    @DisplayName("子任务 askUser 拦截 -> attachBreakdownContext + onAskUser 触发 + onComplete 不触发")
+    void subTaskAskUser_暂停并附加拆解上下文() {
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"), new SubTask(2, "任务2"));
+        // 子任务1正常完成，子任务2触发 askUser
+        int[] callCount = {0};
+        doAnswer(invocation -> {
+            callCount[0]++;
+            if (callCount[0] == 1) {
+                return mockSubTaskStop(invocation);
+            }
+            return mockSubTaskAskUser(invocation);
+        }).when(thinkingModel).stream(any(), any(), any());
+
+        TaskBreakdownStream.TaskStartConsumer startConsumer = mock(TaskBreakdownStream.TaskStartConsumer.class);
+        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        TaskBreakdownStream.AskUserConsumer askUserConsumer = mock(TaskBreakdownStream.AskUserConsumer.class);
+        Runnable completeCallback = mock(Runnable.class);
+
+        createStream(tasks)
+                .onTaskStart(startConsumer)
+                .onTaskComplete(completeConsumer)
+                .onAskUser(askUserConsumer)
+                .onComplete(completeCallback)
+                .start();
+
+        // 子任务1完成，子任务2暂停（不触发 onTaskComplete(2)）
+        verify(completeConsumer).accept(1);
+        verify(completeConsumer, never()).accept(2);
+
+        // onAskUser 触发，onComplete 不触发
+        verify(askUserConsumer).accept(eq("text"), eq("请提供订单号"), isNull(), anyInt());
+        verify(completeCallback, never()).run();
+
+        // attachBreakdownContext 生效：pending 已保存拆解上下文（mode=breakdown, currentTaskIndex=1）
+        PendingInteraction pending = humanInteractionManager.loadInteraction("test-session");
+        assertNotNull(pending, "暂停后应存在 pending 状态");
+        assertEquals(PendingInteraction.MODE_BREAKDOWN, pending.getMode(), "mode 应为 breakdown");
+        assertEquals(1, pending.getCurrentTaskIndex(), "currentTaskIndex 应为子任务2（index 1，0-based）");
+        assertEquals(tasks, pending.getSubTasks(), "subTasks 应为完整任务列表");
+        assertEquals(List.of("执行结果"), pending.getSubtaskResults(), "已完成子任务结果应保留");
+    }
+
+    @Test
+    @DisplayName("子任务执行失败 -> onTaskFailed + 剩余子任务取消 + onComplete 触发（不总结）")
+    void subTaskFailed_失败即停并取消剩余() {
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"), new SubTask(2, "任务2"), new SubTask(3, "任务3"));
+        // 子任务1失败（model.stream 抛异常）
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
-            handler.onError(new RuntimeException("LLM 超时"));
+            handler.onError(new RuntimeException("LLM 连接失败"));
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 
         TaskBreakdownStream.TaskFailedConsumer failedConsumer = mock(TaskBreakdownStream.TaskFailedConsumer.class);
         TaskBreakdownStream.TaskCancelledConsumer cancelledConsumer = mock(TaskBreakdownStream.TaskCancelledConsumer.class);
-        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        Runnable completeCallback = mock(Runnable.class);
 
-        createStream("任务", false)
+        createStream(tasks)
                 .onTaskFailed(failedConsumer)
                 .onTaskCancelled(cancelledConsumer)
-                .onTaskComplete(completeConsumer)
+                .onComplete(completeCallback)
                 .start();
 
         verify(failedConsumer).accept(eq(1), anyString());
         verify(cancelledConsumer).accept(2);
-        verify(completeConsumer, never()).accept(anyInt());
+        verify(cancelledConsumer).accept(3);
+        verify(completeCallback).run();
     }
 
-    // ========== 验证标准 5: finishReason="stop" -> 正常完成 ==========
-
     @Test
-    void shouldCompleteWhenFinishReasonIsStop() {
-        mockPlanResponse("[{\"title\":\"任务\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
-
-        createStream("任务", false)
-                .onTaskComplete(completeConsumer)
-                .start();
-
-        verify(completeConsumer).accept(1);
-    }
-
-    // ========== 验证标准 6: finishReason="tool_calls" -> 工具调用 ==========
-
-    @Test
-    void shouldExecuteToolWhenFinishReasonIsToolCalls() {
-        mockPlanResponse("[{\"title\":\"查时间\"}]");
-
-        // 第一轮返回 tool_calls，第二轮返回 stop
-        int[] callCount = {0};
-        doAnswer(invocation -> {
-            callCount[0]++;
-            if (callCount[0] == 1) {
-                mockSingleRoundToolCalls(invocation, "getCurrentTime", "{}");
-            } else {
-                mockSingleRoundStop(invocation);
-            }
-            return null;
-        }).when(thinkingModel).stream(any(), any(), any());
-
-        when(toolExecutor.execute("getCurrentTime", "{}")).thenReturn("2026-07-23 10:00:00");
-
-        TaskBreakdownStream.TaskActionConsumer actionConsumer = mock(TaskBreakdownStream.TaskActionConsumer.class);
-        TaskBreakdownStream.TaskObservationConsumer observationConsumer = mock(TaskBreakdownStream.TaskObservationConsumer.class);
-        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
-
-        createStream("几点了", false)
-                .onTaskAction(actionConsumer)
-                .onTaskObservation(observationConsumer)
-                .onTaskComplete(completeConsumer)
-                .start();
-
-        verify(actionConsumer).accept(eq(1), eq("getCurrentTime"), eq("{}"), eq(1));
-        verify(observationConsumer).accept(eq(1), eq("2026-07-23 10:00:00"), eq(1));
-        verify(toolExecutor).execute("getCurrentTime", "{}");
-        verify(completeConsumer).accept(1);
-    }
-
-    // ========== 验证标准 7: enableThinking=true -> onTaskReasoning 被调用 ==========
-
-    @Test
-    void shouldTriggerOnTaskReasoningWhenEnableThinking() {
-        mockPlanResponse("[{\"title\":\"任务\"}]");
-
+    @DisplayName("子任务迭代上限 taskExecutionMaxIterations 生效（超限后返回累积内容）")
+    void subTaskExceedsMaxIterations_返回累积内容() {
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"));
+        // 每轮都 tool_calls 但非 askUser（业务工具），永不 stop -> 达到 maxIterations
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
-            handler.onPartialThinking("正在思考");
-            handler.onPartialResponse("结果");
-            handler.onComplete("结果", "stop", null);
+            handler.onPartialResponse("部分内容");
+            ToolCall tc = new ToolCall();
+            tc.setId("call_1");
+            tc.setFunctionName("httpGet");
+            tc.setArguments("{\"url\":\"http://x\"}");
+            handler.onToolCalls(Collections.singletonList(tc));
+            handler.onComplete("部分内容", "tool_calls", null);
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.TaskReasoningConsumer reasoningConsumer = mock(TaskBreakdownStream.TaskReasoningConsumer.class);
-
-        createStream("任务", true)
-                .onTaskReasoning(reasoningConsumer)
-                .start();
-
-        verify(reasoningConsumer).accept(eq(1), eq("正在思考"));
-    }
-
-    // ========== 验证标准 8: 达到 maxIterations -> 返回部分内容，onTaskComplete ==========
-
-    @Test
-    void shouldReturnPartialResultWhenMaxIterationsReached() {
-        mockPlanResponse("[{\"title\":\"无限循环\"}]");
-        agentConfig.setTaskExecutionMaxIterations(2);
-
-        // 每轮都返回 tool_calls，永不 stop
-        doAnswer(invocation -> {
-            mockSingleRoundToolCalls(invocation, "calculate", "{}");
-            return null;
-        }).when(thinkingModel).stream(any(), any(), any());
-
-        when(toolExecutor.execute("calculate", "{}")).thenReturn("结果");
+        agentConfig.setTaskExecutionMaxIterations(3);
 
         TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
+        Runnable completeCallback = mock(Runnable.class);
 
-        createStream("任务", false)
+        createStream(tasks)
                 .onTaskComplete(completeConsumer)
+                .onComplete(completeCallback)
                 .start();
 
-        // 达到 maxIterations 后仍应标记为完成
         verify(completeConsumer).accept(1);
-    }
-
-    // ========== 补充: 子任务结果写入记忆 ==========
-
-    @Test
-    void shouldWriteSubTaskResultToMemory() {
-        mockPlanResponse("[{\"title\":\"任务\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
-        createStream("任务", false).start();
-
-        // 验证子任务结果写入记忆
-        verify(memoryManager).addUserMessage(eq("test-session"), contains("任务"));
-        verify(memoryManager).addAssistantMessage(eq("test-session"), anyString());
-    }
-
-    // ========== BUG 修复：cancel 机制 ==========
-
-    /**
-     * 验证 cancel 后跳过剩余子任务，标记为已取消
-     * <p>
-     * Bug1 场景：emitter 超时后异步线程应停止后续子任务执行，
-     * 避免继续向已 complete 的 emitter 发送 task_token 事件导致 IllegalStateException
-     * </p>
-     */
-    @Test
-    void cancelShouldSkipRemainingSubTasks() {
-        mockPlanResponse("[{\"title\":\"任务1\"},{\"title\":\"任务2\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
-        TaskBreakdownStream.TaskCancelledConsumer cancelledConsumer = mock(TaskBreakdownStream.TaskCancelledConsumer.class);
-        TaskBreakdownStream.TaskStartConsumer taskStartConsumer = mock(TaskBreakdownStream.TaskStartConsumer.class);
-
-        TaskBreakdownStream stream = createStream("任务", false);
-
-        // 在第一个子任务完成后 cancel
-        doAnswer(invocation -> {
-            stream.cancel();
-            return null;
-        }).when(completeConsumer).accept(anyInt());
-
-        stream.onTaskStart(taskStartConsumer)
-              .onTaskComplete(completeConsumer)
-              .onTaskCancelled(cancelledConsumer)
-              .start();
-
-        // 验证只有第一个子任务开始执行
-        verify(taskStartConsumer).accept(eq(1), eq("任务1"));
-        // 验证第二个子任务未被开始
-        verify(taskStartConsumer, never()).accept(eq(2), eq("任务2"));
-        // 验证第二个子任务被标记为已取消
-        verify(cancelledConsumer).accept(2);
-    }
-
-    /**
-     * 验证 cancel 后跳过 Phase 3 总结
-     * <p>
-     * Bug1 场景：emitter 超时后不应继续调用 LLM 生成总结，
-     * 避免向已 complete 的 emitter 发送 token 事件
-     * </p>
-     */
-    @Test
-    void cancelShouldSkipSummaryPhase() {
-        mockPlanResponse("[{\"title\":\"任务\"}]");
-        doAnswer(this::mockSingleRoundStop).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.TaskCompleteConsumer completeConsumer = mock(TaskBreakdownStream.TaskCompleteConsumer.class);
-        TaskBreakdownStream.TokenConsumer summaryTokenConsumer = mock(TaskBreakdownStream.TokenConsumer.class);
-
-        TaskBreakdownStream stream = createStream("任务", false);
-
-        // 在子任务完成后 cancel
-        doAnswer(invocation -> {
-            stream.cancel();
-            return null;
-        }).when(completeConsumer).accept(anyInt());
-
-        stream.onTaskComplete(completeConsumer)
-              .onSummaryToken(summaryTokenConsumer)
-              .start();
-
-        // 验证总结阶段未被调用（onSummaryToken 从未被触发）
-        verify(summaryTokenConsumer, never()).accept(anyString());
-        // 验证 thinkingModel.stream 只被调用 1 次（子任务执行），总结阶段被跳过
-        verify(thinkingModel, times(1)).stream(any(), any(), any());
+        verify(completeCallback).run();
     }
 }

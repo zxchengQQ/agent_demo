@@ -89,17 +89,39 @@ export interface SubTask {
 
 /**
  * HITL 人机交互数据（Task-07 新增）
- * 业务含义：后端通过 ask_user SSE 事件向用户发起交互请求，前端据 type 渲染不同 UI。
+ * 业务含义：后端通过 ask_user / tool_confirm SSE 事件向用户发起交互请求，前端据 kind 渲染不同 UI。
+ * kind 缺失（存量数据）默认按 askUser 形态渲染（兼容旧会话，技术方案 §11）。
  */
 export interface AskUserData {
-  /** 交互类型：text=文本输入，confirm=选项确认 */
+  /** 交互类型：text=文本输入，confirm=选项确认（permission 形态复用 confirm 的按钮语义） */
   type: 'text' | 'confirm';
+  /**
+   * 交互形态：askUser=LLM 主动提问；permission=工具权限确认（AC-H01）。
+   * 无该字段的存量数据默认按 askUser 形态渲染（兼容性保障）。
+   */
+  kind?: 'askUser' | 'permission';
   /** 向用户展示的问题文本 */
   question: string;
   /** confirm 类型的可选项列表（text 类型无此字段） */
   options?: string[];
   /** 重试次数（0=首次提问，>0=用户回答不合规后重新提问） */
   retryCount: number;
+  /**
+   * 用户回答（unified-chat-mode 决策 7：卡片回答后锁定保留 + 持久化）
+   * 业务含义：用户通过卡片选项/内嵌输入框/主输入框回复后写入，
+   * 存在时卡片进入回答锁定态（可回看），isWaitingForUserInput 返回 false。
+   */
+  answer?: string;
+  // ===== permission 形态新增字段（工具权限确认，Task-17）=====
+
+  /** 工具名称（kind=permission 时，对应后端 tool_confirm 的 toolName） */
+  toolName?: string;
+  /** 工具用途描述（kind=permission 时，对应后端 tool_confirm 的 toolDescription） */
+  toolDescription?: string;
+  /** 参数摘要（kind=permission 时，对应后端 tool_confirm 的 arguments，JSON 字符串） */
+  toolArguments?: string;
+  /** 用户决策结果（kind=permission 时；true=已批准，false=已拒绝，undefined=待决策） */
+  approved?: boolean;
 }
 
 /** 单条消息 */
@@ -276,6 +298,17 @@ export interface StreamCallbacks {
    * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
    */
   onAskUser?: (data: AskUserData) => void;
+
+  // ===== 工具权限确认新增：tool_confirm 回调 =====
+
+  /**
+   * 收到 tool_confirm 事件（ask 级工具权限确认请求）
+   * 业务含义：Agent 调用 ask 级工具时后端推送确认卡片所需四要素（工具名/描述/参数摘要），
+   * 前端渲染确认卡片，用户批准/拒绝后以 toolApproved 参数重新发起流式请求恢复执行。
+   * 事件后流保持打开（pending 挂起），不等 done。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onToolConfirm?: (data: ToolConfirmData) => void;
 }
 
 // ===== RAG 知识库类型定义（Task-01，关联 AC-003/AC-005/AC-009）=====
@@ -519,6 +552,13 @@ export interface AddResult {
 
 // ========== 工具按需加载相关类型 ==========
 
+/**
+ * 工具权限等级（对应后端 ToolPermissionLevel）
+ * 业务含义：管理页三档开关（allow/ask/deny）与对话页选择器过滤的依据。
+ * allow=放行直接执行；ask=需用户确认（流式路径触发确认卡片）；deny=禁止（选择器隐藏 + 后端静默剔除）。
+ */
+export type ToolPermissionLevel = 'allow' | 'ask' | 'deny'
+
 /** 工具信息（对应后端 ToolInfo） */
 export interface ToolInfo {
   /** 工具标识，格式 category:name（如 builtin:getCurrentTime、mcp:mermaid-mcp） */
@@ -531,6 +571,26 @@ export interface ToolInfo {
   description: string
   /** 是否为默认加载工具 */
   isDefault: boolean
+  /**
+   * 工具权限等级（allow/ask/deny，小写字符串）
+   * 业务含义：来自后端 ToolPermissionService 裁决结果，管理页回显下拉、对话页过滤 deny。
+   * 可选字段，向前兼容旧数据（旧接口未返回时 permission 为 undefined）。
+   */
+  permission?: ToolPermissionLevel
+}
+
+/**
+ * 工具权限确认数据（对应后端 tool_confirm SSE 事件）
+ * 业务含义：ask 级工具被 Agent 调用时，后端推送确认卡片所需四要素
+ * （工具名、用途描述、参数摘要），前端渲染后由用户批准/拒绝并回传 toolApproved。
+ */
+export interface ToolConfirmData {
+  /** 工具名称 */
+  toolName: string
+  /** 工具用途描述 */
+  toolDescription: string
+  /** 参数摘要（JSON 字符串） */
+  arguments: string
 }
 
 /** 工具列表响应（对应后端 GET /api/agent/tools） */
@@ -549,8 +609,9 @@ export type OrchestrationMode = 'SEQUENTIAL' | 'PARALLEL' | 'CONDITIONAL' | 'LOO
 /**
  * 工作流执行状态（对应后端 WorkflowExecutionStatus 枚举）
  * P3 新增：PAUSED（重试耗尽暂停待恢复，非终态，AC-016）
+ * 工作流 HITL 新增：WAITING_USER（等待用户回复，非终态，AC-N01/AC-N03）
  */
-export type WorkflowExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TERMINATED' | 'TIMEOUT' | 'PAUSED'
+export type WorkflowExecutionStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'TERMINATED' | 'TIMEOUT' | 'PAUSED' | 'WAITING_USER'
 
 /** 工作流参数定义 */
 export interface WorkflowParameter {
@@ -694,4 +755,53 @@ export interface WorkflowStreamCallbacks {
    * 业务含义：所有子任务完成，主控进入结果汇总阶段。
    */
   onSupervisorSummary?: (data: { subtaskCount: number }) => void
+
+  // ===== 工作流 HITL 新增回调（Task-11，均为可选，向前兼容）=====
+
+  /**
+   * 收到 ask_user 事件（HITL 提问数据，工作流 HITL）
+   * 业务含义：Agent 暂停前推送提问数据（type/question/options/retryCount），
+   * 与 workflow_waiting 成对出现，前端据此渲染 AskUserCard。
+   */
+  onAskUser?: (data: {
+    agentIndex: number
+    agentName: string
+    type: string
+    question: string
+    options: string[]
+    retryCount: number
+  }) => void
+  /**
+   * 收到 workflow_waiting 事件（工作流等待用户回复，AC-N01/AC-N03）
+   * 业务含义：Agent 暂停等待用户决策（askUser 追问或 checkpoint 检查点），
+   * SSE 流随之结束。前端据 hitlMode 渲染等待横幅与交互卡片，
+   * 用户回复后调用 replyToWorkflow 恢复执行。
+   */
+  onWorkflowWaiting?: (data: {
+    executionId: string
+    agentIndex: number
+    agentName: string
+    /** HITL 暂停模式：askUser=Agent 追问；checkpoint=预设检查点；toolConfirm=ask 级工具确认（Task-17） */
+    hitlMode: 'askUser' | 'checkpoint' | 'toolConfirm'
+    resumable: boolean
+  }) => void
+  /**
+   * 收到 workflow_resumed 事件（工作流恢复执行，AC-N03）
+   * 业务含义：用户回复后执行状态回 RUNNING，新 SSE 流首事件即该事件，
+   * 前端据此隐藏等待横幅并继续展示执行进度。
+   */
+  onWorkflowResumed?: (data: { executionId: string; status: string }) => void
+  /**
+   * 收到 tool_confirm 事件（ask 级工具确认请求，工作流版，Task-17，AC-H01）
+   * 业务含义：工作流中 Agent 调用 ask 级工具被权限拦截暂停，后端推送工具四要素 +
+   * 暂停步骤（agentIndex/agentName），与 workflow_waiting(hitlMode=toolConfirm) 成对出现，
+   * 前端据此渲染 ConfirmCard，用户批准/拒绝后调用 replyToWorkflow(executionId, null, approved)。
+   */
+  onToolConfirm?: (data: {
+    agentIndex: number
+    agentName: string
+    toolName: string
+    toolDescription: string
+    arguments: string
+  }) => void
 }

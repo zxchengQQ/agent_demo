@@ -8,14 +8,13 @@ import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
-import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.memory.ChatMemory;
-import dev.langchain4j.model.chat.ChatModel;
-import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -23,73 +22,65 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
 /**
- * TaskBreakdownStream 总结阶段和降级路径测试（Task-05）
+ * TaskBreakdownStream 总结阶段测试（unified-chat-mode Task-07）
  * <p>
- * 验证标准来源：Task-05 验证标准
- * 关联 AC：AC-002（无需拆解降级）、AC-004（总结生成）、AC-009（LLM判断无需拆解）
+ * 验证标准来源：unified-chat-mode 任务规划 Task-07 验证标准
+ * 关联 AC：AC-N05（拆解过程可视化-总结）、AC-004（总结生成）
+ * 业务含义：验证统一模式下拆解完成后总结阶段——onSummaryToken/onSummaryReasoning
+ * 无条件推送（enableThinking 删除，统一模式恒开启）、总结完成后 onComplete。
  * </p>
  */
 class TaskBreakdownStreamSummaryTest {
 
     private ModelFactory modelFactory;
-    private ChatModel chatModel;
     private ThinkingStreamingChatModel thinkingModel;
     private ChatMemoryManager memoryManager;
     private AgentConfig agentConfig;
     private ToolSchemaConverter toolSchemaConverter;
     private ToolExecutor toolExecutor;
     private ChatMemory chatMemory;
+    private HumanInteractionManager humanInteractionManager;
 
     @BeforeEach
     void setUp() {
         modelFactory = mock(ModelFactory.class);
-        chatModel = mock(ChatModel.class);
         thinkingModel = mock(ThinkingStreamingChatModel.class);
         memoryManager = mock(ChatMemoryManager.class);
         toolSchemaConverter = mock(ToolSchemaConverter.class);
         toolExecutor = mock(ToolExecutor.class);
         agentConfig = new AgentConfig();
         chatMemory = mock(ChatMemory.class);
+        humanInteractionManager = new HumanInteractionManager();
 
-        when(modelFactory.getDefaultChatModel()).thenReturn(chatModel);
         when(modelFactory.getDefaultThinkingStreamingChatModel()).thenReturn(thinkingModel);
-        when(toolSchemaConverter.convertToJson()).thenReturn("[]");
-        when(toolSchemaConverter.convertToDescriptionText()).thenReturn("工具描述");
+        when(toolSchemaConverter.convertToDescriptionText(anyList())).thenReturn("工具描述");
         when(memoryManager.getMemory(anyString())).thenReturn(chatMemory);
         when(chatMemory.messages()).thenReturn(new ArrayList<>());
     }
 
-    private TaskBreakdownStream createStream(String message, boolean enableThinking) {
+    private TaskBreakdownStream createStream(List<SubTask> tasks) {
         return new TaskBreakdownStream(
-                "test-session", message, enableThinking,
-                modelFactory, memoryManager, agentConfig,
-                toolSchemaConverter, toolExecutor, new PromptTemplateLoader(agentConfig));
-    }
-
-    private void mockPlanResponse(String json) {
-        AiMessage aiMessage = AiMessage.from(json);
-        ChatResponse response = mock(ChatResponse.class);
-        when(response.aiMessage()).thenReturn(aiMessage);
-        when(chatModel.chat(anyList())).thenReturn(response);
+                "test-session", "复杂任务", null,
+                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                new PromptTemplateLoader(agentConfig), humanInteractionManager,
+                List.of(new Object()), "[]", tasks);
     }
 
     // ========== 验证标准 1: 所有子任务完成后 onSummaryToken 被调用 ==========
 
     @Test
+    @DisplayName("所有子任务完成后总结阶段推送 onSummaryToken")
     void shouldTriggerOnSummaryTokenAfterAllTasksComplete() {
-        mockPlanResponse("[{\"title\":\"任务1\"}]");
-
-        // 第1次调用=Phase 2子任务执行，第2次调用=Phase 3总结
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"));
+        // 第1次调用=子任务执行，第2次调用=总结
         int[] callCount = {0};
         doAnswer(invocation -> {
             callCount[0]++;
             ThinkingStreamHandler handler = invocation.getArgument(2);
             if (callCount[0] == 1) {
-                // Phase 2: 子任务执行
                 handler.onPartialResponse("子任务结果");
                 handler.onComplete("子任务结果", "stop", null);
             } else {
-                // Phase 3: 总结
                 handler.onPartialResponse("总结内容");
                 handler.onComplete("总结内容", "stop", null);
             }
@@ -98,7 +89,7 @@ class TaskBreakdownStreamSummaryTest {
 
         TaskBreakdownStream.TokenConsumer summaryTokenConsumer = mock(TaskBreakdownStream.TokenConsumer.class);
 
-        createStream("任务", false)
+        createStream(tasks)
                 .onSummaryToken(summaryTokenConsumer)
                 .start();
 
@@ -108,8 +99,9 @@ class TaskBreakdownStreamSummaryTest {
     // ========== 验证标准 2: 总结完成后 onComplete 被调用 ==========
 
     @Test
+    @DisplayName("总结完成后 onComplete 被调用")
     void shouldTriggerOnCompleteAfterSummary() {
-        mockPlanResponse("[{\"title\":\"任务1\"}]");
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"));
 
         int[] callCount = {0};
         doAnswer(invocation -> {
@@ -127,81 +119,42 @@ class TaskBreakdownStreamSummaryTest {
 
         Runnable completeCallback = mock(Runnable.class);
 
-        createStream("任务", false)
+        createStream(tasks)
                 .onComplete(completeCallback)
                 .start();
 
         verify(completeCallback).run();
     }
 
-    // ========== 验证标准 3: onNoBreakdown 路径 -> onSummaryToken 被调用（降级） ==========
+    // ========== 验证标准 3: 总结阶段 onSummaryReasoning 无条件推送（enableThinking 删除） ==========
 
     @Test
-    void shouldTriggerOnSummaryTokenOnNoBreakdownPath() {
-        mockPlanResponse("[]");
+    @DisplayName("总结阶段 onSummaryReasoning 无条件推送（统一模式恒开启）")
+    void shouldTriggerOnSummaryReasoningUnconditionally() {
+        List<SubTask> tasks = List.of(new SubTask(1, "任务1"));
 
+        int[] callCount = {0};
         doAnswer(invocation -> {
+            callCount[0]++;
             ThinkingStreamHandler handler = invocation.getArgument(2);
-            handler.onPartialResponse("直接回答");
-            handler.onComplete("直接回答", "stop", null);
-            return null;
-        }).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.PlanConsumer planConsumer = mock(TaskBreakdownStream.PlanConsumer.class);
-        TaskBreakdownStream.TokenConsumer summaryTokenConsumer = mock(TaskBreakdownStream.TokenConsumer.class);
-
-        createStream("你好", false)
-                .onPlan(planConsumer)
-                .onSummaryToken(summaryTokenConsumer)
-                .start();
-
-        verify(planConsumer, never()).accept(anyList());
-        verify(summaryTokenConsumer).accept("直接回答");
-    }
-
-    // ========== 验证标准 4: enableThinking=true 且 onNoBreakdown -> onSummaryReasoning 被调用 ==========
-
-    @Test
-    void shouldTriggerOnSummaryReasoningWhenEnableThinkingOnNoBreakdown() {
-        mockPlanResponse("[]");
-
-        doAnswer(invocation -> {
-            ThinkingStreamHandler handler = invocation.getArgument(2);
-            handler.onPartialThinking("推理内容");
-            handler.onPartialResponse("回答");
-            handler.onComplete("回答", "stop", null);
+            if (callCount[0] == 1) {
+                handler.onPartialResponse("结果");
+                handler.onComplete("结果", "stop", null);
+            } else {
+                handler.onPartialThinking("总结推理");
+                handler.onPartialResponse("总结");
+                handler.onComplete("总结", "stop", null);
+            }
             return null;
         }).when(thinkingModel).stream(any(), any(), any());
 
         TaskBreakdownStream.ReasoningConsumer summaryReasoningConsumer = mock(TaskBreakdownStream.ReasoningConsumer.class);
 
-        createStream("你好", true)
+        createStream(tasks)
                 .onSummaryReasoning(summaryReasoningConsumer)
                 .start();
 
-        verify(summaryReasoningConsumer).accept("推理内容");
-    }
-
-    // ========== 补充: enableThinking=false 时不推送 onSummaryReasoning ==========
-
-    @Test
-    void shouldNotTriggerOnSummaryReasoningWhenEnableThinkingFalse() {
-        mockPlanResponse("[]");
-
-        doAnswer(invocation -> {
-            ThinkingStreamHandler handler = invocation.getArgument(2);
-            handler.onPartialThinking("推理内容");
-            handler.onPartialResponse("回答");
-            handler.onComplete("回答", "stop", null);
-            return null;
-        }).when(thinkingModel).stream(any(), any(), any());
-
-        TaskBreakdownStream.ReasoningConsumer summaryReasoningConsumer = mock(TaskBreakdownStream.ReasoningConsumer.class);
-
-        createStream("你好", false)
-                .onSummaryReasoning(summaryReasoningConsumer)
-                .start();
-
-        verify(summaryReasoningConsumer, never()).accept(anyString());
+        // 统一模式恒开启思考，无需 enableThinking 参数即推送
+        verify(summaryReasoningConsumer).accept("总结推理");
     }
 }

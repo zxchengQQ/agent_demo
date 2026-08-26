@@ -55,27 +55,6 @@ function handleModelChange(modelId: string) {
 }
 
 /**
- * 深度思考开关状态（CR-001，AC-021）
- * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，影响下一条消息的 streamChat 调用参数。
- * 状态在当前会话内保持，切换会话时不影响其他会话。
- */
-const enableThinking = ref(false);
-
-/**
- * 复杂任务拆解开关状态（CR-002，AC-012）
- * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，影响下一条消息的 streamChat 调用参数。
- * 与深度思考独立共存，可同时开启。状态在当前会话内保持。
- */
-const enableTaskBreakdown = ref(false);
-
-/**
- * HITL 人机交互开关状态（Task-10 新增）
- * 业务含义：用户通过 MessageInput 的 toggle 按钮控制，开启后 streamChat 请求携带 enableHitl=true，
- * 后端据此在执行过程中通过 ask_user 事件向用户发起交互请求。状态在当前会话内保持。
- */
-const enableHitl = ref(false);
-
-/**
  * 当前会话的知识库选择（Task-09，AC-012/AC-014）
  * 业务含义：从 session store 读取，按会话隔离。空数组表示"自动"模式（Agent 自主检索）。
  */
@@ -122,8 +101,13 @@ function generateId(): string {
 /**
  * 发送消息（AC-002: 流式输出）
  * 业务含义：用户发送消息 -> 创建助手占位 -> 流式接收 -> 完成/中断/错误
+ *
+ * @param message 用户消息
+ * @param toolApproved 工具权限确认结果（true=批准/继续执行，false=拒绝/换方案；undefined=普通消息，Task-17）
+ * @param silent 静默模式（权限确认决策专用）：请求正常发出但不在对话中产生用户消息气泡——
+ *               决策结果已由 ConfirmCard 锁定态可视化，重复气泡属冗余信息（交互优化）
  */
-async function sendMessage(message: string) {
+async function sendMessage(message: string, toolApproved?: boolean, silent?: boolean) {
   // AC-014: 空消息拦截
   if (!message.trim()) return;
   // Task-22: 无可用 chat 模型时禁止发送（含未配置）
@@ -137,15 +121,25 @@ async function sendMessage(message: string) {
   }
   const sessionId = store.currentSessionId;
 
-  // 乐观添加用户消息
-  store.addMessage(sessionId, {
-    id: generateId(),
-    role: 'user',
-    content: message,
-    createdAt: Date.now(),
-    status: 'complete',
-    reasoning: '',
-  });
+  // unified-chat-mode（决策 7 双通道收敛，技术方案 11.1 风险 4 对策）：
+  // 等待态下用户通过主输入框发送的任意消息，先记录为对 askUser 卡片的回答
+  // （卡片进入锁定态可回看），再作为普通消息/恢复消息发送。
+  // 注：kind=permission 卡片不走此路径（isWaitingForUserInput 已排除），由批准/拒绝按钮决策。
+  if (store.isWaitingForUserInput) {
+    store.setAskUserAnswer(sessionId, message);
+  }
+
+  // 乐观添加用户消息（silent 模式跳过：权限确认决策不产生对话气泡）
+  if (!silent) {
+    store.addMessage(sessionId, {
+      id: generateId(),
+      role: 'user',
+      content: message,
+      createdAt: Date.now(),
+      status: 'complete',
+      reasoning: '',
+    });
+  }
 
   // 创建助手消息占位（流式追加内容）
   const assistantMsgId = generateId();
@@ -166,8 +160,6 @@ async function sendMessage(message: string) {
     await streamChat(
       sessionId,
       message,
-      enableThinking.value,
-      enableTaskBreakdown.value,
       selectedKnowledgeBases.value,
       modelId,
       selectedTools.value,
@@ -275,9 +267,17 @@ async function sendMessage(message: string) {
         onAskUser: (data) => {
           store.setAskUserData(assistantMsgId, data);
         },
+
+        // Task-17: 工具权限确认请求（tool_confirm 事件）
+        // 业务含义：ask 级工具被 Agent 调用时，将确认卡片四要素
+        // （工具名/用途描述/参数摘要）写入助手消息（kind=permission），
+        // 前端据此渲染 ConfirmCard 等待用户批准/拒绝；事件后流保持打开（pending 挂起）。
+        onToolConfirm: (data) => {
+          store.setToolConfirmData(assistantMsgId, data);
+        },
       },
       abortController.signal,
-      enableHitl.value,
+      toolApproved,
     );
   } finally {
     isStreaming.value = false;
@@ -299,20 +299,54 @@ function stopGeneration() {
 }
 
 /**
- * 处理 ConfirmCard 选中事件（Task-10 新增）
- * 业务含义：用户在 confirm 类型人机交互卡片中选中选项后，先清除 askUser 状态
- * （标记消息 complete 并清除 askUserData），再将选中值作为用户消息发送。
+ * 处理 AskUserCard 回复事件（unified-chat-mode Task-18）
+ * 业务含义：用户在统一交互卡片中回复（选项值或输入文本）后，先记录回答
+ * （setAskUserAnswer 写入 answer + 持久化，卡片锁定可回看），再作为用户消息发送
+ * （后端 hasPending 检测后走恢复路径）。
  */
-function handleConfirmSelect(optionValue: string) {
-  store.clearAskUser(store.currentSessionId);
-  sendMessage(optionValue);
+function handleAskUserReply(value: string) {
+  store.setAskUserAnswer(store.currentSessionId, value);
+  sendMessage(value);
+}
+
+/**
+ * 处理工具权限确认：批准（Task-17，AC-N03）
+ * 业务含义：用户点击 ConfirmCard 的"批准"按钮，记录决策（approved=true，卡片锁定可回看），
+ * 然后携带 toolApproved=true 重新发起流式请求，后端经 resumeToolConfirm 恢复执行被拦截的工具。
+ */
+function handleApprove() {
+  if (!store.currentSessionId) return;
+  store.setToolConfirmApproved(store.currentSessionId, true);
+  // 业务含义：决策文案不可为空——空串会被 sendMessage 的空消息拦截
+  // 与后端 @NotBlank 校验双重拒绝，导致确认流程卡死（BUG 修复：请求根本发不出去）
+  // silent=true：决策已由卡片锁定态展示，不再产生冗余对话气泡（交互优化）
+  sendMessage('已批准使用工具', true, true);
+}
+
+/**
+ * 处理工具权限确认：拒绝（Task-17，AC-S02）
+ * 业务含义：用户点击 ConfirmCard 的"拒绝"按钮，记录决策（approved=false，卡片锁定可回看），
+ * 然后携带 toolApproved=false 重新发起流式请求，后端将拒绝结果注入 Observation，
+ * 引导 LLM 换方案继续（不执行该工具）。
+ */
+function handleDeny() {
+  if (!store.currentSessionId) return;
+  store.setToolConfirmApproved(store.currentSessionId, false);
+  // 业务含义：同 handleApprove——决策文案不可为空，否则请求被双重拦截导致流程卡死
+  // silent=true：决策已由卡片锁定态展示，不再产生冗余对话气泡（交互优化）
+  sendMessage('已拒绝使用工具', false, true);
 }
 </script>
 
 <template>
   <div class="chat-window">
     <!-- 消息列表区 -->
-    <MessageList :messages="currentMessages" @select="handleConfirmSelect" />
+    <MessageList
+      :messages="currentMessages"
+      @reply="handleAskUserReply"
+      @approve="handleApprove"
+      @deny="handleDeny"
+    />
 
     <!-- 无可用 chat 模型/未配置 LLM 空状态引导（Task-22）：禁用发送 -->
     <div v-if="!hasChatModels" class="config-guide">
@@ -324,9 +358,6 @@ function handleConfirmSelect(optionValue: string) {
     <MessageInput
       v-else
       :is-streaming="isStreaming"
-      :enable-thinking="enableThinking"
-      :enable-task-breakdown="enableTaskBreakdown"
-      :enable-hitl="enableHitl"
       :is-waiting-for-user-input="store.isWaitingForUserInput"
       :knowledge-bases="ragStore.knowledgeBases"
       :selected-knowledge-bases="selectedKnowledgeBases"
@@ -336,9 +367,6 @@ function handleConfirmSelect(optionValue: string) {
       :has-config="!!llmStore.configStatus?.hasConfig"
       @send="sendMessage"
       @stop="stopGeneration"
-      @toggle-thinking="enableThinking = !enableThinking"
-      @toggle-task-breakdown="enableTaskBreakdown = !enableTaskBreakdown"
-      @toggle-hitl="enableHitl = !enableHitl"
       @update:selected-knowledge-bases="handleKnowledgeBasesChange"
       @update:selected-tools="handleToolsChange"
       @update:selected-model="handleModelChange"

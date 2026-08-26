@@ -72,8 +72,17 @@ class ResearchAnalyzeSummarizeTemplateTest {
     @Test
     void template_shouldNotBlockWhenToolMissing() {
         // 工具未注册：resolveTools 抛异常 → 应记录 WARNING 但不阻断注册
-        doThrow(new RuntimeException("工具不存在")).when(toolRegistry).resolveTools(anyList());
+        doThrow(new RuntimeException("工具不存在")).when(toolRegistry).resolveToolsForStreaming(anyList());
         config.researchAnalyzeSummarizeWorkflow(registry);
         assertNotNull(registry.getTemplate("research-analyze-summarize"));
+    }
+
+    @Test
+    void allAgents_shouldHitlEnabled() {
+        // Task-16：3 模板全部 Agent 启用 HITL（决策 4 全部启用，工具确认链路统一）
+        WorkflowTemplate template = config.researchAnalyzeSummarizeWorkflow(registry);
+        for (AgentDefinition agent : template.getAgents()) {
+            assertTrue(agent.isHitlEnabled(), "Agent 应启用 HITL: " + agent.getName());
+        }
     }
 }

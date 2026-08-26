@@ -60,4 +60,31 @@ public interface HitlTokenStream extends ThinkingTokenStream {
     interface AskUserConsumer {
         void accept(String type, String question, List<String> options, int retryCount);
     }
+
+    /**
+     * 注册工具权限确认回调（默认空实现，不破坏现有实现类）
+     * <p>
+     * 业务含义：HITLReActStream 拦截 ask 级工具调用时触发，携带 toolCallId、工具名、工具描述与参数 JSON。
+     * Controller 收到此回调后发送 tool_confirm SSE 事件（前端渲染权限确认卡片，AC-H01）。
+     * 默认返回 this 保证链式调用，未注册回调的实现类（现有）行为不受影响。
+     * </p>
+     *
+     * @param consumer 工具确认消费者
+     * @return this（链式调用）
+     */
+    default HitlTokenStream onToolConfirm(ToolConfirmConsumer consumer) {
+        return this;
+    }
+
+    /**
+     * 工具权限确认消费者（携带 toolCallId、工具名、工具描述、参数 JSON）
+     * <p>
+     * 业务含义：决策 2 方案 A——HITLReActStream 快照职责外移，仅触发 4 参回调（含 toolCallId），
+     * 由宿主决定快照持久化。toolCallId 为恢复时 ToolExecutionResultMessage 的 id 匹配必需（AC-M02）。
+     * </p>
+     */
+    @FunctionalInterface
+    interface ToolConfirmConsumer {
+        void accept(String toolCallId, String toolName, String toolDescription, String arguments);
+    }
 }

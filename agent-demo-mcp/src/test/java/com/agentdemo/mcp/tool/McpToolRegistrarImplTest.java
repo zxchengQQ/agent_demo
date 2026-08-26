@@ -189,10 +189,10 @@ class McpToolRegistrarImplTest {
             // when
             registrar.registerTools(entry);
 
-            // then: 2 个工具都注册了
+            // then: 2 个工具都注册了（生产代码走带 serverName 的 2 参重载，用于登记 mcp:{serverName} 标识）
             verify(toolFactory).createTools("weather", entry.getServer().getTools());
-            verify(toolRegistry).register(proxy1);
-            verify(toolRegistry).register(proxy2);
+            verify(toolRegistry).register(proxy1, "weather");
+            verify(toolRegistry).register(proxy2, "weather");
         }
 
         @Test

@@ -1,18 +1,24 @@
 package com.agentdemo.app.service;
 
 import com.agentdemo.app.core.OrchestrationMode;
+import com.agentdemo.app.core.WorkflowContext;
 import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowExecutionStatus;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
+import com.agentdemo.app.strategy.AbstractExecutionStrategy;
 import com.agentdemo.app.strategy.WorkflowExecutionStrategy;
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -54,6 +60,9 @@ public class WorkflowExecutionService {
      * 恢复成功/终止/失败等终态时清理，避免泄漏。
      */
     private final ConcurrentHashMap<String, ResumableExecutionState> resumableStates = new ConcurrentHashMap<>();
+
+    /** 默认 HITL 会话超时（30 分钟，AC-E01，与技术方案 Sec 8.3 一致） */
+    private static final long DEFAULT_HITL_TIMEOUT_MS = 30 * 60 * 1000L;
 
     /**
      * Spring 自动注入所有策略实现，构建分发表
@@ -107,6 +116,10 @@ public class WorkflowExecutionService {
                         execution, modelId, cancelFlag);
                 execution.complete(result);
                 emitter.complete();
+            } catch (WorkflowHITLException e) {
+                // 业务含义：HITL 暂停信号（checkpoint/askUser）——进入 WAITING_USER（可恢复，AC-N01/N02）。
+                // 必须置于 WorkflowPausedException 之前捕获（WorkflowHITLException 是其子类，Task-07）
+                handleHITLPaused(emitter, execution, e, template, parameters, modelId);
             } catch (WorkflowPausedException e) {
                 // P3：重试耗尽进入 PAUSED（可恢复）而非 FAILED 终态（AC-016）。
                 // 必须置于 BusinessException 之前捕获（WorkflowPausedException 是其子类）
@@ -271,6 +284,62 @@ public class WorkflowExecutionService {
     }
 
     /**
+     * 处理 HITL 暂停（Agent askUser 追问 / @HumanCheckpoint 检查点，Task-07）
+     * <p>
+     * 业务含义：与失败暂停（handlePaused）语义不同——HITL 暂停是"等待用户输入"（WAITING_USER），
+     * 保存 HITL 快照（hitlState，含消息列表/提问数据或工具确认数据/暂停步骤）供 hitlReply 恢复，
+     * 按 hitlMode 推送暂停事件（askUser/checkpoint 推 ask_user；toolConfirm 推 tool_confirm，Task-15）
+     * + workflow_waiting 告知前端渲染提问/确认卡片，随后关闭当前 SSE 流。
+     * 与 handlePaused 完全分离，互不干扰（PAUSED 流程零回归，AC-N01/N02）。
+     * </p>
+     * <p>
+     * 可见性说明：包可见（非 private）——单测需在测试线程直接调用以验证事件契约
+     * （MockedStatic 仅拦截创建线程的静态调用，无法拦截 ForkJoinPool 异步线程）。
+     * </p>
+     */
+    void handleHITLPaused(SseEmitter emitter, WorkflowExecution execution, WorkflowHITLException e,
+                          WorkflowTemplate template, Map<String, Object> parameters, String modelId) {
+        WorkflowHITLState hitlState = e.getHitlState();
+        WorkflowHITLState.PendingStep pendingStep = hitlState.getPendingStep();
+        WorkflowHITLState.AskUserData askUserData = hitlState.getAskUserData();
+        log.info("工作流 HITL 暂停（等待用户）: executionId={}, agent={}, agentIndex={}, mode={}",
+                execution.getExecutionId(), pendingStep.getAgentName(),
+                pendingStep.getAgentIndex(), hitlState.getHitlMode());
+        // 顺序约束：状态变更（waitUser）必须最后执行——外部（如测试/前端轮询）一旦观察到
+        // WAITING_USER，快照与事件必然已就绪，避免"看到等待但快照未写入/事件未发出"的竞态
+        resumableStates.put(execution.getExecutionId(),
+                new ResumableExecutionState(template, parameters, modelId, hitlState));
+        // 业务含义：按 hitlMode 分流暂停事件——askUser/checkpoint 推送 ask_user（提问数据），
+        // toolConfirm 推送 tool_confirm（工具四要素，Task-15，AC-H01/H02）；workflow_waiting 双模式统一推送
+        if (WorkflowHITLState.MODE_TOOL_CONFIRM.equals(hitlState.getHitlMode())) {
+            WorkflowHITLState.ToolConfirmData toolConfirmData = hitlState.getToolConfirmData();
+            WorkflowEventPublisher.send(emitter, "tool_confirm", Map.of(
+                    "agentIndex", pendingStep.getAgentIndex(),
+                    "agentName", pendingStep.getAgentName(),
+                    "toolName", toolConfirmData != null ? toolConfirmData.getToolName() : "",
+                    "toolDescription", toolConfirmData != null ? toolConfirmData.getToolDescription() : "",
+                    "arguments", toolConfirmData != null ? toolConfirmData.getArguments() : ""));
+        } else {
+            WorkflowEventPublisher.send(emitter, "ask_user", Map.of(
+                    "agentIndex", pendingStep.getAgentIndex(),
+                    "agentName", pendingStep.getAgentName(),
+                    "type", askUserData != null ? askUserData.getType() : "",
+                    "question", askUserData != null ? askUserData.getQuestion() : "",
+                    "options", (askUserData != null && askUserData.getOptions() != null)
+                            ? askUserData.getOptions() : List.of(),
+                    "retryCount", askUserData != null ? askUserData.getRetryCount() : 0));
+        }
+        WorkflowEventPublisher.send(emitter, "workflow_waiting", Map.of(
+                "executionId", execution.getExecutionId(),
+                "agentIndex", pendingStep.getAgentIndex(),
+                "agentName", pendingStep.getAgentName(),
+                "hitlMode", hitlState.getHitlMode(),
+                "resumable", true));
+        emitter.complete();
+        execution.waitUser();
+    }
+
+    /**
      * 恢复暂停的执行（AC-017）
      * <p>
      * 业务含义：从快照取出原始 template/params/modelId 重放策略——策略通过
@@ -320,6 +389,10 @@ public class WorkflowExecutionService {
                 // 恢复成功：清理快照（防止对 COMPLETED 执行再次 resume）
                 resumableStates.remove(executionId);
                 emitter.complete();
+            } catch (WorkflowHITLException e) {
+                // 业务含义：恢复执行中再次触发 HITL（Agent askUser/检查点）——再次进入 WAITING_USER，
+                // 保留/更新 HITL 快照（Task-07，循环暂停-恢复）
+                handleHITLPaused(emitter, execution, e, snapshot.getTemplate(), snapshotParams, snapshotModelId);
             } catch (WorkflowPausedException e) {
                 // 循环暂停-恢复：恢复中再次重试耗尽，再次暂停并保留/更新快照
                 handlePaused(emitter, execution, e, snapshot.getTemplate(), snapshotParams, snapshotModelId);
@@ -343,6 +416,208 @@ public class WorkflowExecutionService {
         // 注册新 emitter 生命周期回调（与 execute 同模式）
         emitter.onTimeout(() -> cancel(executionId));
         emitter.onError(ex -> cancel(executionId));
+    }
+
+    /**
+     * 恢复 HITL 暂停的执行（Task-08）
+     * <p>
+     * 业务含义：用户回复 Agent 提问（askUser）或确认检查点（checkpoint）后恢复工作流——
+     * 校验 WAITING_USER + HITL 快照存在，checkpoint 拒绝（approved=false）直接终止（AC-S01）；
+     * 其余情况状态回 RUNNING + 推送 workflow_resumed，将 HITL 恢复上下文（HitlResume）写入
+     * ctx 恢复 key（hitl:{iteration}:{agentName}），重放策略时策略层据此以恢复方式执行暂停步
+     * （避免重放死循环，技术方案 Sec 11），后续步骤正常继续。恢复成功/终态化清理快照，
+     * 恢复中再次 HITL 暂停则保留/更新快照（循环暂停-恢复，AC-N03/AC-H02）。
+     * </p>
+     *
+     * @param executionId 执行 ID
+     * @param message     用户回复文本（askUser 模式；checkpoint 模式为 null）
+     * @param approved    检查点确认结果（checkpoint 模式：true=执行 / false=拒绝；askUser 模式为 null）
+     * @param emitter     恢复执行的新 SSE 发射器（新事件流）
+     * @throws BusinessException 执行不存在（WORKFLOW_NOT_FOUND 5500）或状态/快照不可恢复（WORKFLOW_NOT_RESUMABLE 5507）
+     */
+    public void hitlReply(String executionId, String message, Boolean approved, SseEmitter emitter) {
+        WorkflowExecution execution = executions.get(executionId);
+        if (execution == null) {
+            throw new BusinessException(ErrorCode.WORKFLOW_NOT_FOUND, executionId);
+        }
+        if (execution.getStatus() != WorkflowExecutionStatus.WAITING_USER) {
+            throw new BusinessException(ErrorCode.WORKFLOW_NOT_RESUMABLE,
+                    "工作流当前状态不支持 HITL 回复: " + execution.getStatus().name());
+        }
+        ResumableExecutionState snapshot = resumableStates.get(executionId);
+        if (snapshot == null || snapshot.getHitlState() == null) {
+            throw new BusinessException(ErrorCode.WORKFLOW_NOT_RESUMABLE,
+                    "HITL 恢复快照不存在（可能已被终止或清理）: " + executionId);
+        }
+
+        WorkflowHITLState hitlState = snapshot.getHitlState();
+        WorkflowTemplate template = snapshot.getTemplate();
+        Map<String, Object> snapshotParams = snapshot.getParameters();
+        String snapshotModelId = snapshot.getModelId();
+
+        // 业务含义：checkpoint 拒绝（approved=false）直接终止工作流（AC-S01）——同步执行，
+        // 推送 workflow_failed(TERMINATED) + 清理快照（终态化，不可再恢复）
+        if (WorkflowHITLState.MODE_CHECKPOINT.equals(hitlState.getHitlMode())
+                && Boolean.FALSE.equals(approved)) {
+            execution.terminate();
+            resumableStates.remove(executionId);
+            WorkflowEventPublisher.send(emitter, "workflow_failed", Map.of(
+                    "executionId", executionId,
+                    "status", WorkflowExecutionStatus.TERMINATED.name(),
+                    "error", "用户拒绝了检查点确认，工作流已终止"));
+            emitter.complete();
+            return;
+        }
+
+        WorkflowExecutionStrategy strategy = strategies.get(template.getMode());
+        if (strategy == null) {
+            throw new BusinessException(ErrorCode.WORKFLOW_MODE_NOT_SUPPORTED,
+                    "不支持的编排模式: " + template.getMode());
+        }
+
+        // 业务含义：将 HITL 恢复上下文写入 ctx 恢复 key（hitl:{iteration}:{agentName}），
+        // 策略重放时 executeOrSkip/Supervisor 据此识别暂停步并以恢复方式执行（避免死循环）。
+        // ctx 在 HITL 暂停时已由策略挂载（attachOrNewContext），此处兜底新建保证不丢失。
+        // 该写入必须先于排队消费——即使本次回复后仍有排队 HITL，重放时也能恢复已回复的暂停步
+        WorkflowContext ctx = execution.getContext();
+        if (ctx == null) {
+            ctx = new WorkflowContext();
+            execution.attachContext(ctx);
+        }
+        WorkflowHITLState.PendingStep pendingStep = hitlState.getPendingStep();
+        ctx.write(AbstractExecutionStrategy.hitlResumeKey(pendingStep.getIteration(), pendingStep.getAgentName()),
+                new WorkflowHITLState.HitlResume(hitlState, message, approved));
+
+        // 业务含义：并行 HITL 排队消费（Task-09，AC-E02）——并行分组多个 Agent 同时 askUser 时
+        // 第一个生效进入 WAITING_USER，其余由并行策略写入 ctx 排队列表。用户回复后先消费队列：
+        // 仍有排队 HITL 则更新快照并再次进入 WAITING_USER（按序继续提问），队列清空才真正恢复执行。
+        // 保证同一 executionId 同时只有一个 WAITING_USER（状态始终不离开 WAITING_USER）
+        WorkflowHITLException pending = pollPendingHitl(execution);
+        if (pending != null) {
+            log.info("消费并行排队 HITL: executionId={}, agent={}",
+                    executionId, pending.getHitlState().getPendingStep().getAgentName());
+            resumableStates.put(executionId,
+                    new ResumableExecutionState(template, snapshotParams, snapshotModelId, pending.getHitlState()));
+            handleHITLPaused(emitter, execution, pending, template, snapshotParams, snapshotModelId);
+            return;
+        }
+
+        // 顺序约束：状态恢复 RUNNING + workflow_resumed 推送（同步完成），
+        // 保证外部观察到 RUNNING 时恢复上下文已就绪
+        execution.resumeFromWait();
+        WorkflowEventPublisher.send(emitter, "workflow_resumed", Map.of(
+                "executionId", executionId,
+                "status", WorkflowExecutionStatus.RUNNING.name()));
+
+        // 重建取消标志：旧 flag 在等待期间可能被污染（如 emitter 超时触发 cancel）
+        AtomicBoolean cancelFlag = new AtomicBoolean(false);
+        cancelFlags.put(executionId, cancelFlag);
+
+        log.info("恢复工作流 HITL 执行: executionId={}, hitlMode={}, agent={}",
+                executionId, hitlState.getHitlMode(), pendingStep.getAgentName());
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                String result = strategy.execute(template, snapshotParams, emitter,
+                        execution, snapshotModelId, cancelFlag);
+                execution.complete(result);
+                // 恢复成功：清理快照（防止对 COMPLETED 执行再次 hitlReply）
+                resumableStates.remove(executionId);
+                emitter.complete();
+            } catch (WorkflowHITLException e) {
+                // 业务含义：恢复中再次触发 HITL（Agent askUser/检查点）——再次进入 WAITING_USER，
+                // 保留/更新 HITL 快照（循环暂停-恢复，Task-08）
+                handleHITLPaused(emitter, execution, e, template, snapshotParams, snapshotModelId);
+            } catch (WorkflowPausedException e) {
+                // 业务含义：恢复中 Agent 重试耗尽——转 PAUSED（失败暂停，非 WAITING_USER，AC-H02）
+                handlePaused(emitter, execution, e, template, snapshotParams, snapshotModelId);
+            } catch (WorkflowCancelledException e) {
+                handleTerminated(emitter, execution, e.getMessage());
+                resumableStates.remove(executionId);
+            } catch (WorkflowTimeoutException e) {
+                handleTimeout(emitter, execution, e.getMessage());
+                resumableStates.remove(executionId);
+            } catch (BusinessException e) {
+                log.error("工作流 HITL 恢复执行失败: executionId={}, error={}", executionId, e.getMessage(), e);
+                handleFailure(emitter, execution, e.getMessage());
+                resumableStates.remove(executionId);
+            } catch (Exception e) {
+                log.error("工作流 HITL 恢复执行异常: executionId={}", executionId, e);
+                handleFailure(emitter, execution, e.getMessage());
+                resumableStates.remove(executionId);
+            }
+        });
+
+        // 注册新 emitter 生命周期回调（与 resume 同模式）
+        emitter.onTimeout(() -> cancel(executionId));
+        emitter.onError(ex -> cancel(executionId));
+    }
+
+    /**
+     * 从 ctx 排队列表取出下一个待处理的 HITL 请求（Task-09，AC-E02）
+     * <p>
+     * 业务含义：并行分组多个 Agent 同时 askUser 时，第一个生效进入 WAITING_USER，
+     * 其余由并行策略写入 ctx 排队列表（PENDING_HITL_KEY）。用户每次 hitlReply 恢复时
+     * 调用本方法按序消费——取出第一个（剩余写回 ctx），协调层据此更新快照并再次进入
+     * WAITING_USER（继续问下一个问题），直到队列清空才真正重放策略执行。
+     * </p>
+     *
+     * @param execution 执行实例（从其 context 读取排队列表）
+     * @return 下一个待处理的 HITL 异常（无排队返回 null）
+     */
+    private WorkflowHITLException pollPendingHitl(WorkflowExecution execution) {
+        WorkflowContext ctx = execution.getContext();
+        if (ctx == null) {
+            return null;
+        }
+        Object raw = ctx.read(WorkflowContext.PENDING_HITL_KEY);
+        if (!(raw instanceof List<?> list) || list.isEmpty()) {
+            return null;
+        }
+        @SuppressWarnings("unchecked")
+        List<WorkflowHITLException> pending = new ArrayList<>((List<WorkflowHITLException>) list);
+        WorkflowHITLException first = pending.remove(0);
+        // 业务含义：用空列表表示清空（ConcurrentHashMap 不允许 null value，WorkflowContext.write 不可写 null）
+        ctx.write(WorkflowContext.PENDING_HITL_KEY, pending);
+        return first;
+    }
+
+    /**
+     * 定时清理超时未回复的 WAITING_USER 执行（Task-09，AC-E01）
+     * <p>
+     * 业务含义：与 HumanInteractionManager 会话清理同频（每 5 分钟），扫描等待用户输入
+     * 超过 30 分钟的执行置 TIMEOUT（终态）并清理 HITL 快照，防止僵尸等待占用内存。
+     * 模块归属说明：executions 存储于本模块（agent-demo-app），HumanInteractionManager
+     * 位于 agent-demo-agent（会话级），无法跨模块访问工作流执行实例，故超时清理在协调层实现。
+     * </p>
+     */
+    @Scheduled(fixedRate = 5 * 60 * 1000L)
+    public void cleanupExpiredWaitingUsers() {
+        cleanupExpiredWaitingUsers(DEFAULT_HITL_TIMEOUT_MS);
+    }
+
+    /**
+     * 清理超时未回复的 WAITING_USER 执行（测试可直调，指定超时阈值）
+     *
+     * @param timeoutMillis 超时时间（毫秒）
+     */
+    public void cleanupExpiredWaitingUsers(long timeoutMillis) {
+        long now = System.currentTimeMillis();
+        for (WorkflowExecution execution : executions.values()) {
+            if (execution.getStatus() != WorkflowExecutionStatus.WAITING_USER) {
+                continue;
+            }
+            LocalDateTime waitTime = execution.getWaitUserTime();
+            if (waitTime == null) {
+                continue;
+            }
+            long waitedMs = now - waitTime.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli();
+            if (waitedMs > timeoutMillis) {
+                execution.timeout();
+                resumableStates.remove(execution.getExecutionId());
+                log.info("清理超时 HITL 等待: executionId={}, 等待 {} ms", execution.getExecutionId(), waitedMs);
+            }
+        }
     }
 
     /**

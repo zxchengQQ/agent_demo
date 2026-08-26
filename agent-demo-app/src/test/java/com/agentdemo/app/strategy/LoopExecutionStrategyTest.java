@@ -83,7 +83,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_maxIterationsReached_shouldExitWithMaxReason() throws Exception {
         // 退出条件始终不满足（评分恒 80）→ 循环 5 次后达上限退出
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("结果");
 
         WorkflowTemplate template = loopTemplate(5, ctx -> ctx.readAsString("score").equals("90"));
@@ -93,7 +93,7 @@ class LoopExecutionStrategyTest {
         String result = strategy.execute(template, Map.of("draft", "初稿"), emitter, execution, null, new AtomicBoolean(false));
 
         // 循环体 2 个 Agent × 5 轮 = 10 次 execute
-        verify(agentExecutor, times(10)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(10)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals(5, execution.getIterationCount());
         assertEquals("结果", result);
     }
@@ -101,7 +101,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_exitConditionMet_shouldExitEarly() throws Exception {
         // 退出条件第 2 轮满足（前 2 轮后评分达 90）→ 仅循环 2 轮
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("结果");
 
         // 用一个 AtomicInteger 控制：前 1 轮 score=80，第 2 轮 score=95
@@ -113,7 +113,7 @@ class LoopExecutionStrategyTest {
         // 简化：退出条件由 ctx 中"lastOutput"判断，让第 2 轮后满足
         // 这里直接测：退出条件读取 ctx.state，第 2 轮 write score=95
         // 由于 executeAgentList 每次迭代将输出写入 ctx，我们让输出在第 2 轮变为 "95"
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("80")   // 第1轮第1个Agent
                 .thenReturn("80")   // 第1轮第2个Agent
                 .thenReturn("95")   // 第2轮第1个Agent
@@ -127,7 +127,7 @@ class LoopExecutionStrategyTest {
         strategy.execute(exitOnOutputTemplate, Map.of("draft", "初稿"), emitter2, exec2, null, new AtomicBoolean(false));
 
         // 循环 2 轮 × 2 Agent = 4 次
-        verify(agentExecutor, times(4)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(4)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals(2, exec2.getIterationCount());
     }
 
@@ -155,7 +155,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_shouldPassUserInputToFirstAgent_notEmpty() throws Exception {
         // BUG 复现：用户输入的 content 参数应传递给第一个 Agent，而非空字符串
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("评分结果");
 
         WorkflowTemplate template = WorkflowTemplate.builder()
@@ -180,7 +180,7 @@ class LoopExecutionStrategyTest {
         strategy.execute(template, Map.of("content", "这是一段需要评分的初稿内容"), emitter, execution, null, new AtomicBoolean(false));
 
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertNotEquals("", inputCaptor.getValue(), "Agent 输入不应为空字符串");
         assertEquals("这是一段需要评分的初稿内容", inputCaptor.getValue(),
                 "Agent 应收到用户输入的 content 参数值");
@@ -203,7 +203,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_resume_atPausedRoundAgent_shouldSkipHistoricalRoundsAndPausedDoneAgents() throws Exception {
         // 恢复场景：第 2 轮修订 Agent 处暂停——第 1 轮整轮跳过、第 2 轮评分跳过，仅修订真实执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> "真实输出");
 
         WorkflowTemplate template = loopTemplate(5, ctx -> false);  // 退出条件不满足，聚焦跳过逻辑
@@ -214,7 +214,7 @@ class LoopExecutionStrategyTest {
                 execution, null, new AtomicBoolean(false));
 
         // 真实执行：第 2 轮修订(1) + 第 3~5 轮全量(2×3=6) = 7 次；第 1 轮 2 步与第 2 轮评分跳过
-        verify(agentExecutor, times(7)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(7)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         // iterationCount 恢复正确：暂停轮不重复递增（2 轮历史 + 3 轮新 = 5）
         assertEquals(5, execution.getIterationCount());
     }
@@ -222,7 +222,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_resume_historicalRounds_shouldNotEvaluateExitCondition() throws Exception {
         // 恢复场景：ctx 状态已满足退出条件（score=90），历史完整轮不评估——暂停轮仍须执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> "真实输出");
 
         WorkflowTemplate template = loopTemplate(5, ctx -> ctx.readAsString("score").equals("90"));
@@ -235,7 +235,7 @@ class LoopExecutionStrategyTest {
                 execution, null, new AtomicBoolean(false));
 
         // 若历史轮误评估 exitCondition 会提前退出（0 次调用）；正确行为：暂停轮修订执行 1 次后评估退出
-        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("真实输出", result);
         assertEquals(2, execution.getIterationCount());
     }
@@ -243,7 +243,7 @@ class LoopExecutionStrategyTest {
     @Test
     void execute_resume_shouldPushLoopIterationPerRound() throws Exception {
         // loop_iteration 事件在恢复重放时按轮次正常推送；历史轮/暂停轮已完成 Agent 跳过推 step_skipped（前端进度完整）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenAnswer(inv -> "真实输出");
 
         WorkflowTemplate template = loopTemplate(2, ctx -> true);  // 暂停轮执行完即满足退出
@@ -257,7 +257,7 @@ class LoopExecutionStrategyTest {
         //        + 轮2暂停轮(loop_iteration + 评分 step_skipped + 修订 step_start/step_complete = 4)
         //        + workflow_complete(1) = 9；仅修订 Agent 真实执行
         verify(emitter, times(9)).send(any(SseEmitter.SseEventBuilder.class));
-        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(1)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals(2, execution.getIterationCount());
     }
 }

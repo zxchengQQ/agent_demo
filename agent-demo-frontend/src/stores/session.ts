@@ -61,7 +61,12 @@ export const useSessionStore = defineStore('session', {
       const session = state.sessions.find((s) => s.sessionId === state.currentSessionId);
       if (!session || session.messages.length === 0) return false;
       const lastMsg = session.messages[session.messages.length - 1];
-      return !!lastMsg.askUserData;
+      // unified-chat-mode（决策 7）：存在 askUserData 且无 answer 时视为等待输入；
+      // 用户已回答（answer 存在）时卡片进入锁定态，不再等待
+      // Task-17：kind=permission（工具权限确认）不走主输入框，由卡片批准/拒绝按钮决策，不计入等待
+      return !!lastMsg.askUserData
+        && lastMsg.askUserData.kind !== 'permission'
+        && !lastMsg.askUserData.answer;
     },
   },
 
@@ -371,20 +376,38 @@ export const useSessionStore = defineStore('session', {
       }
     },
 
-    // ===== Task-08 新增：HITL 人机交互状态管理 =====
+    // ===== Task-08 新增：HITL 人机交互状态管理（unified-chat-mode 决策 7 改造） =====
 
     /**
      * 设置消息的 askUserData（ask_user 事件触发）
      * 业务含义：后端通过 ask_user 事件发起人机交互请求时，将交互数据写入助手消息。
-     * 不持久化到 localStorage（askUserData 仅用于当前会话实时展示），故不调用 saveSessions。
+     * unified-chat-mode（决策 7）：持久化到 localStorage，刷新后卡片可回看问题与选择。
      */
     setAskUserData(messageId: string, data: AskUserData) {
       for (const session of this.sessions) {
         const msg = session.messages.find((m) => m.id === messageId);
         if (msg) {
           msg.askUserData = data;
+          storage.saveSessions(this.sessions);
           return;
         }
+      }
+    },
+
+    /**
+     * 记录用户对 askUser 卡片的回答（unified-chat-mode 决策 7 新增）
+     * 业务含义：用户通过卡片选项/内嵌输入框/主输入框回复后写入 answer 字段并持久化，
+     * 卡片进入回答锁定态（可回看）；isWaitingForUserInput 因 answer 存在返回 false。
+     * 与 clearAskUser 不同，本方法保留 askUserData（含 answer）供历史回看。
+     */
+    setAskUserAnswer(sessionId: string, answer: string) {
+      const session = this.sessions.find((s) => s.sessionId === sessionId);
+      if (!session || session.messages.length === 0) return;
+      const lastMsg = session.messages[session.messages.length - 1];
+      if (lastMsg.askUserData) {
+        lastMsg.askUserData.answer = answer;
+        lastMsg.status = 'complete';
+        storage.saveSessions(this.sessions);
       }
     },
 
@@ -400,6 +423,53 @@ export const useSessionStore = defineStore('session', {
       if (lastMsg.askUserData) {
         lastMsg.status = 'complete';
         lastMsg.askUserData = undefined;
+        storage.saveSessions(this.sessions);
+      }
+    },
+
+    // ===== Task-17 新增：工具权限确认状态管理（kind=permission）=====
+
+    /**
+     * 设置消息的工具权限确认数据（tool_confirm 事件触发，AC-H01）
+     * 业务含义：ask 级工具被拦截时，将 tool_confirm 四要素（工具名/描述/参数摘要）
+     * 以 kind=permission 的 askUserData 形态写入助手消息，前端据此渲染 ConfirmCard。
+     * 持久化到 localStorage，刷新后可回看（与 askUserData 一致）。
+     */
+    setToolConfirmData(messageId: string, data: {
+      toolName: string;
+      toolDescription: string;
+      arguments: string;
+    }) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          msg.askUserData = {
+            type: 'confirm',
+            kind: 'permission',
+            question: `请求使用工具「${data.toolName}」`,
+            retryCount: 0,
+            toolName: data.toolName,
+            toolDescription: data.toolDescription,
+            toolArguments: data.arguments,
+          };
+          storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
+     * 记录用户对工具权限确认卡片的决策（Task-17，AC-N03/AC-S02）
+     * 业务含义：用户点击批准/拒绝后写入 approved 并持久化，
+     * 卡片进入决策锁定态（可回看）；随后由 ChatWindow 携带 toolApproved 重新发起流式请求恢复。
+     */
+    setToolConfirmApproved(sessionId: string, approved: boolean) {
+      const session = this.sessions.find((s) => s.sessionId === sessionId);
+      if (!session || session.messages.length === 0) return;
+      const lastMsg = session.messages[session.messages.length - 1];
+      if (lastMsg.askUserData?.kind === 'permission') {
+        lastMsg.askUserData.approved = approved;
+        lastMsg.status = 'complete';
         storage.saveSessions(this.sessions);
       }
     },

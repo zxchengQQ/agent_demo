@@ -2,6 +2,7 @@ package com.agentdemo.app.integration;
 
 import com.agentdemo.app.adapter.AgenticAgentFactory;
 import com.agentdemo.app.core.AgentDefinition;
+import com.agentdemo.app.core.StepStatus;
 import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowExecutionStatus;
 import com.agentdemo.app.core.WorkflowTemplate;
@@ -95,7 +96,17 @@ class WorkflowIntegrationTest {
             stream.completeWith("总结报告");
             return stream;
         });
-        when(agentFactory.buildAgent(any())).thenReturn(researchAgent, analysisAgent, summaryAgent);
+        // 按 Agent 名路由 mock（研究 Agent 标注 @HumanCheckpoint，检查点批准后恢复会再次 buildAgent，
+        // 不能按调用顺序 stub——顺序 stub 在第 4 次调用时用尽会返回错误 mock 导致反射调用失败）
+        when(agentFactory.buildAgent(any())).thenAnswer(inv -> {
+            AgentDefinition def = inv.getArgument(0);
+            return switch (def.getName()) {
+                case "研究 Agent" -> researchAgent;
+                case "分析 Agent" -> analysisAgent;
+                case "总结 Agent" -> summaryAgent;
+                default -> throw new IllegalStateException("未 mock 的 Agent: " + def.getName());
+            };
+        });
 
         WorkflowTemplate template = registry.getTemplate("research-analyze-summarize");
         SseEmitter emitter = mock(SseEmitter.class);
@@ -106,6 +117,11 @@ class WorkflowIntegrationTest {
         WorkflowExecution execution = null;
         while (System.currentTimeMillis() < deadline) {
             execution = service.getExecution(executionId);
+            // 研究 Agent 标注 @HumanCheckpoint（Task-13）：到达检查点暂停为 WAITING_USER，批准后继续
+            if (execution.getStatus() == WorkflowExecutionStatus.WAITING_USER) {
+                service.hitlReply(executionId, null, true, mock(SseEmitter.class));
+                continue;
+            }
             if (execution.getStatus() != WorkflowExecutionStatus.RUNNING) {
                 break;
             }
@@ -119,6 +135,7 @@ class WorkflowIntegrationTest {
         assertNotNull(execution);
         assertEquals(WorkflowExecutionStatus.COMPLETED, execution.getStatus());
         assertEquals("总结报告", execution.getFinalResult());
-        assertEquals(3, execution.getSteps().size());
+        // 研究 Agent 检查点暂停时原流残留一条 RUNNING 步骤，恢复后新增完成步骤——实际完成步骤仍为 3（研究/分析/总结）
+        assertEquals(3, execution.getSteps().stream().filter(s -> s.getStatus() == StepStatus.COMPLETED).count());
     }
 }

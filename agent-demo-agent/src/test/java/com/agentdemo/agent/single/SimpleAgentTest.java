@@ -8,15 +8,21 @@ import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
+import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.ChatResponseMetadata;
+import dev.langchain4j.model.output.TokenUsage;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collections;
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.atLeastOnce;
@@ -40,11 +46,11 @@ class SimpleAgentTest {
         // given: 默认工具列表配置 + 全量工具（含 MCP）mock
         TestableSimpleAgent agent = createAgentWithDefaultTools();
 
-        // when: 无 tools 参数的流式对话（触发 getDelegate(modelId)）
+        // when: 无 tools 参数的流式对话（走默认工具 + ForStreaming 能力过滤）
         agent.chatStream("session-1", "你好");
 
-        // then: 仅通过 getDefaultTools 获取默认工具，不再调用 listTools 全量扫描
-        verify(agent.getToolRegistry(), atLeastOnce()).getDefaultTools(anyList());
+        // then: 仅通过能力声明双方法获取默认工具，不再调用 listTools 全量扫描
+        verify(agent.getToolRegistry(), atLeastOnce()).getDefaultToolsForStreaming(anyList());
         verify(agent.getToolRegistry(), never()).listTools();
     }
 
@@ -58,9 +64,23 @@ class SimpleAgentTest {
         // when: 传入 tools 参数的流式对话（resolveSessionTools 解析指定 + 默认）
         agent.chatStream("session-1", "抓取网页", null, toolIds);
 
-        // then: resolveTools 解析指定工具 + getDefaultTools 提供默认工具
-        verify(agent.getToolRegistry(), atLeastOnce()).resolveTools(toolIds);
-        verify(agent.getToolRegistry(), atLeastOnce()).getDefaultTools(anyList());
+        // then: ForStreaming 解析指定工具 + getDefaultToolsForStreaming 提供默认工具（流式路径）
+        verify(agent.getToolRegistry(), atLeastOnce()).resolveToolsForStreaming(toolIds);
+        verify(agent.getToolRegistry(), atLeastOnce()).getDefaultToolsForStreaming(anyList());
+    }
+
+    @Test
+    @DisplayName("同步 chat 路径以 SYNC 模式解析（ask 级工具不注入）")
+    void chatSyncPathUsesSyncFilter() {
+        // given
+        TestableSimpleAgent agent = createAgentWithDefaultTools();
+        List<String> toolIds = List.of("builtin:httpGet");
+
+        // when: 同步对话（SimpleAgent.chat 无暂停能力，传 askSupported=false）
+        agent.chat("session-1", "抓取网页", null, toolIds);
+
+        // then: 以 ForDirect 解析（剔除 deny + ask 级工具）
+        verify(agent.getToolRegistry(), atLeastOnce()).resolveToolsForDirect(toolIds);
     }
 
     /**
@@ -69,13 +89,27 @@ class SimpleAgentTest {
      */
     private TestableSimpleAgent createAgentWithDefaultTools() {
         ModelFactory modelFactory = mock(ModelFactory.class);
-        when(modelFactory.getDefaultChatModel()).thenReturn(mock(ChatModel.class));
+        ChatModel chatModel = mock(ChatModel.class);
+        // 业务含义：同步 chat 路径经 AiService 代理校验响应非空，须 stub 非 null 响应
+        ChatResponse chatResponse = mock(ChatResponse.class);
+        when(chatResponse.aiMessage()).thenReturn(AiMessage.from("ok"));
+        // 业务含义：AiService 聚合响应时调用 metadata.toBuilder()，须用真实对象避免 mock 返回 null
+        when(chatResponse.metadata()).thenReturn(ChatResponseMetadata.builder()
+                .tokenUsage(new TokenUsage(1, 1))
+                .modelName("mock")
+                .build());
+        when(chatModel.chat(any(ChatRequest.class))).thenReturn(chatResponse);
+        when(chatModel.chat(anyList())).thenReturn(chatResponse);
+        when(modelFactory.getDefaultChatModel()).thenReturn(chatModel);
         when(modelFactory.getDefaultStreamingChatModel()).thenReturn(mock(StreamingChatModel.class));
 
         ToolRegistry toolRegistry = mock(ToolRegistry.class);
         when(toolRegistry.listTools()).thenReturn(Collections.emptyList());
-        when(toolRegistry.getDefaultTools(anyList())).thenReturn(Collections.emptyList());
-        when(toolRegistry.resolveTools(anyList())).thenReturn(Collections.emptyList());
+        // 能力声明双方法 stub（Task-06 后 SimpleAgent 仅经双方法取工具，无 NONE 旁路）
+        when(toolRegistry.getDefaultToolsForStreaming(anyList())).thenReturn(Collections.emptyList());
+        when(toolRegistry.getDefaultToolsForDirect(anyList())).thenReturn(Collections.emptyList());
+        when(toolRegistry.resolveToolsForStreaming(anyList())).thenReturn(Collections.emptyList());
+        when(toolRegistry.resolveToolsForDirect(anyList())).thenReturn(Collections.emptyList());
         when(toolRegistry.getToolCount()).thenReturn(0);
 
         ChatMemoryManager memoryManager = mock(ChatMemoryManager.class);
@@ -105,7 +139,9 @@ class SimpleAgentTest {
                             ToolExecutor toolExecutor,
                             PromptTemplateLoader promptTemplateLoader,
                             HumanInteractionManager humanInteractionManager) {
-            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor, promptTemplateLoader, humanInteractionManager);
+            super(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                    promptTemplateLoader, humanInteractionManager,
+                    new SessionToolResolver(toolRegistry, agentConfig));
             this.toolRegistry = toolRegistry;
         }
 

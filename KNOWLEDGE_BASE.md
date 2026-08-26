@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v3.1
-> **基线日期**：2026-08-21
+> **文档版本**：v3.3
+> **基线日期**：2026-08-25
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -71,8 +71,8 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
 | MCP 协议 | ✅ 已实现 | MCP 客户端、双传输（stdio+SSE+Streamable HTTP）、动态/静态 Server 管理、ByteBuddy 工具代理 |
 | 多 Agent 协作 | ✅ 已实现 | langchain4j-agentic 编排引擎：串行/并行/条件/循环/Supervisor 五种模式（2026-08-13 应用编排层 P1~P3 交付） |
-| 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（工作流 HITL 与拖拽编排规划中） |
-| 人机交互 HITL | ✅ 已实现（单 Agent） | askUser 工具 + 显式 ReAct 暂停-恢复 + `ask_user` SSE 事件 + 前端文本/选项卡片双形态（工作流 HITL 下一期扩展） |
+| 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED/WAITING_USER）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（工作流 HITL 已实现，拖拽编排规划中） |
+| 人机交互 HITL | ✅ 已实现（单 Agent + 工作流） | 单 Agent：askUser 工具 + 显式 ReAct 暂停-恢复 + `ask_user` SSE 事件 + 前端文本/选项卡片双形态；工作流：@HumanCheckpoint 检查点 + WAITING_USER 状态 + `workflow_waiting`/`workflow_resumed` 事件 + 5 模式执行视图等待 UI（20260824 迭代） |
 
 > **数据来源**：`specs/SDD-工程业务背景文档.md` 第 2.3 节、`docs/ARCHITECTURE.md`
 
@@ -266,7 +266,7 @@ agent-demo/
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
-├── agent-demo-app/                      # 应用编排层（P1~P3 完整实现：adapter 基础设施桥接 + core 领域模型 + strategy 五种编排策略 + execution 重试/SSE 基础设施 + service 协调层与断点恢复 + registry 模板注册 + template 5 个预置模板）
+├── agent-demo-app/                      # 应用编排层（P1~P3 完整实现：adapter 基础设施桥接 + core 领域模型 + strategy 五种编排策略 + execution 重试/SSE 基础设施 + service 协调层与断点恢复 + registry 模板注册 + template 5 个预置模板；工作流 HITL 迭代新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
 ├── agent-demo-bootstrap/                # 启动模块（主启动类 + 配置 + 提示词）
 └── agent-demo-frontend/                 # 前端模块（Vue 3 + Vite + TypeScript + Pinia）
@@ -279,7 +279,7 @@ agent-demo/
         ├── api/rag.ts                    # RAG API 封装（7 个 REST 接口 + 统一 request 函数）
         ├── api/llm.ts                    # LLM 厂商配置 API 封装（预定义/厂商 CRUD/测试连接/模型/状态/同步）
         ├── api/mcp.ts                    # MCP 服务管理 API 封装（Server 列表/添加/删除/重连/工具列表，Task-03 新增）
-        ├── api/workflow.ts               # 工作流 API 封装（7 个 REST 接口 + SSE 解析 parseSseStream + 断流兜底 + streamResume 恢复流，应用编排层新增）
+        ├── api/workflow.ts               # 工作流 API 封装（8 个 REST 接口 + SSE 解析 parseSseStream + 断流兜底 + streamResume 恢复流 + replyToWorkflow HITL 回复，应用编排层新增）
         ├── stores/session.ts             # Pinia 会话状态管理（含 appendReasoning + knowledgeBasesBySession 会话级知识库选择状态）
         ├── stores/rag.ts                 # Pinia RAG 状态管理（知识库列表/文档列表/CRUD/状态轮询）
         ├── stores/llm.ts                 # Pinia LLM 配置状态管理（vendors/chatModels/configStatus，配置同步至 localStorage）
@@ -294,7 +294,7 @@ agent-demo/
         │   ├── 工具选择组件（CR 新增）    # ToolSelector（工具标签栏 + 下拉选择，位于输入框上方）/ ToolManagementPage（设置页工具管理）
         │   ├── LLM 配置组件               # LlmConfigPage/VendorCard/VendorEditDialog/ModelSelector
         │   ├── MCP 服务组件               # SettingsPage（标签页容器：LLM 配置 + MCP 服务 + 工具管理）/McpServicePage/McpServerCard/McpJsonConfigEditor（Task-05~08 新增）
-        │   └── 编排组件（应用编排层新增）  # WorkflowPage（视图切换+恢复跳转）/WorkflowTemplateList（模板卡片）/WorkflowExecuteView（参数表单+步骤面板+暂停banner+Supervisor子任务卡片）/WorkflowHistoryList（历史+PAUSED恢复入口）
+        │   └── 编排组件（应用编排层新增）  # WorkflowPage（视图切换+恢复跳转）/WorkflowTemplateList（模板卡片）/WorkflowExecuteView（参数表单+步骤面板+暂停banner+HITL等待横幅+Supervisor子任务卡片）/SequentialExecuteView/ParallelExecuteView/LoopExecuteView/ConditionalExecuteView/SupervisorExecuteView（5 模式专属视图，均含 HITL 等待横幅，Task-12+BUG-20260825）/WorkflowHistoryList（历史+PAUSED恢复入口）/AskUserCard/ConfirmCard（HITL 交互卡片复用）
         ├── styles/global.css             # 全局样式系统（Refined Dark Tech）
         └── App.vue                       # 根组件（NavBar + 条件渲染切换对话/知识库/设置页面）
 ```
@@ -682,9 +682,16 @@ sequenceDiagram
 | `session` | 新 sessionId 字符串 | 会话不存在/超时，新建后发送 |
 | `reasoning` | 推理文本片段（CR-001 新增） | 每收到一段推理内容（仅 enableThinking=true 时） |
 | `token` | 文本片段 | 每收到一个 LLM token |
-| `ask_user` | JSON（type/question/options/retryCount，Task-07 新增） | HITL 模式下 Agent 调用 askUser 工具暂停执行时发送，前端据此渲染文本追问或确认卡片 |
+| `ask_user` | JSON（type/question/options/retryCount，Task-07 新增） | HITL 模式下 Agent 调用 askUser 工具暂停执行时发送，前端据此渲染文本追问或确认卡片；工作流 HITL 场景复用（checkpoint 检查点 type=confirm） |
 | `done` | 耗时毫秒数 | 流式完整结束 |
 | `error` | 错误描述 | 流式过程异常 |
+
+**工作流 SSE 事件协议补充**（20260824 工作流 HITL 迭代）：
+
+| 事件名 | 数据 | 触发时机 |
+|--------|------|---------|
+| `workflow_waiting` | JSON（executionId/agentIndex/agentName/hitlMode/resumable） | 工作流 Agent 调用 askUser 或到达 @HumanCheckpoint 检查点暂停，状态置 WAITING_USER，SSE 流随之关闭 |
+| `workflow_resumed` | JSON（executionId/status=RUNNING） | 用户回复 hitl-reply 后工作流恢复执行，推送后继续新 SSE 流；存在并行排队 HITL 时先推送下一条 workflow_waiting |
 
 **关键约束**：
 - 前端使用 `fetch` + `ReadableStream` 手动解析 SSE（EventSource 不支持 POST）
@@ -952,7 +959,7 @@ public class GlobalExceptionHandler {
 | delegate | volatile BaseAgent | SimpleAgent | AiServices 代理 |
 | executions | ConcurrentHashMap<String, WorkflowExecution> | WorkflowExecutionService | 工作流执行实例（按 executionId 索引，应用编排层新增） |
 | cancelFlags | ConcurrentHashMap<String, AtomicBoolean> | WorkflowExecutionService | 执行取消标记（终止/超时/SSE 客户端断开时置位，应用编排层新增） |
-| resumableStates | ConcurrentHashMap<String, ResumableExecutionState> | WorkflowExecutionService | PAUSED 断点恢复快照（已完成步骤输出 + AgenticScope 状态，应用编排层 P3 新增） |
+| resumableStates | ConcurrentHashMap<String, ResumableExecutionState> | WorkflowExecutionService | 暂停恢复快照（PAUSED 断点 + WAITING_USER HITL：已完成步骤输出 + AgenticScope 状态 + 可选 hitlState，应用编排层 P3/工作流 HITL 新增） |
 | pendingInteractions | ConcurrentHashMap<String, PendingInteraction> | HumanInteractionManager | HITL 暂停交互状态（按 sessionId 存储消息列表/问题数据/追问计数，Task-01 新增） |
 
 ### 7.3 规划数据库（未来接入）
@@ -1045,7 +1052,32 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 - 增加 RBAC 权限控制
 - 接入 API 限流（如 Sentinel）
 
-> **数据来源**：`specs/业务架构文档.md` 第 9 节、`specs/SDD-工程业务背景文档.md` 第 5.6 节
+### 8.5 工具权限控制模型（v3.3 全域统一管控新增）
+
+> **数据来源**：`specs/features/20260824_tool-permission-control/`（v3.2 基础）+ `specs/features/20260825_tool-permission-unification/`（v3.3 全域统一：双闸门 + 能力声明双方法 + 出口统一包装 + 工作流 tool_confirm 恢复，21 个 Task 全部完成）
+
+**三级权限模型（allow / ask / deny）**，实现"加载期过滤 + 执行期管控"双重控制：
+
+| 权限等级 | 语义 | 加载期 | 执行期 |
+|---------|------|--------|--------|
+| allow（放行） | 只读安全工具（计算器/时间/知识库检索） | 所有路径注入 | LLM 决策即执行，结果回填续跑 |
+| ask（需确认） | 有副作用工具（HTTP/文件读取/MCP 工具） | 仅流式/工作流 HITL 路径注入（同步路径与工作流非 HITL 无暂停能力，加载期剔除） | 拦截 → 暂停保存状态 → SSE `tool_confirm` 确认卡片 → 批准执行 / 拒绝结果回填 LLM 换方案 |
+| deny（禁止） | 管理员手动封禁（无默认值） | 全路径不注入（LLM 不可见） | 包装层拦截 + 执行器兜底，方法体不触发，返回权限拒绝提示 |
+
+**全域统一模型（v3.3 新增）**：无论哪一个模块（单 Agent 同步/流式、工作流 HITL/非 HITL）使用工具模板，都必须收到工具域权限的统一管控，权限判定规则全局唯一、不因调用方模块不同而有差异：
+- **能力声明双方法**：`ToolRegistry.resolveToolsForStreaming`（ask 可见，调用方具备暂停-恢复能力）与 `resolveToolsForDirect`（ask 剔除，无暂停能力），替代原 resolveTools(单参)；deny 在两方法内均全域剔除（AC-T01）
+- **出口统一包装**：ToolRegistry 出口经 `ToolPermissionGuard.wrapAll` 统一包装（ByteBuddy subclass + defineMethod 覆写 @Tool 方法），包装实例按（工具对象, 权限版本）二级缓存，权限等级在包装时捕获（AC-M01 不中途突变）；包装失败降级返回原工具（加载期过滤仍生效）
+- **双闸门**：
+  1. **加载期闸门**（ToolRegistry 双方法）：deny 全域剔除；ask 按调用方能力（ForStreaming 可见 / ForDirect 不可见）
+  2. **执行期闸门**（两条入口全覆盖）：LangChain4j 反射直调路径命中包装层拦截器（deny 方法体零触发）；手动执行路径（HITLReActStream）走 `ToolExecutor.checkPermission/execute`
+- **四条解析路径全域统一**：单 Agent 同步（SessionToolResolver→ForDirect）、单 Agent 流式（askSupported=true→ForStreaming）、工作流非 HITL（AgenticAgentFactory.buildAgent→ForDirect）、工作流 HITL（AgentExecutor.resolveHitlTools→ForStreaming + ensureAskUserTool）；调用方只声明能力（ask 可见/剔除）不选权限，权限判定与配置完全归属工具域
+
+**核心机制**：
+- **默认分级**：`@DefaultPermission` 注解标注内置工具默认等级；动态注册工具按类别分级（rag→allow / mcp→ask）；`askUser` 工具固定豁免为 allow（防确认流程自身死锁，AC-S03）
+- **持久化**：`data/tool-permissions.json`（`tools.permission.file-path`，`tools.permission.enabled=true` 回滚开关），服务重启不丢失；管理页变更无需重启即时生效，下一轮对话生效（本轮会话沿用已加载工具列表，避免中途突变）
+- **配置防篡改**：权限配置仅经管理页（PUT /api/agent/tools/{toolId}/permission）变更，对话内容（含提示注入）不可修改
+- **权限清理**：知识库删除/MCP Server 断开时对应权限配置同步清理，不残留孤儿配置（AC-E01）
+- **ask 恢复链路**：单 Agent 经 HumanInteractionManager 快照（mode=tool_confirm + pendingToolCall 三字段）+ `ChatRequest.toolApproved` 静默恢复（silent 模式，不产生对话气泡）；工作流经 `WorkflowHITLState`（MODE_TOOL_CONFIRM + ToolConfirmData）+ `hitl-reply` 恢复（tool_confirm 双事件），拒绝语义=拒绝续跑（回填脱敏文案 LLM 换方案），区别于 checkpoint 拒绝即终止（决策 7）
 
 ---
 
@@ -1328,6 +1360,44 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 93 | BR-HITL-010 | pending 状态随会话超时（30 分钟）清理（HumanInteractionManager @Scheduled），超时后用户消息创建新会话；Controller 检测无 pending 时降级为正常对话不报错 | 记忆管理 | 🔴 强制 |
 | 94 | BR-HITL-011 | 前端渲染由 askUserData.type 决定：type=text 渲染为普通文本提示（用户经输入框自由回复），type=confirm 渲染为 ConfirmCard 选项卡片（用户点击按钮回复，AC-T01/T02） | 前端对话 | 🔴 强制 |
 | 95 | BR-HITL-012 | 前端 HITL 等待态由 askUserData 是否存在决定（不依赖消息 status）：ask_user 事件后 done 使消息 status=complete，但仍视为等待用户输入；用户回复后 clearAskUser 清除 askUserData 并标记 complete（2026-08-21 BUG 修复） | 前端对话 | 🔴 强制 |
+
+### 9.17 工具权限控制规则（v3.2 新增）
+
+> **来源**：`specs/features/20260824_tool-permission-control/tool-permission-control.md`（15 条 AC 全部验收通过）+ 技术方案四层拦截架构 + 2026-08-24 两项 BUG 修复沉淀
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 96 | BR-PERM-001 | 工具权限分三级：allow（直执行）/ ask（人工确认后执行）/ deny（禁止），权限判定优先级：显式配置 > `@DefaultPermission` 注解 > 类别兜底（rag→allow / mcp→ask） | 工具调用 | 🔴 强制 |
+| 97 | BR-PERM-002 | deny 工具加载期全路径不注入 LLM 工具列表（同步/流式/统一模式），执行期 ToolExecutor 兜底拦截——双保险防提示注入诱导调用（AC-T01/S01） | 工具调用 | 🔴 强制 |
+| 98 | BR-PERM-003 | ask 工具仅在流式路径加载（同步路径无暂停能力，加载期排除）；调用时经 HITLReActStream 拦截 → SSE `tool_confirm` 确认卡片 → 批准执行 / 拒绝结果回填（AC-T02/N03/S02） | Agent 编排 | 🔴 强制 |
+| 99 | BR-PERM-004 | askUser 工具权限固定豁免为 allow，不受权限配置影响——确认流程自身需确认会死锁（AC-S03） | 工具调用 | 🔴 强制 |
+| 100 | BR-PERM-005 | 权限配置持久化至 `data/tool-permissions.json`，重启不丢失；变更即时生效但**下一轮对话**才重建工具列表（本轮会话沿用已加载列表，避免中途突变，AC-N04） | 工具调用 | 🔴 强制 |
+| 101 | BR-PERM-006 | 动态注册工具按类别自动分配默认权限（知识库→allow / MCP→ask），注销（知识库删除/MCP 断开）时权限配置同步清理，禁止孤儿配置（AC-E01/T03） | 工具调用 | 🔴 强制 |
+| 102 | BR-PERM-007 | 权限配置仅可经管理页 API 变更，对话内容（含提示注入）不可修改权限；权限拒绝提示不得暴露配置细节（配置者/时间） | 工具调用 | 🔴 强制 |
+| 103 | BR-PERM-008 | 前端确认卡片决策必须发出非空 message 恢复请求：空 message 会被前端空消息拦截 + 后端 `@NotBlank` 双重拒绝，导致确认流程卡死（2026-08-24 BUG：批准后页面永久"生成中"）；决策采用 silent 模式，不产生对话气泡 | 前端对话 | 🔴 强制 |
+| 104 | BR-PERM-009 | `askUserData.approved` 为三态字段（true=已批准 / false=已拒绝 / undefined=待决策），前端锁定判定必须用 `approved !== undefined`，禁止 `!!approved` 双态断言——拒绝时 `!!false===false` 会导致卡片不锁定、按钮可重复点击（2026-08-24 BUG） | 前端对话 | 🔴 强制 |
+| 105 | BR-PERM-010 | 工具权限判定规则全局唯一：所有使用工具的模块（单 Agent 同步/流式、工作流 HITL/非 HITL）必须经 ToolRegistry 能力声明双方法（resolveToolsForStreaming/ForDirect）解析 + ToolPermissionGuard 出口统一包装；调用方只声明能力（ask 可见/剔除）不选权限，权限判定与配置完全归属工具域（AC-N01/T04，20260825 全域统一新增） | 工具调用 | 🔴 强制 |
+| 106 | BR-PERM-011 | LangChain4j 反射直调路径命中 ToolPermissionGuard ByteBuddy 包装拦截器，deny 方法体零触发返回固定文案（纵深防御第二道防线，AC-T03/T04）；包装实例按（工具对象,权限版本）二级缓存、权限等级包装时捕获不中途突变（AC-M01）；包装失败降级返回原工具（加载期过滤仍生效） | 工具调用 | 🔴 强制 |
+| 107 | BR-PERM-012 | 工作流 HITL 路径 ask 工具经 WorkflowHITLState MODE_TOOL_CONFIRM 快照 + hitlReply 恢复（tool_confirm 双事件）；拒绝语义=拒绝续跑（回填脱敏拒绝文案 LLM 换方案、不终止工作流），区别于 checkpoint 拒绝即终止（决策 7/AC-S04/N03）；tool_confirm 恢复后工具再次拦截不累计 retryCount | 应用编排 | 🔴 强制 |
+
+### 9.18 工作流 HITL 规则（v3.3 新增）
+
+> **来源**：`specs/features/20260824_workflow-hitl/`（需求 + 技术方案 + 任务规划，15 个 Task 全部完成，16 条 AC 全部验收通过）+ 2026-08-25 BUG 修复沉淀
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 108 | BR-WHITL-001 | 工作流执行状态机新增 WAITING_USER 状态（等待用户，非终态），与 PAUSED（失败暂停，可 resume）语义分离——WAITING_USER 仅允许 hitl-reply 和 terminate，resume 被拒绝（AC-S03） | 应用编排 | 🔴 强制 |
+| 109 | BR-WHITL-002 | @HumanCheckpoint 注解仅可标注在 @Agent 接口方法上，AgentExecutor 在方法执行前反射检测，有注解则暂停构造确认型 askUser 数据（type=confirm），未确认不得执行方法体（AC-N02/T02） | 应用编排 | 🔴 强制 |
+| 110 | BR-WHITL-003 | 工作流 HITL 暂停（WAITING_USER）时保存完整执行上下文到 ResumableExecutionState.hitlState（AgenticScope + 已完成步骤 + Agent 消息列表），恢复后后续步骤可访问，禁止因暂停-恢复丢失上下文（AC-M01/M02） | 应用编排 | 🔴 强制 |
+| 111 | BR-WHITL-004 | 工作流 HITL 恢复专用端点 `POST /executions/{id}/hitl-reply`（askUser 传 message / checkpoint 传 approved / toolConfirm 传 approved），与失败恢复 resume 语义分离；message 和 approved 至少一个非 null，否则 WORKFLOW_PARAM_MISSING(5501)（AC-N03） | Web | 🔴 强制 |
+| 112 | BR-WHITL-005 | 检查点拒绝（approved=false）后工作流状态置 TERMINATED，不执行后续步骤，清理 HITL 快照（AC-S01/H01） | 应用编排 | 🔴 强制 |
+| 113 | BR-WHITL-006 | 并行模式多个 Agent 同时触发 HITL 时，第一个生效进入 WAITING_USER，其余写入 ctx 排队列表（PENDING_HITL_KEY）；hitlReply 恢复时先按序消费队列（每次推送一条 workflow_waiting），队列清空才重放策略（AC-E02） | 应用编排 | 🔴 强制 |
+| 114 | BR-WHITL-007 | 工作流 WAITING_USER 状态超 30 分钟未回复，由 @Scheduled 每 5 分钟扫描置 TIMEOUT 并清理快照（复用会话超时，AC-E01） | 应用编排 | 🔴 强制 |
+| 115 | BR-WHITL-008 | 工作流 Agent 使用 AiServices 隐式 ReAct（TokenStream），askUser 场景需切换 HITLReActStream 显式 ReAct（hitlEnabled=true）；@HumanCheckpoint 检测独立于 hitlEnabled，有注解即触发（技术决策 1） | 应用编排 | 🔴 强制 |
+| 116 | BR-WHITL-009 | 工作流 HITL 恢复键为 `hitl:{iteration}:{agentName}`，executeOrSkip 检测恢复键而非 done 键，重放策略时跳过已完成步骤仅重执行暂停步（AC-E03） | 应用编排 | 🔴 强制 |
+| 117 | BR-WHITL-010 | 工作流 HITL 暂停不受工作流 5 分钟超时影响（SSE emitter 永不超时 0L），复用会话超时 30 分钟清理（技术方案 Sec 1.4） | 应用编排 | 🔴 强制 |
+| 118 | BR-WHITL-011 | 前端 5 个模式特定执行视图（Sequential/Parallel/Loop/Conditional/Supervisor）必须均包含 HITL 等待横幅（isWaitingUser 时显示 + AskUserCard/ConfirmCard 交互 + 终止按钮）；缺失任一视图横幅会导致页面卡住无法确认（2026-08-25 BUG：SequentialExecuteView 缺 HITL 等待横幅致【研究-分析-总结】模板无法操作） | 前端编排 | 🔴 强制 |
+| 119 | BR-WHITL-012 | useWorkflowStream.startExecution 必须重置 HITL 状态变量（isWaitingUser/waitingHitlMode/waitingAgentName/askUserData），避免上一次执行的等待横幅残留导致新执行卡住（2026-08-25 BUG 修复沉淀） | 前端编排 | 🔴 强制 |
 
 ---
 
@@ -1780,6 +1850,7 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v2.9 | 2026-08-12 | Agent 工具按需加载（feature 2026-08-12）：1.4 能力矩阵工具调用新增按需加载；4.1/4.3 节工程结构更新（ToolRegistry 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)、SimpleAgent 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键、AgentController 新增 GET /api/agent/tools、common 新增 dto/ToolInfo、前端新增 ToolSelector/ToolManagementPage）；9.2 节新增 BR-AGT-011/012，9.3 节新增 BR-TOOL-010~019（共 10 条，工具标识 category:name、通配符、默认工具不可排除、会话级绑定）；10.4 节新增 agent.tools 配置段（default-tools 默认加载 + optional 按需指定） |
 | v3.0 | 2026-08-13 | 应用编排层 P2 多模式编排（feature 2026-08-13）：1.4 能力矩阵多 Agent 协作/工作流编排更新为 ✅ 已实现；4.1 节 agent-demo-app 更新为 P2 完整实现（core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）；9.10 节错误码区间新增 5500-5599 工作流段（含 5506 WORKFLOW_MODE_NOT_SUPPORTED P2 新增）；策略模式三层分离架构（协调层 WorkflowExecutionService + 策略层 WorkflowExecutionStrategy 4 实现 + 基础设施 AgentExecutor/WorkflowEventPublisher/WorkflowContext） |
 | v3.1 | 2026-08-21 | Agent-Human 交互（HITL，feature 20260820_agent-human-interaction）：1.4 能力矩阵新增"人机交互 HITL"行；4.1/4.3 节工程结构更新（agent-demo-agent 新增 HitlTokenStream/HITLReActStream/HumanInteractionManager/PendingInteraction，agent-demo-tools 新增 AskUserTool，前端新增 ConfirmCard.vue，ToolRegistry/ToolSchemaConverter 工具去重与数组类型 BUG 修复）；5.8 节 SSE 事件协议新增 ask_user 事件；7.2 节内存数据结构新增 pendingInteractions；9.16 节新增 12 条 HITL 业务规则（BR-HITL-001~012）；前端 HITL 渲染链路（chat.ts onAskUser 回调 + enableHitl 参数 / session.ts askUserData + isWaitingForUserInput / MessageItem.vue 双形态渲染 / ChatWindow.vue 开关与回复闭环） |
+| v3.3 | 2026-08-25 | 工作流 HITL（feature 20260824_workflow-hitl）：1.4 能力矩阵工作流编排行新增 WAITING_USER 状态，人机交互 HITL 行更新为"单 Agent + 工作流"双覆盖；4.1/4.3 节工程结构更新（agent-demo-app 新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队 PENDING_HITL_KEY，编排组件新增 SequentialExecuteView/ParallelExecuteView/LoopExecuteView/ConditionalExecuteView/SupervisorExecuteView 5 个模式专属视图并复用 AskUserCard/ConfirmCard，api/workflow.ts 从 7 个扩展为 8 个 REST 接口新增 replyToWorkflow HITL 回复）；5.8 节 SSE 事件协议新增工作流 SSE 事件表（workflow_waiting/workflow_resumed，复用 ask_user 事件）；7.2 节内存数据结构更新 resumableStates 为"暂停恢复快照（PAUSED 断点 + WAITING_USER HITL）"；9.18 节新增 12 条工作流 HITL 业务规则（BR-WHITL-001~012，含 WAITING_USER 状态语义分离、@HumanCheckpoint 反射检测、并行 HITL 排队、30 分钟超时清理、5 个模式视图 HITL 等待横幅 BUG 沉淀）；修复【研究-分析-总结】模板模式特定执行视图缺少 HITL 等待横幅导致页面卡住的 BUG（SequentialExecuteView 等 5 个模式视图全部补齐，useWorkflowStream.startExecution 重置 HITL 状态） |
 
 ---
 

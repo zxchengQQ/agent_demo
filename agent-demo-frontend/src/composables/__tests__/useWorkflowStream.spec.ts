@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { useWorkflowStream } from '../useWorkflowStream';
-import { streamExecute, streamResume, terminate } from '@/api/workflow';
+import { streamExecute, streamResume, terminate, replyToWorkflow } from '@/api/workflow';
 import type { WorkflowStreamCallbacks } from '@/types';
 
 /**
@@ -14,6 +14,7 @@ vi.mock('@/api/workflow', () => ({
   streamExecute: vi.fn(),
   streamResume: vi.fn(),
   terminate: vi.fn(),
+  replyToWorkflow: vi.fn(),
 }));
 
 /** 捕获 streamExecute 传入的 callbacks（第 4 个参数） */
@@ -354,5 +355,110 @@ describe('useWorkflowStream', () => {
     expect(agentOutputs.value[0].status).toBe('pending');
     expect(agentOutputs.value[1].agentName).toBe('Agent-B');
     expect(agentOutputs.value[1].status).toBe('pending');
+  });
+
+  // ===== Task-17：ask 级工具确认（toolConfirm）=====
+  it('onToolConfirm 事件填充 toolConfirmData（五字段，Task-17 AC-H01）', async () => {
+    const mockFn = streamExecute as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue(undefined);
+
+    const { startExecution, toolConfirmData } = useWorkflowStream();
+    await startExecution('tpl-001', {}, '');
+
+    const callbacks = captureExecuteCallbacks();
+    callbacks.onToolConfirm!({
+      agentIndex: 1,
+      agentName: '研究 Agent',
+      toolName: 'httpGet',
+      toolDescription: '发起 HTTP GET 请求',
+      arguments: '{"url":"https://example.com"}',
+    });
+
+    expect(toolConfirmData.value).toEqual({
+      agentIndex: 1,
+      agentName: '研究 Agent',
+      toolName: 'httpGet',
+      toolDescription: '发起 HTTP GET 请求',
+      arguments: '{"url":"https://example.com"}',
+    });
+  });
+
+  it('workflow_waiting(hitlMode=toolConfirm) 置等待态与 waitingHitlMode=toolConfirm', async () => {
+    const mockFn = streamExecute as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue(undefined);
+
+    const { startExecution, isWaitingUser, waitingHitlMode, waitingAgentName, isExecuting, currentExecutionId } = useWorkflowStream();
+    await startExecution('tpl-001', {}, '');
+
+    const callbacks = captureExecuteCallbacks();
+    callbacks.onWorkflowWaiting!({
+      executionId: 'exec-001',
+      agentIndex: 1,
+      agentName: '研究 Agent',
+      hitlMode: 'toolConfirm',
+      resumable: true,
+    });
+
+    expect(isWaitingUser.value).toBe(true);
+    expect(waitingHitlMode.value).toBe('toolConfirm');
+    expect(waitingAgentName.value).toBe('研究 Agent');
+    expect(currentExecutionId.value).toBe('exec-001');
+    expect(isExecuting.value).toBe(false);
+  });
+
+  it('onWorkflowResumed 清空 toolConfirmData 并退出等待态', async () => {
+    const mockFn = streamExecute as ReturnType<typeof vi.fn>;
+    mockFn.mockResolvedValue(undefined);
+
+    const { startExecution, isWaitingUser, toolConfirmData } = useWorkflowStream();
+    await startExecution('tpl-001', {}, '');
+
+    const callbacks = captureExecuteCallbacks();
+    callbacks.onToolConfirm!({
+      agentIndex: 0,
+      agentName: 'Agent-A',
+      toolName: 'httpGet',
+      toolDescription: '发起 HTTP GET 请求',
+      arguments: '{}',
+    });
+    callbacks.onWorkflowWaiting!({
+      executionId: 'exec-001',
+      agentIndex: 0,
+      agentName: 'Agent-A',
+      hitlMode: 'toolConfirm',
+      resumable: true,
+    });
+    expect(isWaitingUser.value).toBe(true);
+    expect(toolConfirmData.value).not.toBeNull();
+
+    callbacks.onWorkflowResumed!();
+
+    expect(isWaitingUser.value).toBe(false);
+    expect(toolConfirmData.value).toBeNull();
+  });
+
+  it('replyToHitl(null, approved) 调用 replyToWorkflow 传 (executionId, null, approved)（Task-17）', async () => {
+    const mockReply = replyToWorkflow as ReturnType<typeof vi.fn>;
+    mockReply.mockResolvedValue(undefined);
+
+    const { startExecution, replyToHitl, currentExecutionId } = useWorkflowStream();
+    await startExecution('tpl-001', {}, '');
+
+    const callbacks = captureExecuteCallbacks();
+    callbacks.onWorkflowWaiting!({
+      executionId: 'exec-001',
+      agentIndex: 0,
+      agentName: 'Agent-A',
+      hitlMode: 'toolConfirm',
+      resumable: true,
+    });
+    expect(currentExecutionId.value).toBe('exec-001');
+
+    await replyToHitl(null, true);
+
+    expect(mockReply).toHaveBeenCalledTimes(1);
+    expect(mockReply.mock.calls[0][0]).toBe('exec-001');
+    expect(mockReply.mock.calls[0][1]).toBeNull();
+    expect(mockReply.mock.calls[0][2]).toBe(true);
   });
 });

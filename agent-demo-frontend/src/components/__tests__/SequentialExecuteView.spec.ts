@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mount } from '@vue/test-utils';
 import SequentialExecuteView from '../SequentialExecuteView.vue';
-import { streamExecute, streamResume, terminate } from '@/api/workflow';
+import { streamExecute, streamResume, terminate, replyToWorkflow } from '@/api/workflow';
 import type { WorkflowTemplateDetail } from '@/types';
 
 /**
@@ -19,6 +19,7 @@ vi.mock('@/api/workflow', () => ({
   streamExecute: vi.fn(),
   streamResume: vi.fn(),
   terminate: vi.fn(),
+  replyToWorkflow: vi.fn(),
 }));
 
 /** 构造 SEQUENTIAL 模式模板详情（3 个 Agent 串行） */
@@ -211,5 +212,61 @@ describe('SequentialExecuteView 暂停与恢复', () => {
       expect(streamResume).toHaveBeenCalledTimes(1);
     });
     expect(streamResume).toHaveBeenCalledWith('exec-9', expect.any(Object), expect.any(AbortSignal));
+  });
+});
+
+describe('SequentialExecuteView toolConfirm 工具确认（Task-18，AC-H01/AC-H02）', () => {
+  /** 挂载并执行至 toolConfirm 等待：onToolConfirm + workflow_waiting(hitlMode=toolConfirm) */
+  async function mountUntilToolConfirm() {
+    (streamExecute as ReturnType<typeof vi.fn>).mockImplementation(async (_id, _p, _m, callbacks) => {
+      callbacks.onWorkflowStart({ executionId: 'exec-1', templateName: '串行示例', mode: 'SEQUENTIAL', agentCount: 3 });
+      callbacks.onToolConfirm?.({
+        agentIndex: 1,
+        agentName: '分析 Agent',
+        toolName: 'httpGet',
+        toolDescription: '发起 HTTP GET 请求',
+        arguments: '{"url":"https://example.com"}',
+      });
+      callbacks.onWorkflowWaiting({
+        executionId: 'exec-1',
+        agentIndex: 1,
+        agentName: '分析 Agent',
+        hitlMode: 'toolConfirm',
+        resumable: true,
+      });
+    });
+    const wrapper = mount(SequentialExecuteView, { props: { template: makeDetail() } });
+    await wrapper.find('.param-input').setValue('主题');
+    await wrapper.find('.btn-execute').trigger('click');
+    await vi.waitFor(() => {
+      expect(wrapper.find('.waiting-banner').exists()).toBe(true);
+    });
+    return wrapper;
+  }
+
+  it('hitlMode=toolConfirm 时渲染 ConfirmCard（真实工具名 + 用途 + 格式化参数）', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    // 头部模式文本标记"工具确认"
+    expect(wrapper.find('.waiting-mode').text()).toContain('工具确认');
+    // ConfirmCard 渲染真实工具数据（非检查点占位文案）
+    const card = wrapper.find('.confirm-card');
+    expect(card.exists()).toBe(true);
+    expect(card.text()).toContain('httpGet');
+    expect(card.text()).toContain('发起 HTTP GET 请求');
+    expect(card.text()).toContain('"url"');
+  });
+
+  it('批准触发 replyToHitl(null, true) → replyToWorkflow(executionId, null, true)', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    (replyToWorkflow as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    await wrapper.find('[data-testid="confirm-approve"]').trigger('click');
+    expect(replyToWorkflow).toHaveBeenCalledWith('exec-1', null, true, expect.any(Object), expect.any(AbortSignal));
+  });
+
+  it('拒绝触发 replyToHitl(null, false) → replyToWorkflow(executionId, null, false)', async () => {
+    const wrapper = await mountUntilToolConfirm();
+    (replyToWorkflow as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    await wrapper.find('[data-testid="confirm-deny"]').trigger('click');
+    expect(replyToWorkflow).toHaveBeenCalledWith('exec-1', null, false, expect.any(Object), expect.any(AbortSignal));
   });
 });

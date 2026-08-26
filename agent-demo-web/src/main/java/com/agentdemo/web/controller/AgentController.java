@@ -1,40 +1,45 @@
 package com.agentdemo.web.controller;
 
-import com.agentdemo.agent.core.SubTask;
-import com.agentdemo.agent.core.TaskBreakdownStream;
-import com.agentdemo.agent.core.ThinkingTokenStream;
-import com.agentdemo.agent.core.HitlTokenStream;
+import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.core.HumanInteractionManager;
+import com.agentdemo.agent.core.PlanCommandParser;
+import com.agentdemo.agent.core.SubTask;
+import com.agentdemo.agent.core.UnifiedChatStream;
 import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
-import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.common.dto.ToolInfo;
+import com.agentdemo.common.exception.BusinessException;
+import com.agentdemo.common.exception.ErrorCode;
 import com.agentdemo.common.result.Result;
 import com.agentdemo.common.utils.SimpleTokenEstimator;
-import com.agentdemo.common.exception.BusinessException;
-import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.session.SessionManager;
+import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
+import com.agentdemo.tools.permission.ToolPermissionService;
 import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.web.dto.ChatRequest;
 import com.agentdemo.web.dto.ChatResponse;
-import dev.langchain4j.data.message.AiMessage;
-import dev.langchain4j.model.output.Response;
-import dev.langchain4j.model.output.TokenUsage;
-import dev.langchain4j.service.TokenStream;
+import com.agentdemo.web.dto.UpdateToolPermissionRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
-import org.springframework.web.bind.annotation.*;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -42,6 +47,10 @@ import java.util.concurrent.CompletableFuture;
  * <p>
  * 业务含义：提供 Agent 对话的 REST API，支持同步对话、流式对话、会话管理。
  * 接口路径规范：统一 /api/agent/* 前缀
+ * </p>
+ * <p>
+ * unified-chat-mode：chatStream 重构为统一路由（四模式融合）——恢复优先 -> /plan 解析 ->
+ * 规划判断路由，所有路径收敛为 UnifiedChatStream 编排 + 单次统一回调注册（技术方案 1.6.2）。
  * </p>
  */
 @Tag(name = "Agent 对话", description = "Agent 对话与会话管理接口")
@@ -63,11 +72,13 @@ public class AgentController {
     private final ToolRegistry toolRegistry;
     private final AgentConfig agentConfig;
     private final HumanInteractionManager humanInteractionManager;
+    private final ToolPermissionService toolPermissionService;
 
     public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent,
                            SessionManager sessionManager, ChatMemoryManager memoryManager,
                            ToolRegistry toolRegistry, AgentConfig agentConfig,
-                           HumanInteractionManager humanInteractionManager) {
+                           HumanInteractionManager humanInteractionManager,
+                           ToolPermissionService toolPermissionService) {
         this.simpleAgent = simpleAgent;
         this.planAgent = planAgent;
         this.sessionManager = sessionManager;
@@ -75,6 +86,7 @@ public class AgentController {
         this.toolRegistry = toolRegistry;
         this.agentConfig = agentConfig;
         this.humanInteractionManager = humanInteractionManager;
+        this.toolPermissionService = toolPermissionService;
     }
 
     /**
@@ -106,7 +118,8 @@ public class AgentController {
         List<String> toolIds = request.getTools();
         if (toolIds != null && !toolIds.isEmpty()) {
             // 校验工具标识，格式错误/不存在抛 BusinessException（由 GlobalExceptionHandler 统一处理）
-            toolRegistry.resolveTools(toolIds);
+            // 同步路径无暂停能力，按 ForDirect 能力声明校验（AC-T01 唯一解析入口）
+            toolRegistry.resolveToolsForDirect(toolIds);
         }
 
         // 调用 Agent（ReAct 循环由 LangChain4j 自动处理）
@@ -126,7 +139,7 @@ public class AgentController {
      * 获取可用工具列表
      * <p>
      * 业务含义：返回所有已注册工具的信息，供前端工具选择器和设置页面展示。
-     * 每项包含 id（category:name）、category、name、description、isDefault。
+     * 每项包含 id（category:name）、category、name、description、isDefault、permission。
      * </p>
      *
      * @return 工具信息列表 + 默认工具 ID 列表
@@ -143,18 +156,64 @@ public class AgentController {
     }
 
     /**
-     * 流式对话
+     * 更新工具权限等级
+     * <p>
+     * 业务含义：管理页调整工具权限（allow/ask/deny）的落点（AC-N01）。校验通过后
+     * 写入 ToolPermissionService 显式配置并持久化 JSON 文件（重启不丢），立即生效。
+     * </p>
+     * <p>
+     * 校验规则：
+     * 1. askUser 工具豁免（AC-S03 防确认死锁）——权限固定放行，禁止修改，返回 400；
+     * 2. 工具不存在/标识非法——抛 TOOL_NOT_FOUND（由全局异常处理器统一返回）；
+     * 3. 权限值非法——解析失败转 PARAM_INVALID（400），避免落入 500 兜底。
+     * </p>
+     *
+     * @param toolId  工具标识（category:name 格式）
+     * @param request 权限更新请求（permission=allow/ask/deny）
+     * @return 操作结果
+     */
+    @Operation(summary = "更新工具权限", description = "设置指定工具的权限等级（allow/ask/deny）")
+    @PutMapping("/tools/{toolId}/permission")
+    public Result<Void> updateToolPermission(@PathVariable String toolId,
+                                             @Valid @RequestBody UpdateToolPermissionRequest request) {
+        // 业务含义：askUser 工具权限固定为放行（AC-S03 防确认死锁），任何改权限请求一律拒绝
+        if (ToolPermissionService.ASK_USER_TOOL_ID.equals(toolId)) {
+            throw new BusinessException(ErrorCode.PARAM_INVALID,
+                    "askUser 工具权限固定为放行（allow），不可修改");
+        }
+        // 业务含义：校验工具存在性（格式错误/不存在抛 TOOL_NOT_FOUND），ForDirect 能力声明校验（AC-T01）
+        toolRegistry.resolveToolsForDirect(List.of(toolId));
+        // 业务含义：解析权限等级，非法值抛 IllegalArgumentException -> 转参数校验错误（400）
+        ToolPermissionLevel level;
+        try {
+            level = ToolPermissionLevel.parse(request.getPermission());
+        } catch (IllegalArgumentException e) {
+            throw new BusinessException(ErrorCode.PARAM_INVALID, e.getMessage());
+        }
+        // 业务含义：写入显式配置并持久化（AC-N01：重启后仍生效）
+        toolPermissionService.setExplicit(toolId, level);
+        log.info("更新工具权限: toolId={}, permission={}", toolId, level.getCode());
+        return Result.success();
+    }
+
+    /**
+     * 流式对话（unified-chat-mode 统一路由）
      * <p>
      * 业务含义：接收用户消息，流式返回大模型生成内容（SSE 逐字推送）。
      * 透明续聊：sessionId 无效时自动新建会话，通过 session 事件通知前端更新关联。
      * </p>
      * <p>
-     * SSE 事件协议：
-     * - session: 携带 sessionId（首次或会话超时新建时发送）
-     * - token: 携带文本片段（逐字输出）
-     * - usage: Token 用量（携带 inputTokens/outputTokens/totalTokens/estimated JSON，在 done 之前发送）
-     * - done: 流式完成（携带耗时毫秒）
-     * - error: 错误信息
+     * 统一路由顺序（技术方案 1.2/1.6.2）：
+     * 1. 校验消息非空
+     * 2. 会话管理（无效 sessionId 新建并发 session 事件）
+     * 3. hasPending 优先恢复（回复不解析 /plan，决策 6）
+     * 4. PlanCommandParser 解析 /plan（forced 且空内容 -> 友好提示，不写记忆）
+     * 5. 记录剥离后内容到记忆 + 知识库注入
+     * 6. planAgent.chatUnifiedStream/resumeUnifiedStream + 统一回调注册 + runAsync
+     * </p>
+     * <p>
+     * SSE 事件协议（零变更）：
+     * session/token/reasoning/thought/action/observation/final-answer/task_系列/usage/ask_user/done/error
      * </p>
      *
      * @param request 对话请求
@@ -185,24 +244,6 @@ public class AgentController {
         // sessionId 在 if 中可能被重新赋值，lambda 要求 effectively final，故用 final 变量
         final String effectiveSessionId = sessionId;
 
-        // 记录用户消息到记忆
-        memoryManager.addUserMessage(effectiveSessionId, request.getMessage());
-
-        // 业务含义：用户指定知识库时，将知识库名称注入用户消息末尾，
-        // 引导 LLM 在 ReAct 循环中调用 searchKnowledge 工具时使用指定知识库。
-        // 不指定时走原有路径（Agent 自主决策），零回归。
-        final String effectiveMessage;
-        List<String> knowledgeBases = request.getKnowledgeBases();
-        if (knowledgeBases != null && !knowledgeBases.isEmpty()) {
-            effectiveMessage = request.getMessage()
-                + "\n\n[系统提示：用户指定了以下知识库，请调用对应的知识库检索工具获取相关信息后再回答："
-                + String.join("、", knowledgeBases) + "]";
-        } else {
-            effectiveMessage = request.getMessage();
-        }
-
-        // 累积完整回复，流式完成后写入记忆（供后续多轮上下文使用）
-        StringBuilder fullResponse = new StringBuilder();
         long start = System.currentTimeMillis();
 
         // 业务含义：读取前端指定的 modelId，null 时使用默认模型
@@ -213,7 +254,8 @@ public class AgentController {
         List<String> toolIds = request.getTools();
         try {
             if (toolIds != null && !toolIds.isEmpty()) {
-                toolRegistry.resolveTools(toolIds); // 仅校验，不在此处使用
+                // 流式路径可暂停确认，按 ForStreaming 能力声明校验（AC-T01 唯一解析入口）
+                toolRegistry.resolveToolsForStreaming(toolIds); // 仅校验，不在此处使用
             }
         } catch (BusinessException e) {
             sendEvent(emitter, "error", e.getMessage());
@@ -221,60 +263,94 @@ public class AgentController {
             return emitter;
         }
 
-        // 业务含义：检查是否有 pending HITL 交互（用户回复了 Agent 的提问）
-        // 有 pending 时走恢复路径：加载保存的 ReAct 上下文 -> 添加用户回复为 Observation -> 继续推理
+        // ==================== unified-chat-mode 统一路由 ====================
+
+        // 业务含义：hasPending 优先恢复（回复不解析 /plan，决策 6）。
+        // 恢复时用户回复作为 Observation 进入 pending 上下文，不重复写记忆（与恢复语义一致）。
+        // 工具权限确认恢复（AC-N03/AC-S02）：toolApproved != null 表示用户操作了 tool_confirm 卡片，
+        // 走 resumeUnifiedStream 三参重载透传批准/拒绝结果；toolApproved=null 走现有两参恢复（askUser 等）。
         if (humanInteractionManager.hasPending(effectiveSessionId)) {
-            HitlTokenStream hitlStream = simpleAgent.resumeHITLStream(effectiveSessionId, request.getMessage());
-            if (hitlStream != null) {
-                // 业务含义：注册 HITL 回调并发送 SSE 事件（与首次 HITL 路径一致）
-                HitlTokenStream stream = hitlStream
-                        .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
-                        .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
-                        .onPartialResponse(token -> { sendEvent(emitter, "token", token); fullResponse.append(token); })
-                        .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
-                        .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
-                        .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
-                        .onAskUser((type, question, options, retryCount) -> {
-                            // 业务含义：Agent 再次提问（用户回复仍不清晰），发送 ask_user 事件
-                            sendEvent(emitter, "ask_user", Map.of("type", type, "question", question, "options", options != null ? options : List.of(), "retryCount", retryCount));
-                            sendEvent(emitter, "done", System.currentTimeMillis() - start);
-                            emitter.complete();
-                        })
-                        .onComplete(fullResponseStr -> {
-                            memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
-                            long duration = System.currentTimeMillis() - start;
-                            int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
-                            int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
-                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, inputTokens + outputTokens, true));
-                            sendEvent(emitter, "done", duration);
-                            emitter.complete();
-                        })
-                        .onError(error -> {
-                            log.error("HITL 恢复异常: sessionId={}", effectiveSessionId, error);
-                            sendEvent(emitter, "error", "生成回复时发生错误，请重试");
-                            emitter.complete();
-                        });
-
-                emitter.onTimeout(() -> { stream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
-                emitter.onError(e -> { stream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
-
-                CompletableFuture.runAsync(stream::start);
-                return emitter;
+            UnifiedChatStream unifiedStream;
+            if (request.getToolApproved() != null) {
+                unifiedStream = planAgent.resumeUnifiedStream(
+                        effectiveSessionId, request.getMessage(), request.getToolApproved());
+            } else {
+                unifiedStream = planAgent.resumeUnifiedStream(effectiveSessionId, request.getMessage());
             }
+            registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, request.getMessage(), start);
+            CompletableFuture.runAsync(unifiedStream::start);
+            return emitter;
         }
 
-        // 业务含义：任务拆解分流（CR-002 新增）
-        // - enableTaskBreakdown=true：走 PlanAgent.chatTaskBreakdownStream 路径
-        // - enableTaskBreakdown=false/null：继续检查 enableThinking 分支
-        if (Boolean.TRUE.equals(request.getEnableTaskBreakdown())) {
-            // 业务含义：异步执行任务拆解编排，确保 SSE 事件实时推送到客户端。
-            // 若在请求线程同步执行 start()，Spring SseEmitter 在 Controller 返回前无法初始化 handler，
-            // 所有 send() 数据被缓存到 earlySendAttempts，直到全部完成后才一次性发送，
-            // 导致前端无法实时看到任务拆解和执行进度。
-            TaskBreakdownStream breakdownStream = planAgent.chatTaskBreakdownStream(effectiveSessionId, effectiveMessage,
-                    Boolean.TRUE.equals(request.getEnableThinking()), modelId)
+        // 业务含义：/plan 前缀解析（输入层一次性处理，剥离后进入记忆与推理，需求 6.6）
+        PlanCommandParser.PlanCommand planCommand = PlanCommandParser.parse(request.getMessage());
+
+        // 业务含义：/plan 空内容友好提示（AC-E02）——不写记忆、不拆解、不报错
+        if (planCommand.forced() && (planCommand.content() == null || planCommand.content().trim().isEmpty())) {
+            String hint = "您使用了 /plan 指令，但未提供任务描述。请在 /plan 后输入需要拆解的任务，例如：/plan 调研竞品并输出报告";
+            sendEvent(emitter, "token", hint);
+            int inputTokens = SimpleTokenEstimator.estimate(request.getMessage());
+            int outputTokens = SimpleTokenEstimator.estimate(hint);
+            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, inputTokens + outputTokens, true));
+            sendEvent(emitter, "done", System.currentTimeMillis() - start);
+            emitter.complete();
+            log.info("/plan 空内容提示: sessionId={}", effectiveSessionId);
+            return emitter;
+        }
+
+        // 业务含义：记录用户消息到记忆（/plan 剥离后的内容，控制指令不进入推理上下文，需求 6.6）
+        String baseMessage = planCommand.content() != null ? planCommand.content() : request.getMessage();
+        memoryManager.addUserMessage(effectiveSessionId, baseMessage);
+
+        // 业务含义：用户指定知识库时，将知识库名称注入用户消息末尾，
+        // 引导 LLM 在 ReAct 循环中调用 searchKnowledge 工具时使用指定知识库。
+        final String effectiveMessage;
+        List<String> knowledgeBases = request.getKnowledgeBases();
+        if (knowledgeBases != null && !knowledgeBases.isEmpty()) {
+            effectiveMessage = baseMessage
+                + "\n\n[系统提示：用户指定了以下知识库，请调用对应的知识库检索工具获取相关信息后再回答："
+                + String.join("、", knowledgeBases) + "]";
+        } else {
+            effectiveMessage = baseMessage;
+        }
+
+        // 业务含义：统一模式编排（首次/强制拆解）。强制拆解经 /plan 前缀表达（AC-N04）。
+        UnifiedChatStream unifiedStream = planAgent.chatUnifiedStream(
+                effectiveSessionId, effectiveMessage, modelId, toolIds, planCommand.forced());
+        registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, effectiveMessage, start);
+        CompletableFuture.runAsync(unifiedStream::start);
+
+        return emitter;
+    }
+
+    /**
+     * 注册统一编排回调（技术方案 1.6.4 事件契约，SSE 协议零变更）
+     * <p>
+     * 业务含义：直答路径 6 事件 + 拆解路径 task_* 10 事件 + ask_user + usage/done/error
+     * 全部在此单次注册，Controller 收敛为统一回调注册块。
+     * </p>
+     */
+    private void registerUnifiedCallbacks(UnifiedChatStream unifiedStream, SseEmitter emitter,
+                                          String sessionId, String inputMessage, long start) {
+        // 累积完整回复（总结 token 走 onSummaryToken，直答走 onPartialResponse）
+        StringBuilder fullResponse = new StringBuilder();
+
+        unifiedStream
+                // 直答路径：reasoning/thought/token/action/observation/final-answer
+                .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
+                .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought",
+                        Map.of("content", thought, "iteration", iteration)))
+                .onPartialResponse(token -> {
+                    sendEvent(emitter, "token", token);
+                    fullResponse.append(token);
+                })
+                .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action",
+                        Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
+                .onObservation((result, iteration) -> sendEvent(emitter, "observation",
+                        Map.of("result", result, "iteration", iteration)))
+                .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
+                // 拆解路径：task_plan + task_start/token/reasoning/thought/action/observation/complete/failed/cancelled
                 .onPlan(tasks -> {
-                    // 推送子任务列表（AC-001）
                     List<Map<String, Object>> taskList = new ArrayList<>();
                     for (SubTask task : tasks) {
                         Map<String, Object> map = new LinkedHashMap<>();
@@ -284,7 +360,6 @@ public class AgentController {
                     }
                     sendEvent(emitter, "task_plan", Map.of("tasks", taskList));
                 })
-                .onNoBreakdown(() -> { /* 无事件，后续 token 事件自动处理 */ })
                 .onTaskStart((index, title) -> sendEvent(emitter, "task_start",
                         Map.of("index", index, "title", title)))
                 .onTaskToken((index, content) -> sendEvent(emitter, "task_token",
@@ -297,179 +372,57 @@ public class AgentController {
                         Map.of("index", index, "toolName", name, "args", args, "iteration", iter)))
                 .onTaskObservation((index, result, iter) -> sendEvent(emitter, "task_observation",
                         Map.of("index", index, "result", result, "iteration", iter)))
-                .onTaskComplete(index -> sendEvent(emitter, "task_complete",
-                        Map.of("index", index)))
+                .onTaskComplete(index -> sendEvent(emitter, "task_complete", Map.of("index", index)))
                 .onTaskFailed((index, error) -> sendEvent(emitter, "task_failed",
                         Map.of("index", index, "error", error)))
-                .onTaskCancelled(index -> sendEvent(emitter, "task_cancelled",
-                        Map.of("index", index)))
+                .onTaskCancelled(index -> sendEvent(emitter, "task_cancelled", Map.of("index", index)))
+                // 拆解总结：token/reasoning（token 累积供 usage 估算）
                 .onSummaryToken(token -> {
-                    // 业务含义：总结阶段文本片段，推送给前端 + 累积完整回复（供 onComplete 写入记忆）
                     sendEvent(emitter, "token", token);
                     fullResponse.append(token);
                 })
                 .onSummaryReasoning(reasoning -> sendEvent(emitter, "reasoning", reasoning))
-                .onComplete(() -> {
-                    // 业务含义：将总结回复写入记忆，保证下一轮对话有上下文（与其他路径对齐）
-                    if (fullResponse.length() > 0) {
-                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
-                    }
-                    // 业务含义：任务拆解路径的 onComplete 无 TokenUsage 透传，使用 SimpleTokenEstimator 估算（estimated=true）
-                    int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
-                    int outputTokens = SimpleTokenEstimator.estimate(fullResponse.toString());
-                    int totalTokens = inputTokens + outputTokens;
-                    sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
+                // HITL 暂停：ask_user + done（流结束）
+                .onAskUser((type, question, options, retryCount) -> {
+                    sendEvent(emitter, "ask_user", Map.of("type", type, "question", question,
+                            "options", options != null ? options : List.of(), "retryCount", retryCount));
                     sendEvent(emitter, "done", System.currentTimeMillis() - start);
                     emitter.complete();
                 })
+                // 工具权限确认：tool_confirm（AC-H01）
+                // 业务含义：ask 级工具被拦截时推送确认卡片数据。与 ask_user 不同——事件后不 complete，
+                // emitter 保持打开（pending 挂起），前端渲染卡片等用户操作，随后经 resumeUnifiedStream 回传 toolApproved。
+                .onToolConfirm((toolCallId, toolName, toolDescription, arguments) -> sendEvent(emitter, "tool_confirm",
+                        Map.of("toolName", toolName, "toolDescription",
+                                toolDescription != null ? toolDescription : "", "arguments",
+                                arguments != null ? arguments : "")))
+                // 完成：写记忆 + usage + done（直答=最终回答，拆解=总结文本）
+                .onComplete(fullResponseStr -> {
+                    memoryManager.addAssistantMessage(sessionId, fullResponseStr);
+                    long duration = System.currentTimeMillis() - start;
+                    int inputTokens = SimpleTokenEstimator.estimate(inputMessage);
+                    int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
+                    int totalTokens = inputTokens + outputTokens;
+                    sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
+                    sendEvent(emitter, "done", duration);
+                    emitter.complete();
+                })
                 .onError(error -> {
-                    log.error("任务拆解异常: sessionId={}", effectiveSessionId, error);
-                    sendEvent(emitter, "error", "任务拆解执行失败，请重试");
+                    log.error("统一模式对话异常: sessionId={}", sessionId, error);
+                    sendEvent(emitter, "error", "生成回复时发生错误，请重试");
                     emitter.complete();
                 });
 
-            // BUG 修复：注册 emitter 生命周期回调，超时/断开时取消异步编排，
-            // 避免异步线程继续向已 complete 的 emitter 发送事件导致 IllegalStateException
-            emitter.onTimeout(() -> {
-                log.warn("SSE 超时，取消任务拆解编排: sessionId={}", effectiveSessionId);
-                breakdownStream.cancel();
-            });
-            emitter.onError(e -> {
-                log.warn("SSE 异常，取消任务拆解编排: sessionId={}", effectiveSessionId);
-                breakdownStream.cancel();
-            });
-
-            CompletableFuture.runAsync(breakdownStream::start);
-            return emitter;
-        }
-
-        // 业务含义：HITL 人机交互分流
-        // - enableHitl=true：走 HITL ReAct 路径，Agent 可调用 askUser 工具向用户提问/确认
-        // - enableHitl=false/null：继续检查 enableThinking 分支（零回归）
-        if (Boolean.TRUE.equals(request.getEnableHitl())) {
-            HitlTokenStream hitlStream = simpleAgent.chatHITLStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
-                    .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
-                    .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
-                    .onPartialResponse(token -> { sendEvent(emitter, "token", token); fullResponse.append(token); })
-                    .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
-                    .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
-                    .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
-                    .onAskUser((type, question, options, retryCount) -> {
-                        // 业务含义：Agent 调用 askUser 工具暂停执行，发送 ask_user 事件让前端渲染提问卡片
-                        sendEvent(emitter, "ask_user", Map.of("type", type, "question", question, "options", options != null ? options : List.of(), "retryCount", retryCount));
-                        sendEvent(emitter, "done", System.currentTimeMillis() - start);
-                        emitter.complete();
-                    })
-                    .onComplete(fullResponseStr -> {
-                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
-                        long duration = System.currentTimeMillis() - start;
-                        int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
-                        int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
-                        sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, inputTokens + outputTokens, true));
-                        sendEvent(emitter, "done", duration);
-                        emitter.complete();
-                    })
-                    .onError(error -> {
-                        log.error("HITL 流式对话异常: sessionId={}", effectiveSessionId, error);
-                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
-                        emitter.complete();
-                    });
-
-            emitter.onTimeout(() -> { hitlStream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
-            emitter.onError(e -> { hitlStream.cancel(); humanInteractionManager.clearInteraction(effectiveSessionId); });
-
-            CompletableFuture.runAsync(hitlStream::start);
-            return emitter;
-        }
-
-        // 业务含义：根据 enableThinking 分流（CR-001 新增，Task-09 扩展为 ReAct）
-        // - true：走 ReAct 思考流式路径，推送 reasoning + thought + action + observation + final-answer 事件
-        // - false/null：走原 agent.chatStream 路径，仅推送 token 事件（零回归）
-        if (Boolean.TRUE.equals(request.getEnableThinking())) {
-            // ReAct 思考流式路径（Task-09 新增）
-            // 业务含义：ReAct 模式中 content 通过 onPartialThought 推送为 thought 事件，
-            // 不再使用 onPartialResponse（ReActThinkingStream 中为空实现）
-            // BUG 修复：异步执行 start()，确保 SSE 事件实时推送（与任务拆解模式一致）。
-            // 若在请求线程同步执行 start()，SseEmitter handler 未初始化，
-            // 所有 send() 数据被缓存到 earlySendAttempts，导致前端流式输出失效。
-            ThinkingTokenStream thinkingStream = simpleAgent.chatThinkingReActStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
-                    .onPartialThinking(thinking -> sendEvent(emitter, "reasoning", thinking))
-                    .onPartialThought((thought, iteration) -> sendEvent(emitter, "thought", Map.of("content", thought, "iteration", iteration)))
-                    // BUG 修复：注册 onPartialResponse，将最终答案（stop 轮 content）以 token 事件流式推送到主回复区
-                    .onPartialResponse(token -> sendEvent(emitter, "token", token))
-                    .onAction((toolName, arguments, iteration) -> sendEvent(emitter, "action", Map.of("toolName", toolName, "arguments", arguments, "iteration", iteration)))
-                    .onObservation((result, iteration) -> sendEvent(emitter, "observation", Map.of("result", result, "iteration", iteration)))
-                    .onFinalAnswer(iteration -> sendEvent(emitter, "final-answer", Map.of("iteration", iteration)))
-                    .onComplete(fullResponseStr -> {
-                        // 业务含义：流式完成后，将完整最终回答写入记忆（不含推理/工具过程），保证下一轮对话有上下文
-                        // ReActThinkingStream 的 onComplete 携带完整最终回答文本，直接使用参数而非 StringBuilder
-                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponseStr);
-                        long duration = System.currentTimeMillis() - start;
-                        // 业务含义：ReAct 路径的 CompleteConsumer 仅透传 fullResponse，无 TokenUsage，使用估算（estimated=true）
-                        int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
-                        int outputTokens = SimpleTokenEstimator.estimate(fullResponseStr);
-                        int totalTokens = inputTokens + outputTokens;
-                        sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
-                        sendEvent(emitter, "done", duration);
-                        emitter.complete();
-                    })
-                    .onError(error -> {
-                        // 业务含义：思考流式过程中的异常通过 SSE error 事件通知前端
-                        log.error("思考流式对话异常: sessionId={}", effectiveSessionId, error);
-                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
-                        emitter.complete();
-                    });
-
-            // BUG 修复：注册 emitter 生命周期回调，超时/断开时取消异步编排
-            emitter.onTimeout(() -> {
-                log.warn("SSE 超时，取消思考流式编排: sessionId={}", effectiveSessionId);
-                thinkingStream.cancel();
-            });
-            emitter.onError(e -> {
-                log.warn("SSE 异常，取消思考流式编排: sessionId={}", effectiveSessionId);
-                thinkingStream.cancel();
-            });
-
-            CompletableFuture.runAsync(thinkingStream::start);
-        } else {
-            // 原路径（零回归）
-            simpleAgent.chatStream(effectiveSessionId, effectiveMessage, modelId, toolIds)
-                    .onPartialResponse(token -> {
-                        sendEvent(emitter, "token", token);
-                        fullResponse.append(token);
-                    })
-                    .onCompleteResponse(response -> {
-                        // 业务含义：流式完成后，将完整助手回复写入记忆，保证下一轮对话有上下文
-                        memoryManager.addAssistantMessage(effectiveSessionId, fullResponse.toString());
-                        long duration = System.currentTimeMillis() - start;
-                        // 业务含义：优先使用 API 返回的真实 TokenUsage（estimated=false），
-                        // 未返回时降级为 SimpleTokenEstimator 估算（estimated=true）
-                        TokenUsage tokenUsage = response.tokenUsage();
-                        if (tokenUsage != null) {
-                            int inputTokens = tokenUsage.inputTokenCount() != null ? tokenUsage.inputTokenCount() : 0;
-                            int outputTokens = tokenUsage.outputTokenCount() != null ? tokenUsage.outputTokenCount() : 0;
-                            int totalTokens = tokenUsage.totalTokenCount() != null ? tokenUsage.totalTokenCount() : inputTokens + outputTokens;
-                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, false));
-                        } else {
-                            int inputTokens = SimpleTokenEstimator.estimate(effectiveMessage);
-                            int outputTokens = SimpleTokenEstimator.estimate(fullResponse.toString());
-                            int totalTokens = inputTokens + outputTokens;
-                            sendEvent(emitter, "usage", buildUsageJson(inputTokens, outputTokens, totalTokens, true));
-                        }
-                        sendEvent(emitter, "done", duration);
-                        emitter.complete();
-                    })
-                    .onError(error -> {
-                        // 业务含义：流式过程中的异常无法走 GlobalExceptionHandler（响应已开始），
-                        // 通过 SSE error 事件通知前端
-                        log.error("流式对话异常: sessionId={}", effectiveSessionId, error);
-                        sendEvent(emitter, "error", "生成回复时发生错误，请重试");
-                        emitter.complete();
-                    })
-                    .start();
-        }
-
-        return emitter;
+        // BUG 修复：注册 emitter 生命周期回调，超时/断开时取消异步编排，
+        // 避免异步线程继续向已 complete 的 emitter 发送事件导致 IllegalStateException
+        emitter.onTimeout(() -> {
+            log.warn("SSE 超时，取消统一编排: sessionId={}", sessionId);
+            unifiedStream.cancel();
+        });
+        emitter.onError(e -> {
+            log.warn("SSE 异常，取消统一编排: sessionId={}", sessionId);
+            unifiedStream.cancel();
+        });
     }
 
     /**

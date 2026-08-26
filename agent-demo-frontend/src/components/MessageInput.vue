@@ -8,12 +8,6 @@ import type { KnowledgeBase, TokenUsage, LlmModel } from '@/types';
 
 const props = withDefaults(defineProps<{
   isStreaming: boolean;
-  /** 是否开启深度思考（CR-001，AC-021），可选，默认 false 向前兼容 */
-  enableThinking?: boolean;
-  /** 是否开启复杂任务拆解（CR-002，AC-012），可选，默认 false 向前兼容 */
-  enableTaskBreakdown?: boolean;
-  /** 是否开启 HITL 人机交互（Task-10），可选，默认 false 向前兼容 */
-  enableHitl?: boolean;
   /** 是否正在等待用户回复 HITL 问题（Task-10），可选，默认 false 向前兼容 */
   isWaitingForUserInput?: boolean;
   /** 可选知识库列表（Task-08，AC-029），默认空数组 */
@@ -29,9 +23,6 @@ const props = withDefaults(defineProps<{
   /** 是否已配置 LLM（Task-22），默认 true 向前兼容 */
   hasConfig?: boolean;
 }>(), {
-  enableThinking: false,
-  enableTaskBreakdown: false,
-  enableHitl: false,
   isWaitingForUserInput: false,
   knowledgeBases: () => [],
   selectedKnowledgeBases: () => [],
@@ -44,12 +35,6 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   send: [message: string];
   stop: [];
-  /** 切换深度思考开关（CR-001，AC-021） */
-  toggleThinking: [];
-  /** 切换复杂任务拆解开关（CR-002，AC-012） */
-  toggleTaskBreakdown: [];
-  /** 切换 HITL 人机交互开关（Task-10） */
-  toggleHitl: [];
   /** 知识库选择变更（Task-08，AC-029） */
   'update:selectedKnowledgeBases': [value: string[]];
   /** 工具选择变更（工具按需加载） */
@@ -122,6 +107,27 @@ function handleKeydown(e: KeyboardEvent) {
     handleSend();
   }
 }
+
+// ===== unified-chat-mode Task-19：/plan 前缀命令提示条 =====
+
+/** 是否显示 /plan 提示条（输入以 / 开头且非流式时，AC-N04 可发现性） */
+const showPlanHint = computed(
+  () => !props.isStreaming && inputText.value.trim().startsWith('/'),
+);
+
+/**
+ * 点击提示条自动补全 /plan 前缀（若尚未输入则补全，若已输入则聚焦）
+ * 业务含义：提升 /plan 强制拆解指令的可发现性（需求 8.1：输入框支持 /plan 指令含可发现性提示）。
+ */
+function applyPlanHint() {
+  if (props.isStreaming) return;
+  const trimmed = inputText.value.trim();
+  if (trimmed === '' || trimmed === '/') {
+    inputText.value = '/plan ';
+    nextTick(autoResize);
+    nextTick(() => textareaRef.value?.focus());
+  }
+}
 </script>
 
 <template>
@@ -177,6 +183,12 @@ function handleKeydown(e: KeyboardEvent) {
       </button>
     </div>
 
+    <!-- unified-chat-mode Task-19：/plan 前缀命令提示条（AC-N04 可发现性） -->
+    <div v-if="showPlanHint" class="plan-hint" @click="applyPlanHint">
+      <span class="plan-hint-icon">📋</span>
+      <span class="plan-hint-text">输入 /plan 可强制进行任务拆解</span>
+    </div>
+
     <!-- 字符计数 + 超长提示 -->
     <div class="input-footer">
       <!-- 模型选择器（Task-22）：流式或无可选模型时禁用 -->
@@ -193,30 +205,6 @@ function handleKeydown(e: KeyboardEvent) {
         :disabled="props.isStreaming"
         @update:model-value="emit('update:selectedKnowledgeBases', $event)"
       />
-      <!-- 深度思考 toggle（CR-001，AC-021）：开启时高亮，点击切换状态 -->
-      <button
-        class="btn-thinking"
-        :class="{ active: props.enableThinking }"
-        @click="emit('toggleThinking')"
-      >
-        🧠 深度思考
-      </button>
-      <!-- 任务拆解 toggle（CR-002，AC-012）：开启时高亮，与深度思考独立共存 -->
-      <button
-        class="btn-task-breakdown"
-        :class="{ active: props.enableTaskBreakdown }"
-        @click="emit('toggleTaskBreakdown')"
-      >
-        📋 任务拆解
-      </button>
-      <!-- HITL 人机交互 toggle（Task-10）：开启时高亮，与深度思考/任务拆解独立共存 -->
-      <button
-        class="btn-hitl"
-        :class="{ active: props.enableHitl }"
-        @click="emit('toggleHitl')"
-      >
-        🤝 人机交互
-      </button>
       <span v-if="isOverLimit" class="char-warn">
         消息长度不能超过 {{ MAX_LENGTH }} 字符
       </span>
@@ -367,78 +355,33 @@ function handleKeydown(e: KeyboardEvent) {
   min-height: 18px;
 }
 
-/* 深度思考 toggle 按钮（CR-001，AC-021） */
-.btn-thinking {
-  padding: 2px var(--spacing-sm);
-  border: 1px solid var(--border);
+/* /plan 前缀命令提示条（unified-chat-mode Task-19，AC-N04 可发现性） */
+.plan-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border: 1px dashed var(--accent-dim);
   border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-display);
+  background: var(--accent-dim);
+  color: var(--accent);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
-.btn-thinking:hover {
-  border-color: var(--accent-dim);
-  color: var(--accent);
-}
-
-/* 开启时高亮 */
-.btn-thinking.active {
+.plan-hint:hover {
   border-color: var(--accent);
-  background: var(--accent-dim);
-  color: var(--accent);
+  background: rgba(0, 212, 184, 0.15);
 }
 
-/* 任务拆解 toggle 按钮（CR-002，AC-012）- 与 btn-thinking 样式对称 */
-.btn-task-breakdown {
-  padding: 2px var(--spacing-sm);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
+.plan-hint-icon {
+  font-size: 14px;
+}
+
+.plan-hint-text {
   font-family: var(--font-display);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.btn-task-breakdown:hover {
-  border-color: var(--accent-dim);
-  color: var(--accent);
-}
-
-/* 开启时高亮 */
-.btn-task-breakdown.active {
-  border-color: var(--accent);
-  background: var(--accent-dim);
-  color: var(--accent);
-}
-
-/* HITL 人机交互 toggle 按钮（Task-10）- 与 btn-thinking/btn-task-breakdown 样式对称 */
-.btn-hitl {
-  padding: 2px var(--spacing-sm);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-display);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.btn-hitl:hover {
-  border-color: var(--accent-dim);
-  color: var(--accent);
-}
-
-.btn-hitl.active {
-  border-color: var(--accent);
-  background: var(--accent-dim);
-  color: var(--accent);
 }
 
 .char-warn {

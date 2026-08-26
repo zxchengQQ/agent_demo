@@ -4,10 +4,11 @@ import { fetchAvailableTools } from '@/api/tools';
 import type { ToolInfo } from '@/types';
 
 /**
- * 工具选择器组件（工具按需加载）
+ * 工具选择器组件（工具按需加载 + 权限过滤）
  * 业务含义：持久展示当前会话的工具标签，并可通过下拉面板选择/取消可选工具。
  * - 默认工具（isDefault=true）：始终展示，蓝色标签 + 锁定图标，不可取消
  * - 可选工具：用户可勾选/取消，按类别显示不同颜色
+ * - deny 权限工具：下拉面板与已选标签均隐藏（用户视角不可见，AC-H02）
  * - 标签栏持久展示在输入框上方，切换会话自动切换
  */
 const props = withDefaults(defineProps<{
@@ -25,10 +26,18 @@ const emit = defineEmits<{
 
 /** 所有可用工具列表（从后端获取） */
 const allTools = ref<ToolInfo[]>([]);
-/** 默认工具列表 */
-const defaultTools = computed(() => allTools.value.filter((t) => t.isDefault));
-/** 可选工具列表（非默认） */
-const optionalTools = computed(() => allTools.value.filter((t) => !t.isDefault));
+
+/**
+ * deny 权限工具（AC-H02）
+ * 业务含义：permission=deny 的工具从选择器任何视图剔除（下拉面板 + 已选标签），
+ * 与后端加载期静默剔除形成双保险，用户视角彻底隐藏。
+ */
+const visibleTools = computed(() => allTools.value.filter((t) => t.permission !== 'deny'));
+
+/** 默认工具列表（过滤 deny） */
+const defaultTools = computed(() => visibleTools.value.filter((t) => t.isDefault));
+/** 可选工具列表（非默认，过滤 deny） */
+const optionalTools = computed(() => visibleTools.value.filter((t) => !t.isDefault));
 /** 下拉展开状态 */
 const dropdownOpen = ref(false);
 
@@ -43,6 +52,11 @@ async function loadTools() {
 }
 
 onMounted(loadTools);
+
+/** 判断工具是否 deny 权限（已选标签中若被后台调整为 deny 则隐藏，AC-H02） */
+function isDenied(toolId: string): boolean {
+  return allTools.value.find((t) => t.id === toolId)?.permission === 'deny';
+}
 
 /** 切换下拉展开/收起 */
 function toggleDropdown() {
@@ -115,17 +129,19 @@ function displayToolName(id: string): string {
       >
         <i class="tool-dot"></i>{{ formatToolName(tool) }}
       </span>
-      <!-- 用户选中的可选工具标签：可删除 -->
-      <span
-        v-for="toolId in modelValue"
-        :key="toolId"
-        class="tool-tag tool-tag-optional"
-        :style="{ '--tc': categoryColor(findTool(toolId)?.category || 'builtin') }"
-        :title="findTool(toolId)?.description"
-      >
-        <i class="tool-dot"></i>{{ displayToolName(toolId) }}
-        <span class="tool-tag-remove" @click.stop="removeTool(toolId)" title="移除工具">×</span>
-      </span>
+      <!-- 用户选中的可选工具标签：可删除（deny 工具隐藏，AC-H02） -->
+      <!-- 注：Vue3 v-if 优先于 v-for，须用 template 包裹才能基于 toolId 判断 -->
+      <template v-for="toolId in modelValue" :key="toolId">
+        <span
+          v-if="!isDenied(toolId)"
+          class="tool-tag tool-tag-optional"
+          :style="{ '--tc': categoryColor(findTool(toolId)?.category || 'builtin') }"
+          :title="findTool(toolId)?.description"
+        >
+          <i class="tool-dot"></i>{{ displayToolName(toolId) }}
+          <span class="tool-tag-remove" @click.stop="removeTool(toolId)" title="移除工具">×</span>
+        </span>
+      </template>
 
       <!-- 添加工具触发按钮 -->
       <button class="tool-add" @click="toggleDropdown">

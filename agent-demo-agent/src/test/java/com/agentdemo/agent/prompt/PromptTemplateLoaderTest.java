@@ -41,20 +41,6 @@ class PromptTemplateLoaderTest {
     }
 
     /**
-     * 验证 composeSystemPrompt("code", "react") 返回内容包含 code.txt 角色身份和 react.txt 的 ReAct 格式引导
-     */
-    @Test
-    void composeCodeReactShouldContainRoleAndReActFormat() {
-        String result = loader.composeSystemPrompt("code", "react");
-
-        assertNotNull(result, "组合提示词不应为 null");
-        assertTrue(result.contains("资深 Java 工程师"), "应包含 code.txt 角色身份");
-        assertTrue(result.contains("Thought"), "应包含 react.txt 的 ReAct Thought 引导");
-        assertTrue(result.contains("Action"), "应包含 react.txt 的 ReAct Action 引导");
-        assertTrue(result.contains("Final Answer"), "应包含 react.txt 的 Final Answer 引导");
-    }
-
-    /**
      * 验证 composeSystemPrompt("general", "chat") 结果中 general.txt 内容在前，chat.txt 内容在后
      */
     @Test
@@ -137,17 +123,6 @@ class PromptTemplateLoaderTest {
     // ==================== {{tools}} 占位符测试 ====================
 
     /**
-     * 验证 react.txt 模板中的 {{tools}} 占位符在 composeSystemPrompt 返回值中原样保留
-     * 占位符由调用方替换
-     */
-    @Test
-    void toolsPlaceholderShouldBePreservedInReactScenario() {
-        String result = loader.composeSystemPrompt("general", "react");
-
-        assertTrue(result.contains("{{tools}}"), "react 场景应保留 {{tools}} 占位符供调用方替换");
-    }
-
-    /**
      * 验证 task-execute.txt 模板中的 {{tools}} 占位符也被保留
      */
     @Test
@@ -160,17 +135,17 @@ class PromptTemplateLoaderTest {
     // ==================== 各场景加载验证 ====================
 
     /**
-     * 验证所有 6 个场景模板都能正确加载
+     * 验证现有场景模板都能正确加载（react.txt/thinking.txt 已随 unified-chat-mode 彻底删除，
+     * 仅保留生产实际使用的 5 个场景）
      */
     @Test
     void allScenariosShouldLoadSuccessfully() {
         String[][] scenarios = {
                 {"chat", "主动调用相应工具"},
-                {"thinking", "深度推理"},
-                {"react", "Thought"},
                 {"task-plan", "JSON 数组"},
                 {"task-execute", "执行分配给你的子任务"},
-                {"task-summary", "生成一份简洁的总结"}
+                {"task-summary", "生成一份简洁的总结"},
+                {"hitl", "人机交互规则"}
         };
 
         for (String[] scenario : scenarios) {

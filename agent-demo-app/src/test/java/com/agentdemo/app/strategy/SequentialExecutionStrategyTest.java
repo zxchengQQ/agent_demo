@@ -79,7 +79,7 @@ class SequentialExecutionStrategyTest {
     @Test
     void execute_shouldRunAgentsInOrderAndPassOutput() throws Exception {
         // Mock AgentExecutor：依次返回研究/分析/总结结果
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("研究结果", "分析结果", "总结结果");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -90,11 +90,11 @@ class SequentialExecutionStrategyTest {
 
         assertEquals("总结结果", result);
         // 3 个 Agent 依次执行
-        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(3)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
 
         // 验证输入传递：第一个输入为 topic，后续为前一 Agent 输出
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(3)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(3)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         List<String> inputs = inputCaptor.getAllValues();
         assertEquals("AI", inputs.get(0));
         assertEquals("研究结果", inputs.get(1));
@@ -103,7 +103,7 @@ class SequentialExecutionStrategyTest {
 
     @Test
     void execute_shouldPushWorkflowAndStepEvents() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("R", "A", "S");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -118,7 +118,7 @@ class SequentialExecutionStrategyTest {
 
     @Test
     void execute_shouldRecordStepsInExecution() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("R", "A", "S");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -134,7 +134,7 @@ class SequentialExecutionStrategyTest {
 
     @Test
     void execute_cancelFlagTrue_shouldThrowCancelled() throws Exception {
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("R");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -149,7 +149,7 @@ class SequentialExecutionStrategyTest {
     @Test
     void execute_shouldHandleEmptyOutput() throws Exception {
         // 第一个 Agent 输出为空，后续正常执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("", "分析结果");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -164,7 +164,7 @@ class SequentialExecutionStrategyTest {
         String result = strategy.execute(twoAgent, Map.of("topic", "X"), emitter, execution, null, new AtomicBoolean(false));
 
         assertEquals("分析结果", result);
-        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
     }
 
     // ===== P3 新增：断点恢复跳过（Task-08，AC-017）=====
@@ -172,7 +172,7 @@ class SequentialExecutionStrategyTest {
     @Test
     void execute_firstRun_shouldWriteResumeKeysToContext() throws Exception {
         // 首次执行：3 个 Agent 均真实执行，ctx 写入 done:0:{name} 恢复 keys（为恢复做准备）
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("研究结果", "分析结果", "总结结果");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -191,7 +191,7 @@ class SequentialExecutionStrategyTest {
     void execute_resumeWithCompletedAgent_shouldSkipAndChainHistoryOutput() throws Exception {
         // 恢复场景：研究 Agent 已完成（ctx 预置恢复 key）
         // 预期：研究 Agent 不被调用（跳过）、分析 Agent 收到历史输出、断点后 Agent 正常执行
-        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any()))
+        when(agentExecutor.executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString()))
                 .thenReturn("分析结果", "总结结果");
 
         WorkflowTemplate template = threeAgentTemplate();
@@ -205,12 +205,12 @@ class SequentialExecutionStrategyTest {
 
         assertEquals("总结结果", result);
         // 仅 2 次真实执行（分析/总结），研究 Agent 跳过
-        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any());
-        verify(agentExecutor, never()).executeWithRetry(any(), eq("X"), any(), eq(0), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), anyString(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
+        verify(agentExecutor, never()).executeWithRetry(any(), eq("X"), any(), eq(0), anyInt(), any(), anyInt(), anyString());
 
         // 跳过的历史输出作为下一 Agent 输入（分析 Agent 收到 "历史输出1" 而非 topic）
         ArgumentCaptor<String> inputCaptor = ArgumentCaptor.forClass(String.class);
-        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any());
+        verify(agentExecutor, times(2)).executeWithRetry(any(), inputCaptor.capture(), any(), anyInt(), anyInt(), any(), anyInt(), anyString());
         assertEquals("历史输出1", inputCaptor.getAllValues().get(0));
         assertEquals("分析结果", inputCaptor.getAllValues().get(1));
     }

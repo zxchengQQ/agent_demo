@@ -1,19 +1,25 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { Message, SubTaskStatus } from '@/types';
+import type { Message, SubTaskStatus, ToolConfirmData } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
 import { useMermaid } from '@/composables/useMermaid';
 import KnowledgeSourceBar from './KnowledgeSourceBar.vue';
+import AskUserCard from './AskUserCard.vue';
 import ConfirmCard from './ConfirmCard.vue';
 
 const props = defineProps<{ message: Message }>();
 
 /**
- * 向上传递 ConfirmCard 的选中事件（Task-09 新增）
- * 业务含义：用户在 confirm 类型人机交互卡片中选中选项后，逐层传递到 ChatWindow 发送回复消息。
+ * 向上传递 AskUserCard 的回复事件（unified-chat-mode Task-17）
+ * 业务含义：用户在统一交互卡片中回复（选项值或输入文本）后，逐层传递到 ChatWindow 发送回复消息。
+ * 值语义扩展为"用户回复"（选项值与输入文本统一，AC-T04）。
  */
 const emit = defineEmits<{
-  select: [optionValue: string];
+  reply: [value: string];
+  /** 工具权限确认：批准（Task-17，AC-N03） */
+  approve: [];
+  /** 工具权限确认：拒绝（Task-17，AC-S02） */
+  deny: [];
 }>();
 
 /**
@@ -192,6 +198,23 @@ function statusIcon(status: SubTaskStatus): string {
       return '○';
   }
 }
+
+// ===== Task-17 新增：工具权限确认渲染数据 =====
+
+/**
+ * 权限确认数据（kind=permission 时从 askUserData 构造，供 ConfirmCard 渲染）
+ * 业务含义：setToolConfirmData 以 askUserData（kind=permission）存储 tool_confirm 四要素，
+ * 此处还原为 ConfirmCard 所需的 ToolConfirmData；非 permission 形态返回 null。
+ */
+const toolConfirmData = computed<ToolConfirmData | null>(() => {
+  const a = props.message.askUserData;
+  if (!a || a.kind !== 'permission') return null;
+  return {
+    toolName: a.toolName ?? '',
+    toolDescription: a.toolDescription ?? '',
+    arguments: a.toolArguments ?? '',
+  };
+});
 </script>
 
 <template>
@@ -366,26 +389,27 @@ function statusIcon(status: SubTaskStatus): string {
         ></span>
       </div>
 
-      <!-- HITL 人机交互区块（Task-09）：助手消息 askUserData 存在时渲染 -->
+      <!-- HITL 人机交互区块（unified-chat-mode Task-17）：助手消息 askUserData 存在时渲染 -->
+      <!-- 权限确认形态（kind=permission）走 ConfirmCard；其余（含存量无 kind 数据）走 AskUserCard（AC-H01） -->
       <div
         v-if="props.message.role === 'assistant' && props.message.askUserData"
         class="ask-user-block"
       >
-        <!-- text 类型：显示问题文本为普通消息 -->
-        <div v-if="props.message.askUserData.type === 'text'" class="ask-user-text">
-          {{ props.message.askUserData.question }}
-        </div>
-        <!-- confirm 类型：显示确认卡片 -->
-        <!-- BUG 修复：disabled 不再绑定消息 status。
-             ask_user 事件后后端立即发送 done 使消息 status=complete，
-             若按 status!=='incomplete' 禁用，用户将无法点击选项。
-             askUserData 存在期间始终可交互，防重复点击由 ConfirmCard 内部 isSelected 锁定。 -->
+        <!-- 业务含义：权限决策语义为三态——true=已批准，false=已拒绝，undefined=待决策。
+             BUG 修复：原判定 !!approved 在拒绝时（false）恒为假，卡片不锁定、按钮可重复点击；
+             正确判定是 approved !== undefined（answer 兜底兼容旧会话数据） -->
         <ConfirmCard
+          v-if="toolConfirmData"
+          :data="toolConfirmData"
+          :answered="props.message.askUserData.approved !== undefined || !!props.message.askUserData.answer"
+          :approved="!!props.message.askUserData.approved"
+          @approve="emit('approve')"
+          @deny="emit('deny')"
+        />
+        <AskUserCard
           v-else
-          :question="props.message.askUserData.question"
-          :options="props.message.askUserData.options || []"
-          :disabled="false"
-          @select="emit('select', $event)"
+          :ask-user-data="props.message.askUserData"
+          @reply="emit('reply', $event)"
         />
       </div>
 
@@ -773,19 +797,9 @@ function statusIcon(status: SubTaskStatus): string {
   margin: var(--spacing-sm) 0;
 }
 
-/* ===== Task-09 HITL 人机交互区块样式 ===== */
+/* ===== unified-chat-mode Task-17 HITL 人机交互区块样式（统一交互卡片由 AskUserCard 内部渲染） ===== */
 .ask-user-block {
   margin-top: var(--spacing-sm);
-}
-
-.ask-user-text {
-  padding: var(--spacing-sm) var(--spacing-md);
-  font-size: 14px;
-  line-height: 1.6;
-  color: var(--text-primary);
-  background: var(--bg-msg-assistant);
-  border-left: 2px solid var(--accent);
-  border-radius: var(--radius-sm) var(--radius-md) var(--radius-md) var(--radius-md);
 }
 
 /* CR-001: 图片渲染样式约束（AC-039）*/

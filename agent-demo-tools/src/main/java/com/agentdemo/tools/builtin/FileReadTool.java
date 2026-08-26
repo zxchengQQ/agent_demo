@@ -2,6 +2,8 @@ package com.agentdemo.tools.builtin;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.tools.permission.DefaultToolPermission;
+import com.agentdemo.tools.permission.ToolPermissionLevel;
 import dev.langchain4j.agent.tool.Tool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +24,7 @@ import java.nio.file.Paths;
  * </p>
  */
 @Component
+@DefaultToolPermission(ToolPermissionLevel.ASK)
 public class FileReadTool {
 
     private static final Logger log = LoggerFactory.getLogger(FileReadTool.class);

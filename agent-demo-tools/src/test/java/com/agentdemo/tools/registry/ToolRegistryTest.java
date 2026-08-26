@@ -1,5 +1,7 @@
 package com.agentdemo.tools.registry;
 
+import com.agentdemo.tools.permission.ToolPermissionGuard;
+import com.agentdemo.tools.permission.ToolPermissionService;
 import dev.langchain4j.agent.tool.Tool;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -10,6 +12,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -32,7 +35,9 @@ class ToolRegistryTest {
         ApplicationContext applicationContext = mock(ApplicationContext.class);
         when(applicationContext.getBeansWithAnnotation(org.springframework.stereotype.Component.class))
                 .thenReturn(java.util.Collections.emptyMap());
-        toolRegistry = new ToolRegistry(applicationContext);
+        ToolPermissionService permissionService = mock(ToolPermissionService.class);
+        toolRegistry = new ToolRegistry(applicationContext, permissionService, new ToolIdResolver(),
+                new ToolPermissionGuard(permissionService, new ToolIdResolver()));
     }
 
     @Test
@@ -136,36 +141,37 @@ class ToolRegistryTest {
     }
 
     @Test
-    @DisplayName("getDefaultTools 对同一多方法工具去重（避免 Duplicated definition）")
+    @DisplayName("getDefaultToolsForStreaming 对同一多方法工具去重（避免 Duplicated definition）")
     void getDefaultToolsShouldDeduplicateMultiMethodTool() {
         // given: 注册一个含多个 @Tool 方法的工具（模拟 TimeTool：getCurrentTime/getCurrentTimeByZone/getCurrentDate）
         MultiMethodTool tool = new MultiMethodTool();
         toolRegistry.register(tool);
         assertEquals(1, toolRegistry.size());
 
-        // when: 三个方法名分别作为默认工具 id 解析
-        List<Object> defaultTools = toolRegistry.getDefaultTools(List.of(
+        // when: 三个方法名分别作为默认工具 id 解析（ForStreaming 保留默认 ASK 工具，AC-T01 唯一入口）
+        List<Object> defaultTools = toolRegistry.getDefaultToolsForStreaming(List.of(
                 "builtin:methodA", "builtin:methodB", "builtin:methodC"));
 
-        // then: 同一工具实例只应出现一次（按对象去重）
+        // then: 同一工具实例只应出现一次（按对象去重），出口统一包装（AC-T04）
         assertEquals(1, defaultTools.size(), "多方法同一工具应只保留一个实例");
-        assertEquals(tool, defaultTools.get(0));
+        assertNotEquals(MultiMethodTool.class, defaultTools.get(0).getClass(), "返回的应为包装类型");
     }
 
     @Test
-    @DisplayName("getDefaultTools 对同一多方法工具去重后不改变方法解析")
+    @DisplayName("getDefaultToolsForStreaming 对同一多方法工具去重后不改变方法解析")
     void getDefaultToolsShouldStillResolveAllMethods() {
         // given
         MultiMethodTool tool = new MultiMethodTool();
         toolRegistry.register(tool);
 
         // when
-        List<Object> defaultTools = toolRegistry.getDefaultTools(List.of(
+        List<Object> defaultTools = toolRegistry.getDefaultToolsForStreaming(List.of(
                 "builtin:methodA", "builtin:methodB"));
 
         // then: 方法名解析成功（不抛 TOOL_NOT_FOUND），且只保留一个实例
         assertEquals(1, defaultTools.size(), "两个方法名命中同一工具应只保留一个实例");
-        assertEquals(tool, defaultTools.get(0), "解析结果应为该工具实例");
+        assertEquals(MultiMethodTool.class.getSimpleName() + "$PermissionGuard",
+                defaultTools.get(0).getClass().getSimpleName(), "解析结果应为该工具的出口包装对象");
     }
 
     /**

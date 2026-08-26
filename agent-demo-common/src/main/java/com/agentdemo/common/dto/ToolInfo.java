@@ -35,4 +35,13 @@ public class ToolInfo {
     /** 是否为默认加载工具 */
     @JsonProperty("isDefault")
     private boolean isDefault;
+
+    /**
+     * 工具权限等级（allow/ask/deny，小写字符串）
+     * <p>
+     * 业务含义：加载期过滤与执行期管控的依据（AC-H02）。来源为 ToolPermissionService 裁决结果：
+     * ALLOW=放行、ASK=需确认（流式路径暂停请求批准）、DENY=禁止（加载期不注入 + 执行期兜底拒绝）。
+     * </p>
+     */
+    private String permission;
 }

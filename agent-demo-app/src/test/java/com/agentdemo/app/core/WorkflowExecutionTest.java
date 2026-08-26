@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Test;
 import java.time.LocalDateTime;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -67,5 +68,32 @@ class WorkflowExecutionTest {
     @Test
     void errorCodeWorkflowNotResumable_shouldBe5507() {
         assertEquals(5507, ErrorCode.WORKFLOW_NOT_RESUMABLE.getCode());
+    }
+
+    // ===== 工作流 HITL Task-03：WAITING_USER 状态机（AC-N01/N02/N03 前置）=====
+
+    @Test
+    void waitingUserStatus_shouldExistWithNameWaitingUser() {
+        assertEquals("WAITING_USER", WorkflowExecutionStatus.WAITING_USER.name());
+        assertNotNull(WorkflowExecutionStatus.WAITING_USER.getDescription());
+    }
+
+    @Test
+    void waitUser_fromRunning_shouldSetWaitingUserAndKeepEndTimeNull() {
+        WorkflowExecution execution = runningExecution();
+        execution.waitUser();
+        assertEquals(WorkflowExecutionStatus.WAITING_USER, execution.getStatus());
+        // 业务含义：等待用户输入非终态，endTime 必须为 null（与 PAUSED 一致的"中场休息"语义）
+        assertNull(execution.getEndTime());
+    }
+
+    @Test
+    void waitingUser_shouldNotBeTerminalState() {
+        // 业务含义：WAITING_USER 与 PAUSED 同为非终态——用户可回复恢复或主动终止
+        WorkflowExecutionStatus status = WorkflowExecutionStatus.WAITING_USER;
+        assertNotEquals(WorkflowExecutionStatus.COMPLETED, status);
+        assertNotEquals(WorkflowExecutionStatus.FAILED, status);
+        assertNotEquals(WorkflowExecutionStatus.TERMINATED, status);
+        assertNotEquals(WorkflowExecutionStatus.TIMEOUT, status);
     }
 }

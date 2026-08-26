@@ -9,6 +9,7 @@ import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
+import com.agentdemo.app.service.WorkflowHITLState;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -120,6 +121,18 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
     }
 
     /**
+     * HITL 恢复 key 规则："hitl:{iteration}:{agentName}"（Task-08）
+     * <p>
+     * 业务含义：协调层 hitlReply 在用户回复后将该 key 写入 ctx，标记"此步是 HITL 暂停步"。
+     * 策略重放时 done key 未命中但 hitl key 命中——说明该步已由用户回复/确认恢复，
+     * 以恢复方式执行（而非重新触发 HITL 死循环，技术方案 Sec 11 风险缓解）。
+     * </p>
+     */
+    public static String hitlResumeKey(int iteration, String agentName) {
+        return "hitl:" + iteration + ":" + agentName;
+    }
+
+    /**
      * 执行或跳过单个 Agent（断点续执行核心，AC-017）
      * <p>
      * 业务含义：确定性重放——查恢复 key 命中（值非 null，空串也算完成）则跳过真实执行，
@@ -160,6 +173,16 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
             return saved.toString();
         }
 
+        // 业务含义：HITL 暂停步恢复（Task-08）——done key 未命中但 hitl key 命中，
+        // 说明该步是用户已回复/确认的 HITL 暂停步，以恢复方式执行而非重新触发 HITL 死循环
+        Object hitlResume = ctx.read(hitlResumeKey(iteration, agentDef.getName()));
+        if (hitlResume instanceof WorkflowHITLState.HitlResume resume) {
+            String output = resumePausedStep(resume, agentDef, iteration, ctx, emitter, execution, agentIndex);
+            // 恢复完成写 done key（后续重放判定跳过）
+            ctx.write(key, output);
+            return output;
+        }
+
         StepExecution step = new StepExecution(agentDef.getName(), agentIndex, StepStatus.RUNNING);
         execution.getSteps().add(step);
         WorkflowEventPublisher.send(emitter, "step_start", Map.of(
@@ -168,11 +191,50 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
                 "iteration", iteration));
 
         String output = agentExecutor.executeWithRetry(agentDef, input, emitter, agentIndex,
-                maxRetries, modelId);
+                maxRetries, modelId, iteration, execution.getExecutionId());
 
         step.complete(output);
         // 业务含义：写恢复 key（AC-021 空输出也写——空串非 null，恢复时同样跳过）
         ctx.write(key, output);
+        ctx.recordOutput(agentDef.getName(), output);
+        ctx.write("lastOutput", output);
+
+        WorkflowEventPublisher.send(emitter, "step_complete", Map.of(
+                "agentIndex", agentIndex,
+                "agentName", agentDef.getName(),
+                "iteration", iteration,
+                "durationMs", step.getDurationMs(),
+                "outputLength", output.length()));
+        return output;
+    }
+
+    /**
+     * 以恢复方式执行 HITL 暂停步（Task-08）
+     * <p>
+     * 业务含义：用户回复/确认后重放策略时，暂停步不再重新触发 HITL，而是通过
+     * AgentExecutor.executeHitlResume 恢复执行（askUser：注入回复续跑 ReAct；
+     * checkpoint：确认后执行方法）。事件协议与正常执行一致（step_start/step_complete），
+     * 完成后清除 hitl 恢复 key 并同步 lastOutput（AC-N03/AC-S01/AC-M01）。
+     * </p>
+     */
+    protected String resumePausedStep(WorkflowHITLState.HitlResume resume, AgentDefinition agentDef,
+                                    int iteration, WorkflowContext ctx, SseEmitter emitter,
+                                    WorkflowExecution execution, int agentIndex) {
+        StepExecution step = new StepExecution(agentDef.getName(), agentIndex, StepStatus.RUNNING);
+        execution.getSteps().add(step);
+        WorkflowEventPublisher.send(emitter, "step_start", Map.of(
+                "agentIndex", agentIndex,
+                "agentName", agentDef.getName(),
+                "iteration", iteration));
+
+        String output = agentExecutor.executeHitlResume(agentDef, resume.getHitlState(),
+                resume.getMessage(), resume.getApproved(), emitter, agentIndex,
+                execution.getExecutionId());
+
+        step.complete(output);
+        // 业务含义：清除 hitl 恢复 key（恢复已完成，避免后续重放再次命中）；
+        // lastOutput 同步——循环模式退出谓词在轮末读取 lastOutput 判定
+        ctx.getState().remove(hitlResumeKey(iteration, agentDef.getName()));
         ctx.recordOutput(agentDef.getName(), output);
         ctx.write("lastOutput", output);
 

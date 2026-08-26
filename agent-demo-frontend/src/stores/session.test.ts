@@ -560,7 +560,9 @@ describe('Session Store', () => {
       expect(store.isWaitingForUserInput).toBe(false);
     });
 
-    it('setAskUserData 不持久化 askUserData 到 localStorage（仅实时展示）', () => {
+    // ===== unified-chat-mode Task-15 新增：决策 7 锁定保留 + 持久化 =====
+
+    it('setAskUserData 持久化 askUserData 到 localStorage（决策 7：刷新后卡片可回看）', () => {
       const store = useSessionStore();
       store.init();
       setupAssistantMessage(store, 'msg-hitl-5');
@@ -572,7 +574,73 @@ describe('Session Store', () => {
       });
       const raw = localStorage.getItem('agent-demo:sessions');
       expect(raw).not.toBeNull();
-      expect(raw).not.toContain('askUserData');
+      expect(raw).toContain('askUserData');
+    });
+
+    it('setAskUserAnswer 写入 answer 字段并持久化，isWaitingForUserInput 返回 false', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-6');
+      store.setAskUserData('msg-hitl-6', {
+        type: 'confirm',
+        question: '确认删除？',
+        options: ['确认', '取消'],
+        retryCount: 0,
+      });
+      expect(store.isWaitingForUserInput).toBe(true);
+
+      store.setAskUserAnswer(store.sessions[0].sessionId, '确认');
+
+      const found = store.sessions[0].messages.find((m) => m.id === 'msg-hitl-6');
+      expect(found?.askUserData?.answer).toBe('确认');
+      expect(found?.status).toBe('complete');
+      expect(store.isWaitingForUserInput).toBe(false);
+      // 持久化（决策 7）
+      const raw = localStorage.getItem('agent-demo:sessions');
+      expect(raw).toContain('"answer":"确认"');
+    });
+
+    it('setAskUserAnswer 保留 askUserData（区别于 clearAskUser，卡片可回看）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-7');
+      store.setAskUserData('msg-hitl-7', {
+        type: 'text',
+        question: '请提供订单号',
+        options: [],
+        retryCount: 0,
+      });
+      store.setAskUserAnswer(store.sessions[0].sessionId, 'ORD-12345');
+      const found = store.sessions[0].messages.find((m) => m.id === 'msg-hitl-7');
+      expect(found?.askUserData).toBeDefined();
+      expect(found?.askUserData?.answer).toBe('ORD-12345');
+    });
+
+    it('isWaitingForUserInput 在 askUserData 有 answer 时返回 false（已回答不等待）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-hitl-8');
+      store.setAskUserData('msg-hitl-8', {
+        type: 'confirm',
+        question: '确认？',
+        options: ['是', '否'],
+        retryCount: 0,
+      });
+      store.setAskUserAnswer(store.sessions[0].sessionId, '是');
+      expect(store.isWaitingForUserInput).toBe(false);
+    });
+
+    it('旧 localStorage 数据兼容：无 answer 字段的 askUserData 视为未回答', () => {
+      // 模拟旧数据（无 answer 字段）
+      const oldData = { type: 'confirm', question: '旧问题', options: ['A'], retryCount: 0 };
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-old');
+      store.setAskUserData('msg-old', oldData);
+      const found = store.sessions[0].messages.find((m) => m.id === 'msg-old');
+      expect(found?.askUserData?.answer).toBeUndefined();
+      // 无 answer -> 视为未回答（等待输入）
+      expect(store.isWaitingForUserInput).toBe(true);
     });
   });
 });
