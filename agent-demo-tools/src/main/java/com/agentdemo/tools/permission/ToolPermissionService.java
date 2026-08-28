@@ -42,6 +42,15 @@ public class ToolPermissionService {
     /** askUser 工具豁免特判标识（AC-S03） */
     public static final String ASK_USER_TOOL_ID = "builtin:askUser";
 
+    /**
+     * loadSkill 工具豁免特判标识（决策 6）
+     * <p>
+     * 业务含义：技能激活为只读、可回滚（L3）动作，无外部副作用，不应触发确认卡片。
+     * 与 askUser 豁免同构（防确认死锁），保证 Agent 自主激活流程不被权限拦截打断。
+     * </p>
+     */
+    public static final String LOAD_SKILL_TOOL_ID = "builtin:loadSkill";
+
     private final ToolPermissionProperties properties;
     private final ObjectMapper objectMapper;
     private final Path permissionFile;
@@ -84,6 +93,9 @@ public class ToolPermissionService {
             return ToolPermissionLevel.ALLOW;
         }
         if (ASK_USER_TOOL_ID.equals(toolId)) {
+            return ToolPermissionLevel.ALLOW;
+        }
+        if (LOAD_SKILL_TOOL_ID.equals(toolId)) {
             return ToolPermissionLevel.ALLOW;
         }
         if (toolId == null) {
