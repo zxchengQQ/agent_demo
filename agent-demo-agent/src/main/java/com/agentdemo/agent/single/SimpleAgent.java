@@ -7,6 +7,7 @@ import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.common.enums.AgentType;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolRegistry;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
@@ -14,6 +15,7 @@ import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.TokenStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -60,6 +62,7 @@ public class SimpleAgent implements BaseAgent {
     private final ToolExecutor toolExecutor;
     private final PromptTemplateLoader promptTemplateLoader;
     private final SessionToolResolver sessionToolResolver;
+    private final SkillPromptComposer skillPromptComposer;
 
     /**
      * AiServices 代理缓存（按 modelId 隔离，懒加载）
@@ -75,6 +78,32 @@ public class SimpleAgent implements BaseAgent {
      */
     private final ConcurrentHashMap<String, Integer> delegateToolCounts = new ConcurrentHashMap<>();
 
+    @Autowired
+    public SimpleAgent(ModelFactory modelFactory,
+                       ToolRegistry toolRegistry,
+                       ChatMemoryManager memoryManager,
+                       AgentConfig agentConfig,
+                       ToolSchemaConverter toolSchemaConverter,
+                       ToolExecutor toolExecutor,
+                       PromptTemplateLoader promptTemplateLoader,
+                       HumanInteractionManager humanInteractionManager,
+                       SessionToolResolver sessionToolResolver,
+                       SkillPromptComposer skillPromptComposer) {
+        this.modelFactory = modelFactory;
+        this.toolRegistry = toolRegistry;
+        this.memoryManager = memoryManager;
+        this.agentConfig = agentConfig;
+        this.toolSchemaConverter = toolSchemaConverter;
+        this.toolExecutor = toolExecutor;
+        this.promptTemplateLoader = promptTemplateLoader;
+        this.sessionToolResolver = sessionToolResolver;
+        this.skillPromptComposer = skillPromptComposer;
+        log.info("SimpleAgent 构造完成（delegate 懒加载，按 modelId 缓存，工具解析委托 SessionToolResolver）");
+    }
+
+    /**
+     * 兼容构造器（无技能能力：技能段跳过，测试与降级场景）
+     */
     public SimpleAgent(ModelFactory modelFactory,
                        ToolRegistry toolRegistry,
                        ChatMemoryManager memoryManager,
@@ -84,15 +113,9 @@ public class SimpleAgent implements BaseAgent {
                        PromptTemplateLoader promptTemplateLoader,
                        HumanInteractionManager humanInteractionManager,
                        SessionToolResolver sessionToolResolver) {
-        this.modelFactory = modelFactory;
-        this.toolRegistry = toolRegistry;
-        this.memoryManager = memoryManager;
-        this.agentConfig = agentConfig;
-        this.toolSchemaConverter = toolSchemaConverter;
-        this.toolExecutor = toolExecutor;
-        this.promptTemplateLoader = promptTemplateLoader;
-        this.sessionToolResolver = sessionToolResolver;
-        log.info("SimpleAgent 构造完成（delegate 懒加载，按 modelId 缓存，工具解析委托 SessionToolResolver）");
+        this(modelFactory, toolRegistry, memoryManager, agentConfig, toolSchemaConverter,
+                toolExecutor, promptTemplateLoader, humanInteractionManager, sessionToolResolver,
+                null);
     }
 
     /**
@@ -128,7 +151,9 @@ public class SimpleAgent implements BaseAgent {
                             .streamingChatModel(streamingChatModel)
                             .chatMemoryProvider(memoryId -> memoryManager.getMemory((String) memoryId))
                             .tools(toolObjects.toArray())
-                            .systemMessageProvider(memoryId -> promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_CHAT))
+                            // 业务含义：systemMessageProvider 按 memoryId（=sessionId）动态组装技能段，
+                            // delegate 无需按会话重建（agent-skill 技术方案 2.1 同步路径注入点）
+                            .systemMessageProvider(memoryId -> composeSystemPromptWithSkills((String) memoryId))
                             .build();
                     delegateCache.put(cacheKey, cached);
                 }
@@ -209,6 +234,18 @@ public class SimpleAgent implements BaseAgent {
         }
         List<Object> tools = sessionToolResolver.resolveSessionTools(sessionId, toolIds);
         return getDelegate(modelId, tools).chatStream(sessionId, message);
+    }
+
+    /**
+     * 组装系统提示词（agent-context-engineering Task-13，AC-N01/T01）
+     * <p>
+     * 业务含义：技能目录/激活段已移出系统提示词（改为记忆流附件 emit-once，见
+     * SkillLoadTool 指令附件 + 目录附件保障），同步路径系统提示词仅返回基础 chat 场景，
+     * 技能激活前后字节级一致（冻结契约）。无技能能力（Composer 为 null）时与现状零差异。
+     * </p>
+     */
+    String composeSystemPromptWithSkills(String sessionId) {
+        return promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_CHAT);
     }
 
     /**

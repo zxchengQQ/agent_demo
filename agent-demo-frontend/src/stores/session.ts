@@ -34,6 +34,25 @@ export const useSessionStore = defineStore('session', {
      */
     knowledgeBasesBySession: {} as Record<string, string[]>,
     /**
+     * 技能选择器状态（按会话隔离，agent-skill）
+     * 业务含义：key 为 sessionId，value 为用户手动指定的技能 id 列表。
+     * 空数组或无记录表示"自动"模式（Agent 自主匹配激活）。
+     * 不持久化到 localStorage（与 knowledgeBasesBySession 行为一致，刷新后重置）。
+     */
+    skillsBySession: {} as Record<string, string[]>,
+    /**
+     * 技能排除状态（按会话隔离，agent-skill）
+     * 业务含义：key 为 sessionId，value 为用户排除的技能 id 列表（激活徽标"×"操作）。
+     * 不持久化到 localStorage（与 knowledgeBasesBySession 行为一致，刷新后重置）。
+     */
+    excludedSkillsBySession: {} as Record<string, string[]>,
+    /**
+     * 会话级激活技能集合（agent-skill）
+     * 业务含义：key 为 sessionId，value 为当前已激活的技能 id 列表（Agent 自主或手动）。
+     * 供激活徽标状态与排除操作跟踪。不持久化到 localStorage。
+     */
+    activatedSkillsBySession: {} as Record<string, string[]>,
+    /**
      * 模型选择器状态（按会话隔离）
      * 业务含义：key 为 sessionId，value 为用户选中的 modelId。
      * 无记录时返回空字符串（由上层回退到 lastUsedModelId 或默认模型）。
@@ -155,6 +174,9 @@ export const useSessionStore = defineStore('session', {
       storage.saveSessions(this.sessions);
       // 清理会话级状态（与 knowledgeBasesBySession 一致，避免内存泄漏）
       delete this.modelBySession[sessionId];
+      delete this.skillsBySession[sessionId];
+      delete this.excludedSkillsBySession[sessionId];
+      delete this.activatedSkillsBySession[sessionId];
       // 若删除的是当前会话，切换到第一个或新建
       if (this.currentSessionId === sessionId) {
         if (this.sessions.length > 0) {
@@ -323,6 +345,23 @@ export const useSessionStore = defineStore('session', {
     },
 
     /**
+     * 恢复消息为流式状态（CR-001 新增，AC-N04）
+     * 业务含义：HITL 恢复续写时复用含交互卡片/问题的助手气泡，将其 status 置回
+     * incomplete 以在同一气泡内流式追加续写内容；流式结束后由 markComplete 收尾。
+     * 卡片锁定态（answer/approved）不受影响，续写期间卡片仍可见。
+     */
+    markStreaming(messageId: string) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          msg.status = 'incomplete';
+          storage.saveSessions(this.sessions);
+          return;
+        }
+      }
+    },
+
+    /**
      * 标记消息错误
      */
     markError(messageId: string, errorMsg: string) {
@@ -382,11 +421,14 @@ export const useSessionStore = defineStore('session', {
      * 设置消息的 askUserData（ask_user 事件触发）
      * 业务含义：后端通过 ask_user 事件发起人机交互请求时，将交互数据写入助手消息。
      * unified-chat-mode（决策 7）：持久化到 localStorage，刷新后卡片可回看问题与选择。
+     * CR-003（AC-N06）：追加到 askUserHistory 历史数组（多次追问互不覆盖），
+     * 并同步镜像 askUserData 为最新一条。
      */
     setAskUserData(messageId: string, data: AskUserData) {
       for (const session of this.sessions) {
         const msg = session.messages.find((m) => m.id === messageId);
         if (msg) {
+          msg.askUserHistory = [...(msg.askUserHistory ?? []), data];
           msg.askUserData = data;
           storage.saveSessions(this.sessions);
           return;
@@ -399,6 +441,7 @@ export const useSessionStore = defineStore('session', {
      * 业务含义：用户通过卡片选项/内嵌输入框/主输入框回复后写入 answer 字段并持久化，
      * 卡片进入回答锁定态（可回看）；isWaitingForUserInput 因 answer 存在返回 false。
      * 与 clearAskUser 不同，本方法保留 askUserData（含 answer）供历史回看。
+     * CR-003（AC-N06）：同步更新 askUserHistory 最后一条的 answer（镜像一致性）。
      */
     setAskUserAnswer(sessionId: string, answer: string) {
       const session = this.sessions.find((s) => s.sessionId === sessionId);
@@ -406,6 +449,9 @@ export const useSessionStore = defineStore('session', {
       const lastMsg = session.messages[session.messages.length - 1];
       if (lastMsg.askUserData) {
         lastMsg.askUserData.answer = answer;
+        if (lastMsg.askUserHistory && lastMsg.askUserHistory.length > 0) {
+          lastMsg.askUserHistory[lastMsg.askUserHistory.length - 1].answer = answer;
+        }
         lastMsg.status = 'complete';
         storage.saveSessions(this.sessions);
       }
@@ -434,6 +480,8 @@ export const useSessionStore = defineStore('session', {
      * 业务含义：ask 级工具被拦截时，将 tool_confirm 四要素（工具名/描述/参数摘要）
      * 以 kind=permission 的 askUserData 形态写入助手消息，前端据此渲染 ConfirmCard。
      * 持久化到 localStorage，刷新后可回看（与 askUserData 一致）。
+     * CR-003（AC-N06）：追加到 askUserHistory 历史数组（多次审批互不覆盖），
+     * 并同步镜像 askUserData 为最新一条。
      */
     setToolConfirmData(messageId: string, data: {
       toolName: string;
@@ -443,7 +491,7 @@ export const useSessionStore = defineStore('session', {
       for (const session of this.sessions) {
         const msg = session.messages.find((m) => m.id === messageId);
         if (msg) {
-          msg.askUserData = {
+          const entry: AskUserData = {
             type: 'confirm',
             kind: 'permission',
             question: `请求使用工具「${data.toolName}」`,
@@ -452,16 +500,65 @@ export const useSessionStore = defineStore('session', {
             toolDescription: data.toolDescription,
             toolArguments: data.arguments,
           };
+          msg.askUserHistory = [...(msg.askUserHistory ?? []), entry];
+          msg.askUserData = entry;
           storage.saveSessions(this.sessions);
           return;
         }
       }
     },
 
+    // ===== 技能激活相关（agent-skill Task-22，AC-S04）=====
+
+    /**
+     * 记录技能激活事件到助手消息（激活徽标展示）
+     * 业务含义：skill_activated 事件触发时写入消息 activatedSkills 列表，前端渲染徽标。
+     * 不持久化到 localStorage（实时展示）。
+     */
+    addActivatedSkill(messageId: string, data: import('@/types').SkillActivatedEvent) {
+      for (const session of this.sessions) {
+        const msg = session.messages.find((m) => m.id === messageId);
+        if (msg) {
+          msg.activatedSkills = msg.activatedSkills ?? [];
+          // 去重：同一技能只记一次
+          if (!msg.activatedSkills.some((s) => s.skillId === data.skillId)) {
+            msg.activatedSkills.push(data);
+          }
+          return;
+        }
+      }
+    },
+
+    /**
+     * 记录技能激活到会话级激活列表
+     * 业务含义：跨消息维护会话当前激活技能 id 集合（供排除操作与后续请求状态跟踪）。
+     * 不持久化到 localStorage。
+     */
+    addActivatedSkillToSession(sessionId: string, skillId: string) {
+      const current = this.activatedSkillsBySession[sessionId] ?? [];
+      if (!current.includes(skillId)) {
+        this.activatedSkillsBySession[sessionId] = [...current, skillId];
+      }
+    },
+
+    /**
+     * 排除技能（激活徽标"×"操作，AC-S04 回滚 / AC-M04 排除不复发）
+     * 业务含义：用户点击排除后，记录到排除集合并从激活集合移除。
+     */
+    excludeSkill(sessionId: string, skillId: string) {
+      const excluded = this.excludedSkillsBySession[sessionId] ?? [];
+      if (!excluded.includes(skillId)) {
+        this.excludedSkillsBySession[sessionId] = [...excluded, skillId];
+      }
+      // 从激活集合移除
+      const activated = this.activatedSkillsBySession[sessionId] ?? [];
+      this.activatedSkillsBySession[sessionId] = activated.filter((id) => id !== skillId);
+    },
     /**
      * 记录用户对工具权限确认卡片的决策（Task-17，AC-N03/AC-S02）
      * 业务含义：用户点击批准/拒绝后写入 approved 并持久化，
      * 卡片进入决策锁定态（可回看）；随后由 ChatWindow 携带 toolApproved 重新发起流式请求恢复。
+     * CR-003（AC-N06）：同步更新 askUserHistory 最后一条的 approved（镜像一致性，不改变此前记录）。
      */
     setToolConfirmApproved(sessionId: string, approved: boolean) {
       const session = this.sessions.find((s) => s.sessionId === sessionId);
@@ -469,6 +566,9 @@ export const useSessionStore = defineStore('session', {
       const lastMsg = session.messages[session.messages.length - 1];
       if (lastMsg.askUserData?.kind === 'permission') {
         lastMsg.askUserData.approved = approved;
+        if (lastMsg.askUserHistory && lastMsg.askUserHistory.length > 0) {
+          lastMsg.askUserHistory[lastMsg.askUserHistory.length - 1].approved = approved;
+        }
         lastMsg.status = 'complete';
         storage.saveSessions(this.sessions);
       }
@@ -665,6 +765,40 @@ export const useSessionStore = defineStore('session', {
      */
     setKnowledgeBases(sessionId: string, bases: string[]) {
       this.knowledgeBasesBySession[sessionId] = bases;
+    },
+
+    // ===== 技能选择器会话级状态（agent-skill）=====
+
+    /**
+     * 获取指定会话的技能选择
+     * 业务含义：无记录时返回空数组（自动模式），有记录时返回手动指定的技能 id 列表。
+     */
+    getSkills(sessionId: string): string[] {
+      return this.skillsBySession[sessionId] ?? [];
+    },
+
+    /**
+     * 设置指定会话的技能选择
+     * 业务含义：用户通过技能选择器切换选择时调用，按会话隔离保存。
+     */
+    setSkills(sessionId: string, skills: string[]) {
+      this.skillsBySession[sessionId] = skills;
+    },
+
+    /**
+     * 获取指定会话的技能排除集合
+     * 业务含义：激活徽标"×"操作记录的排除技能 id 列表。
+     */
+    getExcludedSkills(sessionId: string): string[] {
+      return this.excludedSkillsBySession[sessionId] ?? [];
+    },
+
+    /**
+     * 设置指定会话的技能排除集合
+     * 业务含义：用户排除某技能时调用，按会话隔离保存。
+     */
+    setExcludedSkills(sessionId: string, skills: string[]) {
+      this.excludedSkillsBySession[sessionId] = skills;
     },
 
     // ===== 模型选择器会话级状态（Task-17）=====

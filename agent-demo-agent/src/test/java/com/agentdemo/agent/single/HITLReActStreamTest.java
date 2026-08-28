@@ -471,4 +471,64 @@ class HITLReActStreamTest {
         assertTrue(messages.stream().anyMatch(m -> m instanceof ToolExecutionResultMessage),
                 "应追加错误 Observation 的 ToolExecutionResultMessage，实际: " + messages);
     }
+
+    // ==================== Task-08: 末轮收尾状态注入（agent-context-engineering，AC-N02/E02/H02） ====================
+
+    /** 捕获最后一次 model.stream 的消息列表 */
+    private List<ChatMessage> captureLastStreamMessages() {
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(model, atLeastOnce()).stream(captor.capture(), isNull(), any());
+        List<List<ChatMessage>> allCalls = captor.getAllValues();
+        return allCalls.get(allCalls.size() - 1);
+    }
+
+    @Test
+    void 迭代用尽_强制总结前注入收尾状态消息() {
+        // 每次 stream 都返回 calculator tool_calls，耗尽 maxIterations=2
+        doAnswer(inv -> mockSingleRoundToolCalls(inv, "calculate", "{\"expression\":\"1+1\"}"))
+                .when(model).stream(any(), any(), any());
+        when(toolExecutor.checkPermission("calculate"))
+                .thenReturn(new ToolExecutor.ToolPermissionCheck(
+                        ToolPermissionLevel.ALLOW, "builtin:calculator", "计算器"));
+        when(toolExecutor.execute("calculate", "{\"expression\":\"1+1\"}"))
+                .thenReturn("1+1 = 2");
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("计算1+1"));
+
+        HITLReActStream stream = new HITLReActStream(
+                model, messages, "[tools]", toolExecutor,
+                humanInteractionManager, "sess-status", "model-001", 0, 2);
+        stream.start();
+
+        List<ChatMessage> lastMessages = captureLastStreamMessages();
+        ChatMessage last = lastMessages.get(lastMessages.size() - 1);
+        assertTrue(last instanceof UserMessage, "末轮前应注入收尾状态消息");
+        String status = ((UserMessage) last).singleText();
+        assertTrue(status.contains("<agent_status>"), "收尾消息应以 <agent_status> 包裹，实际: " + status);
+        assertTrue(status.contains("2/2"), "收尾消息应含迭代读数 2/2，实际: " + status);
+        assertTrue(status.contains("不要再发起工具调用"),
+                "收尾消息应含收尾操作策略");
+    }
+
+    @Test
+    void 正常stop路径_不注入收尾状态消息() {
+        doAnswer(inv -> mockSingleRoundStop(inv)).when(model).stream(any(), any(), any());
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("你好"));
+
+        HITLReActStream stream = new HITLReActStream(
+                model, messages, "[tools]", toolExecutor,
+                humanInteractionManager, "sess-stop", "model-001", 0, 8);
+        stream.start();
+
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(model, atLeastOnce()).stream(captor.capture(), any(), any());
+        for (List<ChatMessage> call : captor.getAllValues()) {
+            assertTrue(call.stream().noneMatch(m -> m instanceof UserMessage um
+                            && um.singleText() != null && um.singleText().contains("<agent_status>")),
+                    "正常 stop 路径不应注入收尾状态消息");
+        }
+    }
 }

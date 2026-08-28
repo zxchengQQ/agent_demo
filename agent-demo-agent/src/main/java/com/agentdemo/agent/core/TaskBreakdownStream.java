@@ -4,11 +4,13 @@ import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.agent.single.HITLReActStream;
 import com.agentdemo.agent.single.SessionToolResolver;
+import com.agentdemo.agent.single.SkillToolInterceptor;
 import com.agentdemo.llm.thinking.ThinkingStreamHandler;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ToolCall;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
 import dev.langchain4j.data.message.AiMessage;
@@ -74,6 +76,15 @@ public class TaskBreakdownStream {
     /** 工具 JSON Schema（单次请求内一次生成复用） */
     private final String toolsJson;
 
+    /** 技能提示词组装器（null 则技能段跳过，agent-skill） */
+    private final SkillPromptComposer skillPromptComposer;
+
+    /** 技能工具拦截器（null 则 loadSkill 不拦截，agent-skill） */
+    private final SkillToolInterceptor skillToolInterceptor;
+
+    /** 会话工具解析器（agent-context-engineering Task-10：{{tools}} 文本来源，null 退化 tools 全量） */
+    private final SessionToolResolver sessionToolResolver;
+
     // ==================== 回调消费者 ====================
     // 规划阶段
     private PlanConsumer onPlan;
@@ -95,6 +106,9 @@ public class TaskBreakdownStream {
 
     // HITL 暂停（子任务执行中 askUser 拦截）
     private AskUserConsumer onAskUser;
+
+    // 技能激活（子任务执行中 loadSkill 拦截，agent-skill）
+    private com.agentdemo.agent.core.HitlTokenStream.SkillActivatedConsumer onSkillActivated;
 
     // 生命周期
     private Runnable onComplete;
@@ -128,6 +142,48 @@ public class TaskBreakdownStream {
                                ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
                                HumanInteractionManager humanInteractionManager,
                                List<Object> tools, String toolsJson, List<SubTask> tasks) {
+        this(sessionId, message, modelId, modelFactory, memoryManager, agentConfig,
+                toolSchemaConverter, toolExecutor, promptTemplateLoader, humanInteractionManager,
+                tools, toolsJson, tasks, null, null, null);
+    }
+
+    /**
+     * 构造器（技能能力版本，agent-skill）
+     *
+     * @param skillPromptComposer 技能提示词组装器（null 则技能段跳过）
+     * @param skillToolInterceptor 技能工具拦截器（null 则 loadSkill 不拦截）
+     */
+    public TaskBreakdownStream(String sessionId, String message, String modelId,
+                               ModelFactory modelFactory, ChatMemoryManager memoryManager,
+                               AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
+                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
+                               HumanInteractionManager humanInteractionManager,
+                               List<Object> tools, String toolsJson, List<SubTask> tasks,
+                               SkillPromptComposer skillPromptComposer,
+                               SkillToolInterceptor skillToolInterceptor) {
+        this(sessionId, message, modelId, modelFactory, memoryManager, agentConfig,
+                toolSchemaConverter, toolExecutor, promptTemplateLoader, humanInteractionManager,
+                tools, toolsJson, tasks, skillPromptComposer, skillToolInterceptor, null);
+    }
+
+    /**
+     * 构造器（技能能力版本 + 会话工具解析器，agent-context-engineering Task-10）
+     * <p>
+     * sessionToolResolver 用于子任务系统提示词 {{tools}} 文本的来源（会话基础工具集，
+     * 冻结契约 AC-T02）；null 时退化为 tools 全量（兼容既有测试与退化路径）。
+     * </p>
+     *
+     * @param sessionToolResolver 会话工具解析器（null 则 {{tools}} 文本用 tools 全量）
+     */
+    public TaskBreakdownStream(String sessionId, String message, String modelId,
+                               ModelFactory modelFactory, ChatMemoryManager memoryManager,
+                               AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
+                               ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
+                               HumanInteractionManager humanInteractionManager,
+                               List<Object> tools, String toolsJson, List<SubTask> tasks,
+                               SkillPromptComposer skillPromptComposer,
+                               SkillToolInterceptor skillToolInterceptor,
+                               SessionToolResolver sessionToolResolver) {
         this.sessionId = sessionId;
         this.message = message;
         this.modelId = modelId;
@@ -141,6 +197,9 @@ public class TaskBreakdownStream {
         this.tools = tools;
         this.toolsJson = toolsJson;
         this.tasks = tasks;
+        this.skillPromptComposer = skillPromptComposer;
+        this.skillToolInterceptor = skillToolInterceptor;
+        this.sessionToolResolver = sessionToolResolver;
     }
 
     // ==================== 链式 Setter ====================
@@ -208,6 +267,12 @@ public class TaskBreakdownStream {
     /** HITL 暂停回调（子任务执行中 askUser 拦截） */
     public TaskBreakdownStream onAskUser(AskUserConsumer consumer) {
         this.onAskUser = consumer;
+        return this;
+    }
+
+    /** 技能激活回调（子任务执行中 loadSkill 拦截，agent-skill） */
+    public TaskBreakdownStream onSkillActivated(com.agentdemo.agent.core.HitlTokenStream.SkillActivatedConsumer consumer) {
+        this.onSkillActivated = consumer;
         return this;
     }
 
@@ -509,9 +574,15 @@ public class TaskBreakdownStream {
                 ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
                 : modelFactory.getDefaultThinkingStreamingChatModel();
 
-        // 构造系统提示词：task-execute 场景 + 动态工具描述（{{tools}} 占位符运行时替换，BR-AGT-009）
+        // 构造系统提示词：task-execute 场景 + 工具描述（{{tools}} 占位符运行时替换，BR-AGT-009）
+        // agent-context-engineering Task-10（AC-N01/T02）：{{tools}} 文本来自会话基础工具集
+        // （冻结契约），技能目录/激活段已移出系统提示词（改为记忆流附件，emit-once）
+        String toolsText = (sessionToolResolver != null)
+                ? toolSchemaConverter.convertToDescriptionText(
+                        sessionToolResolver.resolveSessionBaseTools(sessionId, null))
+                : toolSchemaConverter.convertToDescriptionText(tools);
         String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_EXECUTE)
-                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText(tools));
+                .replace("{{tools}}", toolsText);
 
         List<ChatMessage> messages = new ArrayList<>();
         messages.add(SystemMessage.from(systemPrompt));
@@ -549,7 +620,8 @@ public class TaskBreakdownStream {
                 sessionId,
                 modelId,
                 retryCount,
-                maxIterations);
+                maxIterations,
+                skillToolInterceptor);
 
         // 回调适配：HITL 事件 -> task_* 事件（技术方案 1.6.4）
         hitlStream.onPartialThinking(thinking -> {
@@ -590,6 +662,12 @@ public class TaskBreakdownStream {
             // 业务含义：标记暂停。不能在回调内抛异常（HITLReActStream.start() 会捕获并触发
             // 其 onError，导致暂停信号被吞没/包装），改在 start() 返回后检测 paused 标志再抛
             paused[0] = true;
+        });
+        hitlStream.onSkillActivated((skillId, skillName, source, boundToolIds) -> {
+            // 业务含义：子任务 loadSkill 激活事件透传（agent-skill，AC-S04）
+            if (onSkillActivated != null) {
+                onSkillActivated.accept(skillId, skillName, source, boundToolIds);
+            }
         });
         hitlStream.onComplete(response -> {
             resultHolder[0] = response;

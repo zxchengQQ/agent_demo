@@ -1,4 +1,4 @@
-import type { AskUserData, KnowledgeSource, StreamCallbacks, TokenUsage, ToolConfirmData } from '@/types';
+import type { AskUserData, KnowledgeSource, SkillActivatedEvent, StreamCallbacks, TokenUsage, ToolConfirmData } from '@/types';
 
 /**
  * SSE 流式调用封装
@@ -22,6 +22,8 @@ const API_BASE = '/api/agent';
  * @param callbacks SSE 事件回调
  * @param signal AbortController.signal，用于停止生成（AC-011）
  * @param toolApproved 工具权限确认结果（true=批准/继续执行，false=拒绝/换方案；不携带时不序列化）
+ * @param skills 用户手动指定的技能 id 列表（空数组=自动模式；agent-skill 手动指定）
+ * @param excludedSkills 用户排除的技能 id 列表（agent-skill 排除）
  */
 export async function streamChat(
   sessionId: string,
@@ -32,10 +34,15 @@ export async function streamChat(
   callbacks: StreamCallbacks,
   signal: AbortSignal,
   toolApproved?: boolean,
+  skills: string[] = [],
+  excludedSkills: string[] = [],
 ): Promise<void> {
   let response: Response;
   // toolApproved 未定义时不写入请求体（undefined 字段被 JSON.stringify 跳过，保证向后兼容）
-  const body: Record<string, unknown> = { sessionId, message, knowledgeBases, model: modelId, tools };
+  const body: Record<string, unknown> = {
+    sessionId, message, knowledgeBases, model: modelId, tools,
+    skills, excludedSkills,
+  };
   if (toolApproved !== undefined) {
     body.toolApproved = toolApproved;
   }
@@ -309,6 +316,17 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
       try {
         const parsed = JSON.parse(data) as ToolConfirmData;
         callbacks.onToolConfirm?.(parsed);
+      } catch {
+        // JSON 解析失败时静默跳过（容错）
+      }
+      break;
+    }
+    case 'skill_activated': {
+      // 技能激活事件（agent-skill，AC-S04）：Agent 自主或手动指定技能激活时推送
+      // 载荷：skillId/skillName/source(manual|auto)/boundToolIds
+      try {
+        const parsed = JSON.parse(data) as SkillActivatedEvent;
+        callbacks.onSkillActivated?.(parsed);
       } catch {
         // JSON 解析失败时静默跳过（容错）
       }

@@ -169,6 +169,20 @@ export interface Message {
    * 用户回复后由 clearAskUser 清除并标记消息 complete。
    */
   askUserData?: AskUserData;
+  /**
+   * HITL 交互历史记录数组（CR-003 新增，AC-N06）
+   * 业务含义：同一助手气泡内可连续发生多次 HITL 交互（多次工具审批/多次 askUser 追问），
+   * 每次交互（工具/问题/参数 + 决策 approved/answer）独立追加于此数组，互不覆盖、可回看。
+   * askUserData 为最新一条的镜像（不破坏 isWaitingForUserInput / ChatWindow 恢复检测 / 兜底渲染）。
+   * 随消息持久化到 localStorage。可选字段，向前兼容旧数据（仅有 askUserData 的旧消息无此字段）。
+   */
+  askUserHistory?: AskUserData[];
+  /**
+   * 技能激活列表（agent-skill Task-22 新增）
+   * 业务含义：后端 skill_activated 事件触发时写入，前端据此展示激活徽标（技能名+来源）。
+   * 不持久化到 localStorage（仅当前会话实时展示），刷新后清除。
+   */
+  activatedSkills?: SkillActivatedEvent[];
 }
 
 /**
@@ -309,6 +323,16 @@ export interface StreamCallbacks {
    * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
    */
   onToolConfirm?: (data: ToolConfirmData) => void;
+
+  // ===== 技能激活新增：skill_activated 回调 =====
+
+  /**
+   * 收到 skill_activated 事件（技能激活成功，agent-skill）
+   * 业务含义：Agent 自主激活（loadSkill）或用户手动指定技能时，后端推送激活信息
+   * （技能 id/名称/来源/绑定工具），前端据此渲染激活徽标与排除入口（AC-S04）。
+   * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
+   */
+  onSkillActivated?: (data: SkillActivatedEvent) => void;
 }
 
 // ===== RAG 知识库类型定义（Task-01，关联 AC-003/AC-005/AC-009）=====
@@ -548,6 +572,67 @@ export interface AddResult {
   success: boolean
   /** 失败原因（success=false 时填充） */
   error?: string
+}
+
+// ========== 技能（Skill）相关类型 ==========
+
+/**
+ * 技能参考资源（对应后端 SkillResponse.ResourceResponse）
+ * 业务含义：技能携带的只读领域参考（如模板），激活后注入提示词。
+ */
+export interface SkillResource {
+  name: string
+  content: string
+}
+
+/**
+ * 技能自带脚本参数（CR-001，对应后端 ScriptParam）
+ */
+export interface SkillScriptParam {
+  name: string
+  type: string
+  required: boolean
+  description: string
+}
+
+/**
+ * 技能自带脚本声明（CR-001，对应后端 SkillResponse.ScriptResponse）
+ * 业务含义：Skill 自带的预定义参数化脚本（白名单语言 shell/python3），激活时动态注册为工具。
+ */
+export interface SkillScriptInfo {
+  name: string
+  language: string
+  description: string
+  params?: SkillScriptParam[]
+  content: string
+}
+
+/**
+ * 技能信息（对应后端 SkillResponse）
+ * 业务含义：技能管理页列表/编辑与对话页选择器的数据类型。
+ */
+export interface SkillInfo {
+  id: string
+  name: string
+  description: string
+  instruction: string
+  resources: SkillResource[]
+  scripts: SkillScriptInfo[]
+  enabled: boolean
+  source: 'PRESET' | 'CUSTOM'
+  /** 创建/编辑时的校验警告（密钥类，透传展示） */
+  warnings?: string[]
+}
+
+/**
+ * 技能激活事件载荷（对应后端 SSE skill_activated 事件）
+ * 业务含义：Agent 自主激活（auto）或用户手动指定（manual）技能时，前端据此渲染激活徽标。
+ */
+export interface SkillActivatedEvent {
+  skillId: string
+  skillName: string
+  source: 'auto' | 'manual'
+  boundToolIds: string[]
 }
 
 // ========== 工具按需加载相关类型 ==========

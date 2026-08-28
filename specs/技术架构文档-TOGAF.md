@@ -329,7 +329,7 @@ agent-demo-memory/
 | 数据域 | 存储方式 | 数据量级 | 说明 |
 |--------|---------|---------|------|
 | 会话数据域 | 内存（ConcurrentHashMap） | 小 | SessionMetadata，超时清理 |
-| 记忆数据域 | 内存（MessageWindowChatMemory） | 小 | 按 sessionId 隔离的对话历史 |
+| 记忆数据域 | 内存（CompressingChatMemory） | 小 | 按 sessionId 隔离的对话历史（滚动摘要压缩 + 附件保护） |
 | 工具数据域 | 无状态 | - | 工具调用即执行，不持久化 |
 | 模型缓存域 | 内存（ConcurrentHashMap） | 极小 | ChatModel/StreamingChatModel/EmbeddingModel |
 | 配置数据域 | application.yml + 环境变量 | 极小 | 启动时加载 |

@@ -37,6 +37,10 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-mcp</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-skill</artifactId>
+        </dependency>
 
         <!-- Spring Boot Web（含 Tomcat、Spring MVC） -->
         <dependency>

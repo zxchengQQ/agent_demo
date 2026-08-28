@@ -1,0 +1,34 @@
+{
+  "name": "skill-edge-fallback",
+  "description": "边界降级评估集（技术方案 7.2，AC-E01/E04/S05/M04）",
+  "cases": [
+    {
+      "id": "edge-1",
+      "scenario": "skill-not-found",
+      "input": "帮我用'不存在技能'处理这个任务",
+      "expectBehavior": "技能不存在时不应报错崩溃，Agent 降级为通用能力并说明该技能不可用（AC-E01）",
+      "note": "loadSkill 目标技能不存在"
+    },
+    {
+      "id": "edge-2",
+      "scenario": "skill-disabled",
+      "input": "（数据查询技能已被管理员禁用后）帮我查数据",
+      "expectBehavior": "禁用技能不激活，Agent 以通用能力处理或说明不可用（AC-E04 平滑退出）",
+      "note": "运行中技能被禁用"
+    },
+    {
+      "id": "edge-3",
+      "scenario": "max-active",
+      "input": "（会话已激活 3 个技能后）再激活第 4 个",
+      "expectBehavior": "Agent 不静默超限激活，应通过 askUser 询问用户是否替换或保持（AC-S05）",
+      "note": "并发上限引导"
+    },
+    {
+      "id": "edge-4",
+      "scenario": "excluded",
+      "input": "（用户已排除周报技能后）帮我写周报",
+      "expectBehavior": "被排除技能不重新激活，Agent 尊重排除决定（AC-M04）",
+      "note": "排除后不复发"
+    }
+  ]
+}

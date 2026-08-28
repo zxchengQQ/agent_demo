@@ -61,6 +61,7 @@ agent:
       - builtin:getCurrentTimeByZone  # 时区时间查询
       - builtin:getCurrentDate     # 当前日期查询
       - builtin:calculate          # 数学计算器
+      - builtin:loadSkill          # 技能加载（渐进式披露核心工具，决策 4/6）
     # 可选工具（需通过 API 显式指定才会加载）
     optional:
       - builtin:httpGet            # HTTP GET 请求
@@ -170,6 +171,14 @@ mcp:
     #   headers:
     #     Authorization: Bearer xxx
     #   tool-timeout: 60s
+
+# Skill 能力域配置
+# 业务含义：平台第 10 能力域，技能定义/激活/提示词组装
+# 启用开关：skill.enabled=false 时全链路零影响退化（目录/激活段空串、loadSkill 不注册）
+skill:
+  enabled: true  # 技能能力总开关
+  max-active-skills: 3  # 单会话并发激活技能上限（AC-S05）
+  storage-dir: data/skills  # 技能定义持久化目录
 
 # Springdoc Swagger
 springdoc:

@@ -30,6 +30,7 @@
         <module>agent-demo-rag</module>
         <module>agent-demo-splitter</module>
         <module>agent-demo-mcp</module>
+        <module>agent-demo-skill</module>
         <module>agent-demo-agent</module>
         <module>agent-demo-app</module>
         <module>agent-demo-web</module>

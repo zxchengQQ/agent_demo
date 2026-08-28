@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
-import type { Message, SubTaskStatus, ToolConfirmData } from '@/types';
+import type { Message, SubTaskStatus, ToolConfirmData, AskUserData } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
 import { useMermaid } from '@/composables/useMermaid';
 import KnowledgeSourceBar from './KnowledgeSourceBar.vue';
@@ -35,11 +35,11 @@ watch(
   (newStatus) => {
     if (newStatus === 'complete') {
       isThinkingExpanded.value = false;
-      isReactExpanded.value = false;
+      reactManualExpanded.value = false;
       isTaskExpanded.value = false;
     } else if (newStatus === 'incomplete') {
       isThinkingExpanded.value = true;
-      isReactExpanded.value = true;
+      reactManualExpanded.value = true;
       isTaskExpanded.value = true;
     }
   },
@@ -62,10 +62,22 @@ function toggleThinking() {
 // ===== ReAct 推理过程折叠区块 =====
 
 /**
+ * ReAct 推理区块手动展开状态（非 HITL 消息）
+ * 业务含义：普通消息流式中展开、完成后折叠，可手动切换回看。
+ * CR-002：含 HITL 卡片的消息不由此状态控制（恒展开，见 isReactExpanded）。
+ */
+const reactManualExpanded = ref(props.message.status === 'incomplete');
+
+/**
  * ReAct 推理区块展开状态
  * 业务含义：流式中保持展开让用户实时看到 ReAct 推理过程；完成后默认折叠，用户可手动展开回看。
+ * CR-002（AC-N05）：含 HITL 交互卡片的消息恒展开，保证交互卡片始终可见（等待态可交互、完成后可回看锁定态）。
+ * CR-003（AC-N06）：含交互历史记录（askUserHistory）的消息同样恒展开。
  */
-const isReactExpanded = ref(props.message.status === 'incomplete');
+const isReactExpanded = computed(() => {
+  if (props.message.askUserData || props.message.askUserHistory?.length) return true;
+  return reactManualExpanded.value;
+});
 
 /** 是否有 ReAct 推理步骤需要展示 */
 const hasReactSteps = computed(
@@ -79,11 +91,12 @@ const reactTitle = computed(() =>
 
 /**
  * 切换 ReAct 区块展开/折叠
- * 业务含义：流式中保持展开不可切换，完成后允许手动切换。
+ * 业务含义：流式中保持展开不可切换，完成后允许手动切换；CR-002：含 HITL 卡片的消息不可折叠（恒展开）。
  */
 function toggleReact() {
   if (props.message.status === 'incomplete') return;
-  isReactExpanded.value = !isReactExpanded.value;
+  if (props.message.askUserData || props.message.askUserHistory?.length) return;
+  reactManualExpanded.value = !reactManualExpanded.value;
 }
 
 /**
@@ -202,18 +215,85 @@ function statusIcon(status: SubTaskStatus): string {
 // ===== Task-17 新增：工具权限确认渲染数据 =====
 
 /**
- * 权限确认数据（kind=permission 时从 askUserData 构造，供 ConfirmCard 渲染）
- * 业务含义：setToolConfirmData 以 askUserData（kind=permission）存储 tool_confirm 四要素，
- * 此处还原为 ConfirmCard 所需的 ToolConfirmData；非 permission 形态返回 null。
+ * 权限确认数据（kind=permission 时从记录构造，供 ConfirmCard 渲染）
+ * 业务含义：tool_confirm 四要素还原为 ConfirmCard 所需的 ToolConfirmData；非 permission 形态返回 null。
  */
-const toolConfirmData = computed<ToolConfirmData | null>(() => {
-  const a = props.message.askUserData;
-  if (!a || a.kind !== 'permission') return null;
+function recordToolConfirmData(rec: AskUserData): ToolConfirmData | null {
+  if (rec.kind !== 'permission') return null;
   return {
-    toolName: a.toolName ?? '',
-    toolDescription: a.toolDescription ?? '',
-    arguments: a.toolArguments ?? '',
+    toolName: rec.toolName ?? '',
+    toolDescription: rec.toolDescription ?? '',
+    arguments: rec.toolArguments ?? '',
   };
+}
+
+// ===== CR-002/CR-003：HITL 卡片内嵌位置关联（AC-N04/AC-N05/AC-N06）=====
+
+/**
+ * 需渲染的交互记录列表
+ * 业务含义：优先取 askUserHistory（CR-003：多次审批/追问互不覆盖），
+ * 无历史时回退单条 askUserData（旧数据向后兼容）。
+ */
+const hitlRecords = computed<AskUserData[]>(() => {
+  const history = props.message.askUserHistory;
+  if (history && history.length > 0) return history;
+  return props.message.askUserData ? [props.message.askUserData] : [];
+});
+
+/**
+ * 内嵌卡片位置映射：key `${stepIndex}:${callIndex}` -> 记录索引
+ * 业务含义：HITL 交互本质是一次工具动作（askUser 追问 / 权限确认工具），
+ * 将卡片内嵌到 ReAct 推理过程对应工具步骤处，语义更清晰。
+ * 匹配规则：
+ * - 单记录（无 askUserHistory，CR-002 行为）：匹配最后一个对应工具调用（当前轮追问）
+ * - 多记录（CR-003，AC-N06）：逐条"首个未占用匹配"——askUser 类匹配 toolName==='askUser'，
+ *   权限类匹配 toolName===记录工具名；已被更早记录占用的工具调用不再复用（支持同工具重复审批）
+ * 无匹配的记录回退底部 ask-user-block 兜底渲染（不丢记录）。
+ */
+const inlineTargetByPos = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>();
+  const records = hitlRecords.value;
+  const reactSteps = props.message.reactSteps;
+  if (records.length === 0 || !reactSteps) return map;
+  // 单记录（无 askUserHistory，CR-002 行为）：匹配最后一个对应工具调用（当前轮追问）；
+  // 多记录（CR-003，AC-N06）：逐条"首个未占用匹配"，支持同工具重复审批。
+  const isSingle = records.length === 1 && !props.message.askUserHistory;
+  const claimed = new Set<string>();
+  records.forEach((entry, entryIndex) => {
+    const targetTool = entry.kind === 'permission' ? entry.toolName : 'askUser';
+    const matches: { stepIndex: number; callIndex: number }[] = [];
+    reactSteps.forEach((step, stepIndex) => {
+      step.toolCalls.forEach((call, callIndex) => {
+        if (call.toolName === targetTool) matches.push({ stepIndex, callIndex });
+      });
+    });
+    // 单记录取最后一个（当前轮）；多记录取第一个未占用的匹配
+    let target: { stepIndex: number; callIndex: number } | null = null;
+    for (const m of matches) {
+      const key = `${m.stepIndex}:${m.callIndex}`;
+      if (isSingle) {
+        target = m;
+      } else if (!claimed.has(key)) {
+        target = m;
+        claimed.add(key);
+        break;
+      }
+    }
+    if (target) map.set(`${target.stepIndex}:${target.callIndex}`, entryIndex);
+  });
+  return map;
+});
+
+/** 给定工具调用位置，返回该处应内嵌渲染的记录；无则 null */
+function inlineRecordAt(stepIndex: number, callIndex: number): AskUserData | null {
+  const idx = inlineTargetByPos.value.get(`${stepIndex}:${callIndex}`);
+  return idx === undefined ? null : hitlRecords.value[idx];
+}
+
+/** 无内嵌匹配、需兜底渲染于底部 ask-user-block 的记录（CR-003：不丢记录） */
+const fallbackRecords = computed<AskUserData[]>(() => {
+  const matched = new Set(inlineTargetByPos.value.values());
+  return hitlRecords.value.filter((_, index) => !matched.has(index));
 });
 </script>
 
@@ -258,7 +338,7 @@ const toolConfirmData = computed<ToolConfirmData | null>(() => {
         >
           <!-- 按 iteration 分组展示 -->
           <div
-            v-for="step in props.message.reactSteps"
+            v-for="(step, stepIndex) in props.message.reactSteps"
             :key="step.iteration"
             class="react-step"
           >
@@ -285,6 +365,25 @@ const toolConfirmData = computed<ToolConfirmData | null>(() => {
               <div v-if="toolCall.result" class="tool-result">
                 <span class="tool-result-label">结果:</span>
                 <span class="tool-result-text">{{ toolCall.result }}</span>
+              </div>
+              <!-- CR-002/CR-003（AC-N04/AC-N06）：HITL 交互卡片内嵌于对应工具调用步骤 -->
+              <div
+                v-if="inlineRecordAt(stepIndex, idx)"
+                class="inline-hitl-card"
+              >
+                <ConfirmCard
+                  v-if="inlineRecordAt(stepIndex, idx)!.kind === 'permission'"
+                  :data="recordToolConfirmData(inlineRecordAt(stepIndex, idx)!)!"
+                  :answered="inlineRecordAt(stepIndex, idx)!.approved !== undefined || !!inlineRecordAt(stepIndex, idx)!.answer"
+                  :approved="!!inlineRecordAt(stepIndex, idx)!.approved"
+                  @approve="emit('approve')"
+                  @deny="emit('deny')"
+                />
+                <AskUserCard
+                  v-else
+                  :ask-user-data="inlineRecordAt(stepIndex, idx)!"
+                  @reply="emit('reply', $event)"
+                />
               </div>
             </div>
           </div>
@@ -389,28 +488,32 @@ const toolConfirmData = computed<ToolConfirmData | null>(() => {
         ></span>
       </div>
 
-      <!-- HITL 人机交互区块（unified-chat-mode Task-17）：助手消息 askUserData 存在时渲染 -->
+      <!-- HITL 人机交互区块（unified-chat-mode Task-17）：助手消息含交互记录时渲染 -->
       <!-- 权限确认形态（kind=permission）走 ConfirmCard；其余（含存量无 kind 数据）走 AskUserCard（AC-H01） -->
+      <!-- CR-002/CR-003：已内嵌于 react-block 对应工具步骤的记录不在此重复渲染；
+           无内嵌匹配的记录（fallbackRecords）兜底渲染于此（多条可堆叠，不丢记录） -->
       <div
-        v-if="props.message.role === 'assistant' && props.message.askUserData"
+        v-if="props.message.role === 'assistant' && fallbackRecords.length > 0"
         class="ask-user-block"
       >
-        <!-- 业务含义：权限决策语义为三态——true=已批准，false=已拒绝，undefined=待决策。
-             BUG 修复：原判定 !!approved 在拒绝时（false）恒为假，卡片不锁定、按钮可重复点击；
-             正确判定是 approved !== undefined（answer 兜底兼容旧会话数据） -->
-        <ConfirmCard
-          v-if="toolConfirmData"
-          :data="toolConfirmData"
-          :answered="props.message.askUserData.approved !== undefined || !!props.message.askUserData.answer"
-          :approved="!!props.message.askUserData.approved"
-          @approve="emit('approve')"
-          @deny="emit('deny')"
-        />
-        <AskUserCard
-          v-else
-          :ask-user-data="props.message.askUserData"
-          @reply="emit('reply', $event)"
-        />
+        <template v-for="(record, index) in fallbackRecords" :key="index">
+          <!-- 业务含义：权限决策语义为三态——true=已批准，false=已拒绝，undefined=待决策。
+               BUG 修复：原判定 !!approved 在拒绝时（false）恒为假，卡片不锁定、按钮可重复点击；
+               正确判定是 approved !== undefined（answer 兜底兼容旧会话数据） -->
+          <ConfirmCard
+            v-if="record.kind === 'permission'"
+            :data="recordToolConfirmData(record)!"
+            :answered="record.approved !== undefined || !!record.answer"
+            :approved="!!record.approved"
+            @approve="emit('approve')"
+            @deny="emit('deny')"
+          />
+          <AskUserCard
+            v-else
+            :ask-user-data="record"
+            @reply="emit('reply', $event)"
+          />
+        </template>
       </div>
 
       <!-- 状态标记 -->
@@ -800,6 +903,19 @@ const toolConfirmData = computed<ToolConfirmData | null>(() => {
 /* ===== unified-chat-mode Task-17 HITL 人机交互区块样式（统一交互卡片由 AskUserCard 内部渲染） ===== */
 .ask-user-block {
   margin-top: var(--spacing-sm);
+}
+
+/* ===== CR-002：内嵌于 react-block 工具步骤的 HITL 卡片（AC-N04/N05） ===== */
+.inline-hitl-card {
+  margin-top: var(--spacing-xs);
+  border-top: 1px dashed var(--border);
+  padding-top: var(--spacing-xs);
+}
+
+/* 内嵌上下文抵消卡片自带 margin-top，避免工具卡片内双倍间距（Task-18 样式适配） */
+.inline-hitl-card .ask-user-card,
+.inline-hitl-card .confirm-card {
+  margin-top: 0;
 }
 
 /* CR-001: 图片渲染样式约束（AC-039）*/

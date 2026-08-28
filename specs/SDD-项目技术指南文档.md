@@ -177,7 +177,7 @@ com.agentdemo
 | TC-LC4J-001 | LangChain4j 核心模块（langchain4j / langchain4j-open-ai）版本锁定 1.17.2 GA，集成模块（langchain4j-milvus / langchain4j-mcp）锁定 1.17.2-beta27，两条版本线独立管理 | 🔴 强制 |
 | TC-LC4J-002 | Agent 接口必须通过 `AiServices.builder()` 构建代理，禁止手写 ReAct 循环 | 🔴 强制 |
 | TC-LC4J-003 | 工具方法必须使用 `@Tool` 注解并填写功能描述，框架自动生成 JSON Schema | 🔴 强制 |
-| TC-LC4J-004 | 会话记忆使用 `MessageWindowChatMemory`，通过 `@MemoryId` 标识会话 | 🔴 强制 |
+| TC-LC4J-004 | 会话记忆使用 `CompressingChatMemory`（滚动摘要压缩，附件保护），按 sessionId 隔离 | 🔴 强制 |
 | TC-LC4J-005 | 系统提示词通过 `systemMessageProvider` 动态提供，支持场景定制 | 🟡 尽量 |
 | TC-LC4J-006 | LLM 模型实例必须缓存复用，禁止每次调用重新构建 | 🔴 强制 |
 | TC-LC4J-007 | 流式输出使用 `StreamingChatModel`，非流式使用 `ChatModel`，分别构建 | 🟡 尽量 |

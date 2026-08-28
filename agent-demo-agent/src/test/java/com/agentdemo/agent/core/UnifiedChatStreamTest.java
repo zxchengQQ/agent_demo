@@ -111,7 +111,7 @@ class UnifiedChatStreamTest {
     @Test
     @DisplayName("judge 返回空列表 -> 直答路径（hitl 场景 + 思考折叠块事件，无 task_* 事件）")
     void judgeEmpty_走直答路径() {
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
         doAnswer(this::mockDirectStop).when(thinkingModel).stream(any(), any(), any());
 
         ThinkingTokenStream.ThinkingConsumer thinkingConsumer = mock(ThinkingTokenStream.ThinkingConsumer.class);
@@ -135,7 +135,7 @@ class UnifiedChatStreamTest {
     @Test
     @DisplayName("直答路径 askUser 拦截 -> onAskUser 触发 + onComplete 不触发（saveInteraction mode=direct）")
     void directPathAskUser_暂停() {
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialResponse("需要追问");
@@ -168,7 +168,7 @@ class UnifiedChatStreamTest {
     @Test
     @DisplayName("forced 且空内容 -> 友好提示 + onComplete，不调用 judge、不写记忆、不拆解（AC-E02）")
     void forcedEmptyContent_友好提示() {
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
 
         ThinkingTokenStream.ResponseConsumer responseConsumer = mock(ThinkingTokenStream.ResponseConsumer.class);
         ThinkingTokenStream.CompleteConsumer completeConsumer = mock(ThinkingTokenStream.CompleteConsumer.class);
@@ -182,7 +182,7 @@ class UnifiedChatStreamTest {
 
         verify(responseConsumer).accept(org.mockito.ArgumentMatchers.contains("/plan"));
         verify(completeConsumer).accept(anyString());
-        verify(taskPlanJudge, never()).judge(anyString(), anyString(), isNull());
+        verify(taskPlanJudge, never()).judge(anyString(), anyString(), isNull(), anyList());
         verify(planConsumer, never()).accept(anyList());
         verify(memoryManager, never()).addUserMessage(anyString(), anyString());
     }
@@ -193,7 +193,7 @@ class UnifiedChatStreamTest {
     @DisplayName("judge 返回非空列表 -> 拆解路径（onPlan + task_* 事件）")
     void judgeNonEmpty_走拆解路径() {
         List<SubTask> tasks = List.of(new SubTask(1, "调研"), new SubTask(2, "报告"));
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(tasks);
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(tasks);
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialResponse("子任务结果");
@@ -221,7 +221,7 @@ class UnifiedChatStreamTest {
     @DisplayName("forced=true -> 跳过判断（judge 空也不降级直答，强制单一子任务拆解）AC-N04")
     void forcedBreakdown_强制拆解不降级直答() {
         // judge 返回空（LLM 认为简单），但 forced 强制拆解为单一子任务
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
         doAnswer(invocation -> {
             ThinkingStreamHandler handler = invocation.getArgument(2);
             handler.onPartialResponse("子任务结果");
@@ -238,7 +238,7 @@ class UnifiedChatStreamTest {
                 .start();
 
         // judge 被调用（生成子任务），空结果强制单一子任务（不降级直答）
-        verify(taskPlanJudge).judge(anyString(), anyString(), isNull());
+        verify(taskPlanJudge).judge(anyString(), anyString(), isNull(), anyList());
         verify(startConsumer).accept(anyInt(), anyString());
     }
 
@@ -338,7 +338,7 @@ class UnifiedChatStreamTest {
 
         verify(completeConsumer).accept("直接回答");
         // 未进入拆解路径（无 onPlan）
-        verify(taskPlanJudge, never()).judge(anyString(), anyString(), isNull());
+        verify(taskPlanJudge, never()).judge(anyString(), anyString(), isNull(), anyList());
     }
 
     // ========== Task-11：tool_confirm 恢复 ==========
@@ -415,7 +415,7 @@ class UnifiedChatStreamTest {
     @Test
     @DisplayName("resume 且无 pending -> 降级普通流程（不因 tool_confirm 分支引入 NPE）")
     void resumeNoPending_降级普通流程() {
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
         doAnswer(this::mockDirectStop).when(thinkingModel).stream(any(), any(), any());
 
         ThinkingTokenStream.CompleteConsumer completeConsumer = mock(ThinkingTokenStream.CompleteConsumer.class);
@@ -425,7 +425,7 @@ class UnifiedChatStreamTest {
                 .start();
 
         // 无 pending 时按现有逻辑降级 judge 判断走直答
-        verify(taskPlanJudge).judge(anyString(), anyString(), isNull());
+        verify(taskPlanJudge).judge(anyString(), anyString(), isNull(), anyList());
         verify(completeConsumer).accept("直接回答");
     }
 
@@ -435,7 +435,7 @@ class UnifiedChatStreamTest {
         // 业务含义（Task-11 决策 2 方案 A）：HITLReActStream 快照职责外移后，
         // 单 Agent 宿主 registerHitlCallbacks 在 onToolConfirm 回调内补保存快照，
         // 恢复路由 resumeToolConfirm 按 pendingToolCallId 回填结果消息。
-        when(taskPlanJudge.judge(anyString(), anyString(), isNull())).thenReturn(List.of());
+        when(taskPlanJudge.judge(anyString(), anyString(), isNull(), org.mockito.ArgumentMatchers.anyList())).thenReturn(List.of());
         when(toolExecutor.checkPermission("httpGet"))
                 .thenReturn(new ToolExecutor.ToolPermissionCheck(
                         ToolPermissionLevel.ASK, "builtin:httpGet", "发起 HTTP GET 请求"));

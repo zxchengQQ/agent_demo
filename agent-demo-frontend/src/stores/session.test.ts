@@ -643,4 +643,220 @@ describe('Session Store', () => {
       expect(store.isWaitingForUserInput).toBe(true);
     });
   });
+
+  // ========== CR-001 新增：markStreaming（AC-N04，HITL 恢复同气泡续写）==========
+
+  describe('markStreaming（CR-001，AC-N04）', () => {
+    it('markStreaming 将 status=complete 的消息置回 incomplete（恢复流式态）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-ms-1');
+      store.markComplete('msg-ms-1');
+      expect(store.sessions[0].messages[0].status).toBe('complete');
+
+      store.markStreaming('msg-ms-1');
+      expect(store.sessions[0].messages[0].status).toBe('incomplete');
+    });
+
+    it('markStreaming 不影响消息其他字段（content/askUserData 保持原值）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-ms-2');
+      store.appendContent('msg-ms-2', '已有内容');
+      store.setAskUserData('msg-ms-2', {
+        type: 'confirm',
+        question: '确认？',
+        options: ['是', '否'],
+        retryCount: 0,
+      });
+      store.markComplete('msg-ms-2');
+
+      store.markStreaming('msg-ms-2');
+
+      const found = store.sessions[0].messages[0];
+      expect(found.status).toBe('incomplete');
+      expect(found.content).toBe('已有内容');
+      expect(found.askUserData?.question).toBe('确认？');
+      expect(found.role).toBe('assistant');
+    });
+
+    it('markStreaming 消息不存在时静默跳过不抛错', () => {
+      const store = useSessionStore();
+      store.init();
+      expect(() => {
+        store.markStreaming('non-existent');
+      }).not.toThrow();
+    });
+
+    it('markStreaming 变更同步写入 localStorage（CR-001 持久化）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-ms-4');
+      store.markComplete('msg-ms-4');
+      store.markStreaming('msg-ms-4');
+
+      const raw = localStorage.getItem('agent-demo:sessions');
+      expect(raw).not.toBeNull();
+      const sessions = JSON.parse(raw!);
+      const found = sessions[0].messages.find((m: Message) => m.id === 'msg-ms-4');
+      expect(found.status).toBe('incomplete');
+    });
+
+    it('markStreaming 后继续 appendContent 正常追加（续写同一气泡）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-ms-5');
+      store.appendContent('msg-ms-5', '前半');
+      store.markComplete('msg-ms-5');
+      store.markStreaming('msg-ms-5');
+      store.appendContent('msg-ms-5', '续写');
+      expect(store.sessions[0].messages[0].content).toBe('前半续写');
+    });
+  });
+
+  // ========== CR-003 新增：多次审批/追问记录保留（AC-N06）==========
+
+  describe('多次审批/追问记录保留（CR-003，AC-N06）', () => {
+    it('setAskUserData 连续两次：askUserHistory 两条互不覆盖，askUserData 镜像为最后一条', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-1');
+      store.setAskUserData('msg-h-1', {
+        type: 'text', question: '请提供订单号', options: [], retryCount: 0,
+      });
+      store.setAskUserData('msg-h-1', {
+        type: 'text', question: '请再次提供物流方式', options: [], retryCount: 1,
+      });
+      const found = store.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(2);
+      expect(found.askUserHistory![0].question).toBe('请提供订单号');
+      expect(found.askUserHistory![1].question).toBe('请再次提供物流方式');
+      // 镜像 = 最后一条
+      expect(found.askUserData?.question).toBe('请再次提供物流方式');
+      expect(found.askUserData).toEqual(found.askUserHistory![1]);
+    });
+
+    it('setToolConfirmData 连续两次（工具A、工具B）：askUserHistory 含两条 permission 记录', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-2');
+      store.setToolConfirmData('msg-h-2', {
+        toolName: 'httpGet', toolDescription: 'GET', arguments: '{"url":"a"}',
+      });
+      store.setToolConfirmData('msg-h-2', {
+        toolName: 'fileWrite', toolDescription: '写文件', arguments: '{"path":"/x"}',
+      });
+      const found = store.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(2);
+      expect(found.askUserHistory![0].toolName).toBe('httpGet');
+      expect(found.askUserHistory![0].kind).toBe('permission');
+      expect(found.askUserHistory![1].toolName).toBe('fileWrite');
+      // 镜像 = 最后一条（fileWrite）
+      expect(found.askUserData?.toolName).toBe('fileWrite');
+    });
+
+    it('setToolConfirmApproved 只更新最后一条历史的 approved，不改变此前记录', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-3');
+      store.setToolConfirmData('msg-h-3', {
+        toolName: 'httpGet', toolDescription: 'GET', arguments: '{}',
+      });
+      // 第一次批准
+      store.setToolConfirmApproved(store.sessions[0].sessionId, true);
+      // 第二次工具确认（新记录）
+      store.setToolConfirmData('msg-h-3', {
+        toolName: 'fileWrite', toolDescription: '写文件', arguments: '{}',
+      });
+      // 第二次拒绝
+      store.setToolConfirmApproved(store.sessions[0].sessionId, false);
+
+      const found = store.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(2);
+      // 第一次记录保持 approved=true，未被第二次决策覆盖
+      expect(found.askUserHistory![0].approved).toBe(true);
+      // 第二次记录 approved=false
+      expect(found.askUserHistory![1].approved).toBe(false);
+      expect(found.askUserData?.approved).toBe(false);
+    });
+
+    it('setAskUserAnswer 只更新最后一条历史的 answer，不改变此前记录', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-4');
+      store.setAskUserData('msg-h-4', {
+        type: 'text', question: '订单号', options: [], retryCount: 0,
+      });
+      store.setAskUserAnswer(store.sessions[0].sessionId, 'ORD-12345');
+      store.setAskUserData('msg-h-4', {
+        type: 'text', question: '物流方式', options: [], retryCount: 1,
+      });
+      store.setAskUserAnswer(store.sessions[0].sessionId, '顺丰');
+
+      const found = store.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(2);
+      expect(found.askUserHistory![0].answer).toBe('ORD-12345');
+      expect(found.askUserHistory![1].answer).toBe('顺丰');
+      expect(found.askUserData?.answer).toBe('顺丰');
+    });
+
+    it('镜像一致性：localStorage 重新加载后 askUserData 与最后一条历史一致', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-5');
+      store.setToolConfirmData('msg-h-5', {
+        toolName: 'httpGet', toolDescription: 'GET', arguments: '{}',
+      });
+      store.setToolConfirmApproved(store.sessions[0].sessionId, true);
+
+      // 重新初始化（从 localStorage 加载，引用被 JSON 序列化切断）
+      const store2 = useSessionStore();
+      store2.init();
+      const found = store2.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(1);
+      expect(found.askUserData?.approved).toBe(true);
+      expect(found.askUserData?.toolName).toBe('httpGet');
+      expect(found.askUserData).toEqual(found.askUserHistory![0]);
+    });
+
+    it('旧数据兼容：仅有 askUserData（无 askUserHistory）首次追加正常初始化', () => {
+      const store = useSessionStore();
+      store.init();
+      // 构造旧数据：仅 askUserData，无 askUserHistory
+      const sessionId = store.sessions[0].sessionId;
+      store.addMessage(sessionId, {
+        id: 'msg-h-6',
+        role: 'assistant',
+        content: '',
+        createdAt: Date.now(),
+        status: 'complete',
+        askUserData: {
+          type: 'confirm', question: '旧问题', options: ['是'], retryCount: 0,
+        },
+      });
+      // 新交互到来：追加（不抛错、正常初始化 history）
+      store.setAskUserData('msg-h-6', {
+        type: 'text', question: '新问题', options: [], retryCount: 0,
+      });
+      const found = store.sessions[0].messages[0];
+      expect(found.askUserHistory).toHaveLength(1);
+      expect(found.askUserHistory![0].question).toBe('新问题');
+      expect(found.askUserData?.question).toBe('新问题');
+    });
+
+    it('既有 isWaitingForUserInput / setAskUserAnswer 逻辑无回归（依赖 askUserData 镜像）', () => {
+      const store = useSessionStore();
+      store.init();
+      setupAssistantMessage(store, 'msg-h-7');
+      store.setAskUserData('msg-h-7', {
+        type: 'confirm', question: '确认？', options: ['是', '否'], retryCount: 0,
+      });
+      // 未回答 -> 等待输入
+      expect(store.isWaitingForUserInput).toBe(true);
+      store.setAskUserAnswer(store.sessions[0].sessionId, '是');
+      // 已回答 -> 不再等待
+      expect(store.isWaitingForUserInput).toBe(false);
+      expect(store.sessions[0].messages[0].status).toBe('complete');
+    });
+  });
 });

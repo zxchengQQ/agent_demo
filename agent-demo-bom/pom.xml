@@ -65,6 +65,11 @@
             </dependency>
             <dependency>
                 <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-skill</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.agentdemo</groupId>
                 <artifactId>agent-demo-agent</artifactId>
                 <version>${project.version}</version>
             </dependency>

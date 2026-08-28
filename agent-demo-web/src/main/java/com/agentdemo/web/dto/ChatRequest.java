@@ -72,4 +72,23 @@ public class ChatRequest {
      * </p>
      */
     private Boolean toolApproved;
+
+    /**
+     * 用户指定的技能标识列表（可选，agent-skill 手动指定）
+     * <p>
+     * 业务含义：会话级技能选择器选中状态（AC-N03 手动指定优先）。
+     * null → 沿用会话技能状态（自动匹配）；非空 → 手动指定并激活（自动匹配挂起）；
+     * 空数组 → 重置为自动模式（清空手动指定）。
+     * </p>
+     */
+    private List<String> skills;
+
+    /**
+     * 用户排除的技能标识列表（可选，agent-skill）
+     * <p>
+     * 业务含义：会话级选择器排除状态（AC-S04 回滚 / AC-M04 排除不复发）。
+     * null → 保持不变；非空 → 设置排除集合。
+     * </p>
+     */
+    private List<String> excludedSkills;
 }

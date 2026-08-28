@@ -175,4 +175,58 @@ class PromptTemplateLoaderTest {
                     "角色 " + role[0] + " 应包含特征文本: " + role[1]);
         }
     }
+
+    // ==================== Task-11: few-shot 示例真实性静态校验（agent-context-engineering，AC-S02） ====================
+
+    /**
+     * 校验 hitl 场景 few-shot 示例中出现的工具名全部真实存在于可用工具集（AC-S02）。
+     * 防止示例引用不存在的工具（如 queryOrder/deleteFile）诱发模型幻觉调用。
+     */
+    @Test
+    void hitlFewShotExampleToolsShouldBeReal() {
+        String hitl = loader.loadScenarioTemplate(PromptTemplateLoader.SCENARIO_HITL);
+        assertNotNull(hitl, "hitl 模板应可加载");
+
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile("调用 (\\w+) 工具");
+        java.util.regex.Matcher matcher = pattern.matcher(hitl);
+        java.util.Set<String> referenced = new java.util.HashSet<>();
+        while (matcher.find()) {
+            referenced.add(matcher.group(1));
+        }
+        assertFalse(referenced.isEmpty(), "示例中应存在工具引用");
+
+        java.util.Set<String> realTools = java.util.Set.of(
+                "askUser", "readFile", "httpGet", "httpPost", "getCurrentTime",
+                "getCurrentDate", "getCurrentTimeByZone", "calculator", "loadSkill");
+        for (String tool : referenced) {
+            assertTrue(realTools.contains(tool),
+                    "few-shot 示例引用了不存在的工具: " + tool + "（AC-S02，请改用真实工具）");
+        }
+    }
+
+    /**
+     * 校验 hitl 示例不再引用已移除的虚构工具（回归防护）
+     */
+    @Test
+    void hitlFewShotShouldNotReferenceFabricatedTools() {
+        String hitl = loader.loadScenarioTemplate(PromptTemplateLoader.SCENARIO_HITL);
+        assertNotNull(hitl);
+        assertFalse(hitl.contains("queryOrder"), "示例不应引用不存在的 queryOrder 工具");
+        assertFalse(hitl.contains("deleteFile"), "示例不应引用不存在的 deleteFile 工具");
+    }
+
+    /**
+     * 校验工具清单措辞语义：以工具协议（tools 参数）为权威来源（冻结契约支撑，AC-T02/T03）
+     */
+    @Test
+    void toolListWordingShouldReferenceToolsProtocol() {
+        for (String scenario : new String[]{
+                PromptTemplateLoader.SCENARIO_HITL,
+                PromptTemplateLoader.SCENARIO_TASK_EXECUTE}) {
+            String content = loader.loadScenarioTemplate(scenario);
+            assertNotNull(content, "场景 " + scenario + " 模板应可加载");
+            assertTrue(content.contains("tools 参数"),
+                    "场景 " + scenario + " 措辞应声明工具协议（tools 参数）为权威来源");
+        }
+    }
 }

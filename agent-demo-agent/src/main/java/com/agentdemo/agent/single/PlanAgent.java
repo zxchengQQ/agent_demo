@@ -7,10 +7,12 @@ import com.agentdemo.agent.core.UnifiedChatStream;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -42,6 +44,8 @@ public class PlanAgent {
     private final HumanInteractionManager humanInteractionManager;
     private final SessionToolResolver sessionToolResolver;
     private final TaskPlanJudge taskPlanJudge;
+    private final SkillPromptComposer skillPromptComposer;
+    private final SkillToolInterceptor skillToolInterceptor;
 
     /**
      * 构造器注入（禁止 @Autowired 字段注入）
@@ -54,6 +58,7 @@ public class PlanAgent {
      * @param promptTemplateLoader 提示词模板加载器（角色+场景模板组合）
      * @param humanInteractionManager 人机交互管理器（HITL 暂停-恢复）
      */
+    @Autowired
     public PlanAgent(ModelFactory modelFactory,
                      ChatMemoryManager memoryManager,
                      AgentConfig agentConfig,
@@ -62,7 +67,9 @@ public class PlanAgent {
                      PromptTemplateLoader promptTemplateLoader,
                      HumanInteractionManager humanInteractionManager,
                      SessionToolResolver sessionToolResolver,
-                     TaskPlanJudge taskPlanJudge) {
+                     TaskPlanJudge taskPlanJudge,
+                     SkillPromptComposer skillPromptComposer,
+                     SkillToolInterceptor skillToolInterceptor) {
         this.modelFactory = modelFactory;
         this.memoryManager = memoryManager;
         this.agentConfig = agentConfig;
@@ -72,7 +79,26 @@ public class PlanAgent {
         this.humanInteractionManager = humanInteractionManager;
         this.sessionToolResolver = sessionToolResolver;
         this.taskPlanJudge = taskPlanJudge;
+        this.skillPromptComposer = skillPromptComposer;
+        this.skillToolInterceptor = skillToolInterceptor;
         log.info("PlanAgent 构造完成");
+    }
+
+    /**
+     * 兼容构造器（无技能能力：技能段注入/拦截跳过，测试与降级场景）
+     */
+    public PlanAgent(ModelFactory modelFactory,
+                     ChatMemoryManager memoryManager,
+                     AgentConfig agentConfig,
+                     ToolSchemaConverter toolSchemaConverter,
+                     ToolExecutor toolExecutor,
+                     PromptTemplateLoader promptTemplateLoader,
+                     HumanInteractionManager humanInteractionManager,
+                     SessionToolResolver sessionToolResolver,
+                     TaskPlanJudge taskPlanJudge) {
+        this(modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge,
+                null, null);
     }
 
     // ==================== unified-chat-mode 统一模式工厂 ====================
@@ -97,7 +123,8 @@ public class PlanAgent {
         return new UnifiedChatStream(
                 sessionId, message, modelId, forcedBreakdown, false, toolIds, null,
                 modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
-                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge);
+                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge,
+                skillPromptComposer, skillToolInterceptor);
     }
 
     /**
@@ -134,6 +161,7 @@ public class PlanAgent {
         return new UnifiedChatStream(
                 sessionId, userReply, null, false, true, null, approved,
                 modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
-                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge);
+                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge,
+                skillPromptComposer, skillToolInterceptor);
     }
 }

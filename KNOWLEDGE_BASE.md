@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v3.3
-> **基线日期**：2026-08-25
+> **文档版本**：v3.5
+> **基线日期**：2026-08-27
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -39,7 +39,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 
 | # | 核心价值 | 说明 |
 |---|---------|------|
-| 1 | 企业级 Agent 能力覆盖 | 单 Agent、多 Agent、RAG、MCP、工作流 9 大能力域 |
+| 1 | 企业级 Agent 能力覆盖 | 单 Agent、多 Agent、RAG、MCP、工作流、Skill 等 10 大能力域 |
 | 2 | 声明式开发体验 | `@AiService` + `@Tool` + `@SystemMessage` 注解式编程，零样板 |
 | 3 | 强类型契约 | Java 强类型直观呈现 Agent 接口，编译期检查 |
 | 4 | 低成本 LLM 接入 | Coding Plan 按次计费 + 模型实例缓存复用 |
@@ -73,6 +73,7 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 多 Agent 协作 | ✅ 已实现 | langchain4j-agentic 编排引擎：串行/并行/条件/循环/Supervisor 五种模式（2026-08-13 应用编排层 P1~P3 交付） |
 | 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED/WAITING_USER）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（工作流 HITL 已实现，拖拽编排规划中） |
 | 人机交互 HITL | ✅ 已实现（单 Agent + 工作流） | 单 Agent：askUser 工具 + 显式 ReAct 暂停-恢复 + `ask_user` SSE 事件 + 前端文本/选项卡片双形态；工作流：@HumanCheckpoint 检查点 + WAITING_USER 状态 + `workflow_waiting`/`workflow_resumed` 事件 + 5 模式执行视图等待 UI（20260824 迭代） |
+| Skill 能力域 | ✅ 已实现（20260826 迭代；20260827 CR-001/CR-002 演进） | 渐进式披露（目录段常驻元数据 + loadSkill 按需加载全文）、会话级激活态（自主/手动/排除 + `/skill` 指令，用户消息保留原始输入展示 CR-002）、多 Skill 并发（上限 3）、自带脚本工具（白名单 shell/python3 + 脚本护栏，动态注册 skill_{id}_{script}，CR-001）、标准目录结构存储（data/skills/{id}/SKILL.md+scripts/+reference/，启动自动迁移）、`skill_activated` SSE 事件、Skill 管理页（agent-demo-skill 模块，第 10 能力域） |
 
 > **数据来源**：`specs/SDD-工程业务背景文档.md` 第 2.3 节、`docs/ARCHITECTURE.md`
 
@@ -265,6 +266,7 @@ agent-demo/
 ├── agent-demo-rag/                      # RAG 模块（知识库问答：向量化、检索、CR-003 动态 Tool 注册，解析/分割已迁移至 splitter 模块）
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
+├── agent-demo-skill/                    # Skill 能力域（技能定义/存储/内容校验/会话激活态/提示词组装/loadSkill 工具，第 10 能力域，20260826 新增）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
 ├── agent-demo-app/                      # 应用编排层（P1~P3 完整实现：adapter 基础设施桥接 + core 领域模型 + strategy 五种编排策略 + execution 重试/SSE 基础设施 + service 协调层与断点恢复 + registry 模板注册 + template 5 个预置模板；工作流 HITL 迭代新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
@@ -311,9 +313,10 @@ agent-demo/
 | `agent-demo-rag` | common, llm, splitter, tools（CR-003 新增） |
 | `agent-demo-splitter` | common |
 | `agent-demo-mcp` | common, tools |
-| `agent-demo-agent` | common, llm, tools, memory |
+| `agent-demo-skill` | common, tools（20260826 新增） |
+| `agent-demo-agent` | common, llm, tools, memory, skill（20260826 +skill） |
 | `agent-demo-app` | agent, rag, mcp（已实现：另依赖 common/llm/tools 经传递引入） |
-| `agent-demo-web` | app, agent, memory, rag, mcp |
+| `agent-demo-web` | app, agent, memory, rag, mcp, skill（20260826 +skill） |
 | `agent-demo-bootstrap` | web（聚合全部） |
 | `agent-demo-frontend` | 独立运行，通过 HTTP 调用后端 API（无 Maven 依赖） |
 
@@ -531,26 +534,37 @@ stateDiagram-v2
 - 扫描频率：每 5 分钟（`@Scheduled(fixedRate=5*60*1000L)`）
 - 无效 sessionId：自动新建会话，不抛错
 
-### 5.4 记忆窗口淘汰策略
+ ### 5.4 记忆窗口淘汰策略
 
-> **数据来源**：`ChatMemoryManager.java`、`specs/数据架构文档-TOGAF.md` 第 10.3 节
+> **数据来源**：`CompressingChatMemory.java`、`ChatMemoryManager.java`、`specs/数据架构文档-TOGAF.md` 第 4.3 节（2026-08-28 更新：FIFO 硬淘汰 → 滚动摘要压缩）
 
 ```mermaid
 flowchart LR
-    A[新消息到达] --> B{当前消息数 >= 20?}
-    B -->|是| C[淘汰最旧消息 FIFO]
-    C --> D[追加新消息]
-    B -->|否| D
-    D --> E[更新会话活跃时间]
+    A[新消息到达] --> B{消息数 >= 窗口20?}
+    B -->|是| C{存在附件/系统消息?}
+    C -->|是| D[剔除附件/系统后做 LLM 摘要]
+    C -->|否| E[全量 LLM 摘要]
+    D --> F[保留附件消息<br/>旧消息替换为摘要]
+    E --> F
+    F --> G[压缩至半窗 10<br/>滞回触发]
+    B -->|否| H[追加新消息]
+    G --> H
+    H --> I[更新会话活跃时间]
 ```
 
-**三级记忆架构**（规划中）：
+**三级记忆架构**：
 
 | 记忆类型 | 实现状态 | 存储方式 | 用途 |
 |---------|---------|---------|------|
-| 短期记忆 | ✅ 已实现 | 内存 MessageWindowChatMemory | 当前对话上下文（20 条） |
+| 短期记忆 | ✅ 已实现 | 内存 CompressingChatMemory | 当前对话上下文（窗口 20，滚动摘要压缩至 10） |
 | 中期记忆 | 🚧 规划中 | 内存/Redis | 历史对话摘要 |
 | 长期记忆 | 🚧 规划中 | Milvus 向量 | 跨会话记忆检索 |
+
+**滚动压缩语义（2026-08-28 agent-context-engineering 迭代）**：
+- 触发：消息数 ≥ 窗口（20）时滚动触发，压缩至半窗（10），滞回避免频繁触发
+- 摘要：LLM 生成滚动摘要，前置标记 `【历史对话摘要】`；实体/指代信息保留保证上下文连续（AC-M01）
+- 附件保护：`【框架附件·TYPE】` 附件消息（CATALOG 目录/SKILL_INSTRUCTION 技能指令/STATUS 状态）永不参与压缩、永不淘汰
+- 降级：摘要失败（LLM 异常）时降级为 FIFO 淘汰，不中断对话；`agent.memory-compression.enabled=false`（MemoryCompressionProperties）可回退纯 FIFO
 
 ### 5.5 工具调用决策流程
 
@@ -683,6 +697,7 @@ sequenceDiagram
 | `reasoning` | 推理文本片段（CR-001 新增） | 每收到一段推理内容（仅 enableThinking=true 时） |
 | `token` | 文本片段 | 每收到一个 LLM token |
 | `ask_user` | JSON（type/question/options/retryCount，Task-07 新增） | HITL 模式下 Agent 调用 askUser 工具暂停执行时发送，前端据此渲染文本追问或确认卡片；工作流 HITL 场景复用（checkpoint 检查点 type=confirm） |
+| `skill_activated` | JSON（skillId/skillName/source/boundToolIds，20260826 新增） | 技能激活成功时发送（source=manual 手动指定 / auto 自主匹配），前端记录会话级激活状态；技能展示由用户消息保留原始输入承载（CR-002，不再插入 AI 提示/页面徽标） |
 | `done` | 耗时毫秒数 | 流式完整结束 |
 | `error` | 错误描述 | 流式过程异常 |
 
@@ -936,7 +951,7 @@ public class GlobalExceptionHandler {
 | 数据域 | 存储方式 | 数据量级 | 业务归属模块 |
 |--------|---------|---------|------------|
 | 会话数据域 | 内存 ConcurrentHashMap | 小（活跃会话数） | agent-demo-memory |
-| 记忆数据域 | 内存 MessageWindowChatMemory | 小（20 条/会话） | agent-demo-memory |
+| 记忆数据域 | 内存 CompressingChatMemory | 小（20 条/会话 + 滚动摘要） | agent-demo-memory |
 | 模型缓存域 | 内存 ConcurrentHashMap | 极小（按 modelName） | agent-demo-llm |
 | 配置数据域 | application.yml + 环境变量 | 极小 | agent-demo-bootstrap |
 | 工具数据域 | 内存 CopyOnWriteArrayList | 极小（工具数） | agent-demo-tools |
@@ -1122,6 +1137,10 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 16 | BR-AGT-009 | `{{tools}}` 占位符仅出现在 react 和 task-execute 场景模板中，由调用方通过 `String.replace("{{tools}}", convertToDescriptionText())` 在运行时替换 | Agent 编排 | 🔴 强制 |
 | 17 | BR-AGT-011 | Agent delegate 缓存键为 modelId + toolsFingerprint，不同工具集使用独立 delegate；工具按需加载时默认工具不可排除（默认 ∪ 指定）（工具按需加载 CR 新增） | Agent 编排 | 🔴 强制 |
 | 18 | BR-AGT-012 | 会话级工具绑定按 sessionId 缓存（sessionToolIds），首次指定后后续轮次沿用；空数组清除恢复默认（工具按需加载 CR 新增） | Agent 编排 | 🔴 强制 |
+| 19 | BR-AGT-016 | 工具协议以 tools 参数为权威来源：`{{tools}}` 由会话基础工具集（SessionToolResolver.resolveSessionBaseTools，不含技能脚本工具）确定性生成，会话内冻结不变（20260828 新增） | Agent 编排 | 🔴 强制 |
+| 20 | BR-AGT-017 | 技能激活段从系统提示词移除，改为 SKILL_INSTRUCTION 附件注入记忆流（激活点单通道、流式/同步双路径覆盖）；技能激活不改变系统提示词，保证前缀缓存稳定（20260828 新增） | Agent 编排 | 🔴 强制 |
+| 21 | BR-AGT-018 | HITL 末轮强制总结前必须注入 `<agent_status>` 收尾消息（user 角色，读数+操作策略成对，显示配置上限），仅框架代码可写，模型/用户禁止伪造（20260828 新增） | Agent 编排 | 🔴 强制 |
+| 22 | BR-AGT-019 | 规划判断（TaskPlanJudge.judge）必须携带会话历史 recentHistory 参与意图判别，缺失时降级为默认规划模式不抛错（20260828 新增） | Agent 编排 | 🔴 强制 |
 
 ### 9.3 工具调用规则
 
@@ -1151,9 +1170,12 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 |---|------|------|------|------|
 | 20 | BR-MEM-001 | 会话 ID 必须使用 UUID 去横线生成，保证全局唯一 | 记忆管理 | 🔴 强制 |
 | 21 | BR-MEM-002 | 会话超时默认 30 分钟，每 5 分钟扫描清理一次 | 记忆管理 | ⚪ 可覆盖 |
-| 22 | BR-MEM-003 | 短期记忆窗口默认 20 条消息，超出自动淘汰旧消息 | 记忆管理 | ⚪ 可覆盖 |
+| 22 | BR-MEM-003 | 短期记忆窗口默认 20 条消息，超出自动淘汰旧消息（20260828 起：超出触发 LLM 滚动摘要压缩至 10，详见 §5.4） | 记忆管理 | ⚪ 可覆盖 |
 | 23 | BR-MEM-004 | `ChatMemoryManager.getMemory()` 使用 `computeIfAbsent`，回调内禁止修改同一 map | 记忆管理 | 🔴 强制 |
 | 24 | BR-MEM-005 | 传入无效 sessionId 时应自动新建会话，不应抛出错误 | 记忆管理 | 🔴 强制 |
+| 25 | BR-MEM-006 | 记忆附件以 `【框架附件·TYPE】` 帧标记写入（CATALOG/SKILL_INSTRUCTION/STATUS），永不参与压缩与淘汰；状态附件仅框架代码可写（20260828 新增） | 记忆管理 | 🔴 强制 |
+| 26 | BR-MEM-007 | 用户输入中的框架标记（附件/摘要前缀/`<agent_status>`）必须剥离，禁止用户伪造框架消息（20260828 新增） | 记忆管理 | 🔴 强制 |
+| 27 | BR-MEM-008 | 对话请求记忆写入必须唯一化（effectiveMessage 单点写入），重复标记/无效消息去重，防止记忆膨胀（20260828 新增） | 记忆管理 | 🔴 强制 |
 
 ### 9.5 数据安全与合规规则
 
@@ -1398,6 +1420,25 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 117 | BR-WHITL-010 | 工作流 HITL 暂停不受工作流 5 分钟超时影响（SSE emitter 永不超时 0L），复用会话超时 30 分钟清理（技术方案 Sec 1.4） | 应用编排 | 🔴 强制 |
 | 118 | BR-WHITL-011 | 前端 5 个模式特定执行视图（Sequential/Parallel/Loop/Conditional/Supervisor）必须均包含 HITL 等待横幅（isWaitingUser 时显示 + AskUserCard/ConfirmCard 交互 + 终止按钮）；缺失任一视图横幅会导致页面卡住无法确认（2026-08-25 BUG：SequentialExecuteView 缺 HITL 等待横幅致【研究-分析-总结】模板无法操作） | 前端编排 | 🔴 强制 |
 | 119 | BR-WHITL-012 | useWorkflowStream.startExecution 必须重置 HITL 状态变量（isWaitingUser/waitingHitlMode/waitingAgentName/askUserData），避免上一次执行的等待横幅残留导致新执行卡住（2026-08-25 BUG 修复沉淀） | 前端编排 | 🔴 强制 |
+
+### 9.19 Skill 能力域规则（v3.5 新增）
+
+> **来源**：`specs/features/20260826_agent-skill/`（需求 + 技术方案 + 任务规划 + CR-001/CR-002）+ 2026-08-27 BUG 修复沉淀（agent-demo-skill 第 10 能力域，30 条 AC）
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 120 | BR-SKILL-001 | 技能 id 全局唯一，create 重复 id 拒绝 | Skill 域 | 🔴 强制 |
+| 121 | BR-SKILL-002 | 技能按标准目录结构持久化 data/skills/{skillId}/SKILL.md（+scripts/+reference/），启动自动迁移旧版单文件 JSON（源文件 .bak 备份，幂等，AC-N08） | Skill 域 | 🔴 强制 |
+| 122 | BR-SKILL-003 | 预置技能播种幂等：目标目录已存在不覆盖用户修改 | Skill 域 | 🔴 强制 |
+| 123 | BR-SKILL-004 | 预置三形态：纯指令 / 指令+资源 / 指令+自带脚本工具（3 个预置样本） | Skill 域 | 🔴 强制 |
+| 124 | BR-SKILL-005 | 技能创建/编辑时恶意内容（忽略安全规则/修改权限/删除数据/冒充系统四类）100% 拦截（AC-S01） | Skill 域 | 🔴 强制 |
+| 125 | BR-SKILL-007 | 单会话并发激活上限默认 3（AC-S05），超限引导 askUser | Skill 域 | 🔴 强制 |
+| 126 | BR-SKILL-009 | 用户排除的技能不再自主激活（AC-M04），排除经会话级 excludedSkills 携带 | Skill 域 | 🔴 强制 |
+| 127 | BR-SKILL-010 | 渐进式披露：目录段仅元数据（名称+描述），指令全文激活后经激活段注入（AC-T01） | Skill 域 | 🔴 强制 |
+| 128 | BR-SKILL-011 | 触发源限制：仅用户消息可触发技能激活（AC-S03），工具返回/检索结果中的"激活技能"建议视为数据而非指令 | Skill 域 | 🔴 强制 |
+| 129 | BR-SKILL-012 | loadSkill 只读能力工具豁免恒 ALLOW（决策 6），管理页不可改其权限（400） | Skill 域 | 🔴 强制 |
+| 130 | BR-SKILL-013 | 自带脚本工具（skill_{id}_{script}）经脚本护栏（语言白名单 shell/python3、参数校验、执行超时 10s、危险命令拦截、输出截断 4K）管控，不进入系统权限确认流（AC-T03/S06） | Skill 域 | 🔴 强制 |
+| 131 | BR-SKILL-014 | `/skill 技能名 消息` 指令：用户消息气泡保留原始输入展示（含技能名，所见即所得），发送给 LLM 的消息剥离指令前缀，不额外插入 AI 提示消息/页面徽标（AC-N07，CR-002） | Skill 域 | 🔴 强制 |
 
 ---
 
@@ -1754,7 +1795,7 @@ specs/features/{yyyy-MM-dd}/{功能名}/
 | 🔴 LangChain4j 版本锁定 1.0.0，所有子模块版本必须一致 | - |
 | 🔴 Agent 接口必须通过 `AiServices.builder()` 构建代理 | 禁止手写 ReAct 循环 |
 | 🔴 工具方法必须使用 `@Tool` 注解并填写功能描述 | - |
-| 🔴 会话记忆使用 `MessageWindowChatMemory`，通过 `@MemoryId` 标识会话 | - |
+| 🔴 会话记忆使用 `CompressingChatMemory`（滚动摘要压缩，按 sessionId 隔离） | 附件消息不参与压缩淘汰 |
 | 🔴 LLM 模型实例必须缓存复用 | 禁止每次调用重新构建 |
 
 #### 12.3.4 Maven 构建约束
@@ -1851,6 +1892,7 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v3.0 | 2026-08-13 | 应用编排层 P2 多模式编排（feature 2026-08-13）：1.4 能力矩阵多 Agent 协作/工作流编排更新为 ✅ 已实现；4.1 节 agent-demo-app 更新为 P2 完整实现（core 模型 + strategy 策略层 + execution 基础设施 + service 协调层 + template 预置模板）；9.10 节错误码区间新增 5500-5599 工作流段（含 5506 WORKFLOW_MODE_NOT_SUPPORTED P2 新增）；策略模式三层分离架构（协调层 WorkflowExecutionService + 策略层 WorkflowExecutionStrategy 4 实现 + 基础设施 AgentExecutor/WorkflowEventPublisher/WorkflowContext） |
 | v3.1 | 2026-08-21 | Agent-Human 交互（HITL，feature 20260820_agent-human-interaction）：1.4 能力矩阵新增"人机交互 HITL"行；4.1/4.3 节工程结构更新（agent-demo-agent 新增 HitlTokenStream/HITLReActStream/HumanInteractionManager/PendingInteraction，agent-demo-tools 新增 AskUserTool，前端新增 ConfirmCard.vue，ToolRegistry/ToolSchemaConverter 工具去重与数组类型 BUG 修复）；5.8 节 SSE 事件协议新增 ask_user 事件；7.2 节内存数据结构新增 pendingInteractions；9.16 节新增 12 条 HITL 业务规则（BR-HITL-001~012）；前端 HITL 渲染链路（chat.ts onAskUser 回调 + enableHitl 参数 / session.ts askUserData + isWaitingForUserInput / MessageItem.vue 双形态渲染 / ChatWindow.vue 开关与回复闭环） |
 | v3.3 | 2026-08-25 | 工作流 HITL（feature 20260824_workflow-hitl）：1.4 能力矩阵工作流编排行新增 WAITING_USER 状态，人机交互 HITL 行更新为"单 Agent + 工作流"双覆盖；4.1/4.3 节工程结构更新（agent-demo-app 新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队 PENDING_HITL_KEY，编排组件新增 SequentialExecuteView/ParallelExecuteView/LoopExecuteView/ConditionalExecuteView/SupervisorExecuteView 5 个模式专属视图并复用 AskUserCard/ConfirmCard，api/workflow.ts 从 7 个扩展为 8 个 REST 接口新增 replyToWorkflow HITL 回复）；5.8 节 SSE 事件协议新增工作流 SSE 事件表（workflow_waiting/workflow_resumed，复用 ask_user 事件）；7.2 节内存数据结构更新 resumableStates 为"暂停恢复快照（PAUSED 断点 + WAITING_USER HITL）"；9.18 节新增 12 条工作流 HITL 业务规则（BR-WHITL-001~012，含 WAITING_USER 状态语义分离、@HumanCheckpoint 反射检测、并行 HITL 排队、30 分钟超时清理、5 个模式视图 HITL 等待横幅 BUG 沉淀）；修复【研究-分析-总结】模板模式特定执行视图缺少 HITL 等待横幅导致页面卡住的 BUG（SequentialExecuteView 等 5 个模式视图全部补齐，useWorkflowStream.startExecution 重置 HITL 状态） |
+| v3.4 | 2026-08-28 | Agent 上下文工程优化（feature 20260828_agent-context-engineering）：5.4 节记忆窗口淘汰策略从 FIFO 更新为滚动摘要压缩（CompressingChatMemory 窗口 20/压缩至 10/附件保护/降级 FIFO）；9.2 节新增 BR-AGT-016（工具协议以 tools 参数为权威、基础工具集冻结）、BR-AGT-017（技能段附件化保证缓存稳定）、BR-AGT-018（末轮 `<agent_status>` 状态栏收尾）、BR-AGT-019（规划判断携带会话历史）；9.4 节更新 BR-MEM-003（滚动压缩），新增 BR-MEM-006（附件帧标记三类型，不参与压缩淘汰）、BR-MEM-007（输入框架标记剥离防伪造）、BR-MEM-008（记忆写入唯一化）；工程结构新增 CompressingChatMemory/MemoryCompressionProperties；修复 Spring bean 多构造器装配启动异常（AgentController/ChatMemoryManager/SkillLoadTool 补 @Autowired） |
 
 ---
 

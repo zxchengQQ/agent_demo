@@ -14,6 +14,7 @@
 | 7 | RAG 知识库模块 | `agent-demo-rag` + `agent-demo-splitter` | [RAG模块-业务说明书.md](RAG模块-业务说明书.md) |
 | 8 | MCP 协议模块 | `agent-demo-mcp` | [MCP协议模块-业务说明书.md](MCP协议模块-业务说明书.md) |
 | 9 | 应用编排模块 | `agent-demo-app` | [应用编排模块-业务说明书.md](应用编排模块-业务说明书.md)（2026-08-17 新增，应用编排层 P1/P2/P3 交付；2026-08-25 更新，工作流 HITL 迭代） |
+| 10 | Skill 能力域模块 | `agent-demo-skill` | [Skill模块-业务说明书.md](Skill模块-业务说明书.md)（2026-08-26 新增，第 10 能力域；2026-08-27 更新，CR-001 脚本工具+标准目录结构、CR-002 展示调整） |
 
 ## 模块依赖全景
 
@@ -28,4 +29,6 @@ graph LR
     MCP --> TOOLS["agent-demo-tools"]
     LLM --> COMMON["agent-demo-common"]
     TOOLS --> COMMON
+    AGENT --> SKILL["agent-demo-skill"]
+    SKILL --> TOOLS
 ```

@@ -33,6 +33,10 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-memory</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-skill</artifactId>
+        </dependency>
 
         <!-- LangChain4j（AiServices、@Tool 等） -->
         <dependency>

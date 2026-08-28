@@ -21,11 +21,15 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
+import org.mockito.ArgumentCaptor;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
 
 /**
  * TaskBreakdownStream 子任务执行测试（unified-chat-mode Task-07/08）
@@ -77,6 +81,43 @@ class TaskBreakdownStreamExecutionTest {
                 modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
                 new PromptTemplateLoader(agentConfig), humanInteractionManager,
                 List.of(new Object()), "[]", tasks);
+    }
+
+    // ==================== Task-10: 子任务系统提示词冻结（agent-context-engineering，AC-N01/T02） ====================
+
+    @Test
+    void 子任务系统提示词_不含技能段_且tools文本来自基础工具集() {
+        com.agentdemo.agent.single.SessionToolResolver sessionToolResolver =
+                mock(com.agentdemo.agent.single.SessionToolResolver.class);
+        com.agentdemo.skill.prompt.SkillPromptComposer skillPromptComposer =
+                mock(com.agentdemo.skill.prompt.SkillPromptComposer.class);
+        when(skillPromptComposer.composeCatalogSegment("test-session")).thenReturn("## 可用技能\n- s1：技能一");
+        when(skillPromptComposer.composeActivatedSegment("test-session")).thenReturn("## 已激活技能\n指令全文");
+        Object baseTool = new Object();
+        when(sessionToolResolver.resolveSessionBaseTools("test-session", null)).thenReturn(List.of(baseTool));
+        when(toolSchemaConverter.convertToDescriptionText(List.of(baseTool))).thenReturn("【基础工具清单】");
+
+        TaskBreakdownStream stream = new TaskBreakdownStream(
+                "test-session", "复杂任务", null,
+                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                new PromptTemplateLoader(agentConfig), humanInteractionManager,
+                List.of(new Object()), "[]", List.of(new SubTask(1, "子任务A")),
+                skillPromptComposer, null, sessionToolResolver);
+        stream.onTaskComplete(t -> {});
+        stream.onComplete(() -> {});
+        doAnswer(inv -> mockSubTaskStop(inv)).when(thinkingModel).stream(any(), any(), any());
+        stream.startWithTasks(List.of(new SubTask(1, "子任务A")));
+
+        // 捕获子任务执行的首次 model.stream，断言系统提示词冻结契约
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(thinkingModel, atLeastOnce()).stream(captor.capture(), any(), any());
+        List<ChatMessage> messages = captor.getAllValues().get(0);
+        SystemMessage sys = (SystemMessage) messages.get(0);
+        assertThat(sys.text())
+                .contains("【基础工具清单】")            // {{tools}} 来自基础工具集（冻结）
+                .doesNotContain("可用技能")            // 技能目录段移出系统提示词
+                .doesNotContain("已激活技能")          // 技能激活段移出系统提示词
+                .doesNotContain("技能一").doesNotContain("指令全文");
     }
 
     /** 模拟单轮 LLM 调用（finishReason=stop，无工具调用）——子任务正常完成 */

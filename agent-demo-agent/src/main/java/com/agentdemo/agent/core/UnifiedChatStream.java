@@ -4,9 +4,12 @@ import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.agent.single.HITLReActStream;
 import com.agentdemo.agent.single.SessionToolResolver;
+import com.agentdemo.agent.single.SkillToolInterceptor;
 import com.agentdemo.llm.registry.ModelFactory;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.memory.shortterm.CompressingChatMemory;
+import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.tools.registry.ToolExecutor;
 import com.agentdemo.tools.registry.ToolSchemaConverter;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -18,6 +21,9 @@ import dev.langchain4j.data.message.UserMessage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -48,6 +54,9 @@ public class UnifiedChatStream {
 
     private static final Logger log = LoggerFactory.getLogger(UnifiedChatStream.class);
 
+    /** 规划判断注入的最近历史消息数上限（约 3 轮，AC-N03） */
+    private static final int JUDGE_HISTORY_MAX = 6;
+
     // ==================== 依赖与参数 ====================
     private final String sessionId;
     private final String message;
@@ -76,6 +85,8 @@ public class UnifiedChatStream {
     private final HumanInteractionManager humanInteractionManager;
     private final SessionToolResolver sessionToolResolver;
     private final TaskPlanJudge taskPlanJudge;
+    private final SkillPromptComposer skillPromptComposer;
+    private final SkillToolInterceptor skillToolInterceptor;
 
     // ==================== 回调消费者（直答路径 + 拆解路径 + HITL + 生命周期） ====================
     // 直答路径（SSE: reasoning/thought/token/action/observation/final-answer）
@@ -108,6 +119,9 @@ public class UnifiedChatStream {
     // 工具权限确认（SSE: tool_confirm；事件后流保持打开，等待用户操作回传 toolApproved）
     private HitlTokenStream.ToolConfirmConsumer onToolConfirm;
 
+    // 技能激活（SSE: skill_activated，agent-skill 新增）
+    private HitlTokenStream.SkillActivatedConsumer onSkillActivated;
+
     // 生命周期（SSE: usage + done；onComplete 携带完整响应）
     private ThinkingTokenStream.CompleteConsumer onComplete;
     private ThinkingTokenStream.ErrorConsumer onError;
@@ -116,6 +130,9 @@ public class UnifiedChatStream {
 
     // ==================== 构造器 ====================
 
+    /**
+     * 构造器（兼容：无技能能力，技能注入/拦截跳过）
+     */
     public UnifiedChatStream(String sessionId, String message, String modelId,
                              boolean forcedBreakdown, boolean resumeMode, List<String> toolIds,
                              Boolean approved,
@@ -124,6 +141,28 @@ public class UnifiedChatStream {
                              ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
                              HumanInteractionManager humanInteractionManager,
                              SessionToolResolver sessionToolResolver, TaskPlanJudge taskPlanJudge) {
+        this(sessionId, message, modelId, forcedBreakdown, resumeMode, toolIds, approved,
+                modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
+                promptTemplateLoader, humanInteractionManager, sessionToolResolver, taskPlanJudge,
+                null, null);
+    }
+
+    /**
+     * 构造器（技能能力版本，agent-skill）
+     *
+     * @param skillPromptComposer 技能提示词组装器（null 则技能段跳过）
+     * @param skillToolInterceptor 技能工具拦截器（null 则 loadSkill 不拦截）
+     */
+    public UnifiedChatStream(String sessionId, String message, String modelId,
+                             boolean forcedBreakdown, boolean resumeMode, List<String> toolIds,
+                             Boolean approved,
+                             ModelFactory modelFactory, ChatMemoryManager memoryManager,
+                             AgentConfig agentConfig, ToolSchemaConverter toolSchemaConverter,
+                             ToolExecutor toolExecutor, PromptTemplateLoader promptTemplateLoader,
+                             HumanInteractionManager humanInteractionManager,
+                             SessionToolResolver sessionToolResolver, TaskPlanJudge taskPlanJudge,
+                             SkillPromptComposer skillPromptComposer,
+                             SkillToolInterceptor skillToolInterceptor) {
         this.sessionId = sessionId;
         this.message = message;
         this.modelId = modelId;
@@ -140,6 +179,8 @@ public class UnifiedChatStream {
         this.humanInteractionManager = humanInteractionManager;
         this.sessionToolResolver = sessionToolResolver;
         this.taskPlanJudge = taskPlanJudge;
+        this.skillPromptComposer = skillPromptComposer;
+        this.skillToolInterceptor = skillToolInterceptor;
     }
 
     // ==================== 链式回调注册 ====================
@@ -244,6 +285,11 @@ public class UnifiedChatStream {
         return this;
     }
 
+    public UnifiedChatStream onSkillActivated(HitlTokenStream.SkillActivatedConsumer consumer) {
+        this.onSkillActivated = consumer;
+        return this;
+    }
+
     public UnifiedChatStream onComplete(ThinkingTokenStream.CompleteConsumer consumer) {
         this.onComplete = consumer;
         return this;
@@ -277,13 +323,15 @@ public class UnifiedChatStream {
                 handleEmptyPlanPrompt();
                 return;
             }
+            // agent-context-engineering：会话首请求保障目录附件（emit-once，旧会话兼容补写）
+            ensureCatalogAttachment();
             if (forcedBreakdown) {
                 startForcedBreakdown();
                 return;
             }
 
-            // 业务含义：普通消息 -> 前置规划判断（TaskPlanJudge），空列表直答、非空拆解
-            List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId);
+            // 业务含义：普通消息 -> 前置规划判断（TaskPlanJudge，含最近历史 AC-N03），空列表直答、非空拆解
+            List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId, buildJudgeHistory());
             if (tasks == null || tasks.isEmpty()) {
                 log.info("统一模式路由: sessionId={}, 路径=direct（判断为空）", sessionId);
                 startDirectAnswer();
@@ -313,7 +361,7 @@ public class UnifiedChatStream {
         if (pending == null) {
             // 降级：pending 缺失，走普通统一流程重新处理该消息（技术方案 3.3）
             log.warn("统一模式恢复失败：sessionId={} 无 pending，降级普通流程", sessionId);
-            List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId);
+            List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId, buildJudgeHistory());
             if (tasks == null || tasks.isEmpty()) {
                 startDirectAnswer();
             } else {
@@ -378,8 +426,10 @@ public class UnifiedChatStream {
                 sessionId,
                 pending.getModelId(),
                 pending.getRetryCount() + 1,
-                agentConfig.getThinkingMaxIterations());
+                agentConfig.getThinkingMaxIterations(),
+                skillToolInterceptor);
         registerHitlCallbacks(hitl, pending.getMessages(), pending.getToolsJson());
+        registerSkillActivated(hitl);
         hitl.start();
     }
 
@@ -406,8 +456,10 @@ public class UnifiedChatStream {
                 sessionId,
                 pending.getModelId(),
                 pending.getRetryCount() + 1,
-                agentConfig.getThinkingMaxIterations());
+                agentConfig.getThinkingMaxIterations(),
+                skillToolInterceptor);
         registerHitlCallbacks(hitl, pending.getMessages(), pending.getToolsJson());
+        registerSkillActivated(hitl);
         hitl.start();
     }
 
@@ -444,7 +496,7 @@ public class UnifiedChatStream {
      * </p>
      */
     private void startForcedBreakdown() {
-        List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId);
+        List<SubTask> tasks = taskPlanJudge.judge(sessionId, message, modelId, buildJudgeHistory());
         if (tasks == null || tasks.isEmpty()) {
             // 业务含义：强制拆解不允许降级直答，以单一子任务执行整个任务主题
             log.warn("强制拆解规划为空，降级单一子任务: sessionId={}", sessionId);
@@ -471,7 +523,7 @@ public class UnifiedChatStream {
         tools = sessionToolResolver.ensureAskUserTool(tools);
         String toolsJson = toolSchemaConverter.convertToJson(tools);
 
-        List<ChatMessage> messages = buildHitlMessages(tools);
+        List<ChatMessage> messages = buildHitlMessages();
 
         ThinkingStreamingChatModel thinkingModel = (modelId != null)
                 ? modelFactory.getThinkingStreamingChatModelByModelId(modelId)
@@ -486,9 +538,22 @@ public class UnifiedChatStream {
                 sessionId,
                 modelId,
                 0,
-                agentConfig.getThinkingMaxIterations());
+                agentConfig.getThinkingMaxIterations(),
+                skillToolInterceptor);
         registerHitlCallbacks(hitl, messages, toolsJson);
+        registerSkillActivated(hitl);
         hitl.start();
+    }
+
+    /**
+     * 注册技能激活回调转发（agent-skill：skill_activated SSE 事件，AC-S04）
+     */
+    private void registerSkillActivated(HITLReActStream hitl) {
+        hitl.onSkillActivated((skillId, skillName, source, boundToolIds) -> {
+            if (onSkillActivated != null) {
+                onSkillActivated.accept(skillId, skillName, source, boundToolIds);
+            }
+        });
     }
 
     /**
@@ -504,20 +569,89 @@ public class UnifiedChatStream {
                 sessionId, message, modelId,
                 modelFactory, memoryManager, agentConfig, toolSchemaConverter, toolExecutor,
                 promptTemplateLoader, humanInteractionManager,
-                tools, toolsJson, tasks);
+                tools, toolsJson, tasks, skillPromptComposer, skillToolInterceptor, sessionToolResolver);
     }
 
     /**
-     * 组装直答路径消息（hitl 场景系统提示词 + 历史记忆 + 当前用户消息）
+     * 组装直答路径消息（agent-context-engineering 冻结契约）
+     * <p>
+     * 业务含义：系统提示词 = 角色/场景模板 + {{tools}}（会话基础工具集确定性文本），
+     * 技能目录/激活段已移出系统提示词（改为记忆流附件 emit-once，AC-N01/T01）。
+     * 当前轮用户消息由控制器预写进记忆（组装唯一化，AC-M02），此处不再重复追加。
+     * </p>
      */
-    private List<ChatMessage> buildHitlMessages(List<Object> tools) {
+    private List<ChatMessage> buildHitlMessages() {
         List<ChatMessage> messages = new ArrayList<>();
+        // 冻结契约：{{tools}} 文本来自会话基础工具集（不含技能脚本工具），同会话每轮重算字节级一致
+        String toolsText = toolSchemaConverter.convertToDescriptionText(
+                sessionToolResolver.resolveSessionBaseTools(sessionId, toolIds));
         String systemPrompt = promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_HITL)
-                .replace("{{tools}}", toolSchemaConverter.convertToDescriptionText(tools));
+                .replace("{{tools}}", toolsText);
+        // 指纹日志（缓存稳定验证，AC-N01）
+        log.info("系统提示词指纹: sessionId={}, sha={}", sessionId, fingerprint(systemPrompt));
         messages.add(SystemMessage.from(systemPrompt));
+        // 记忆流（含压缩摘要、框架附件、近期消息；当前用户消息已由控制器写入）
         messages.addAll(memoryManager.getMemory(sessionId).messages());
-        messages.add(UserMessage.from(message));
         return messages;
+    }
+
+    /**
+     * 会话目录附件保障（agent-context-engineering，AC-N01）
+     * <p>
+     * 业务含义：会话首请求（或旧会话无目录附件）时，将技能目录作为 CATALOG 附件写入记忆流
+     * （emit-once）。之后技能激活/排除不再更新目录附件，状态变化经轨迹消息与 tools 参数表达。
+     * </p>
+     */
+    private void ensureCatalogAttachment() {
+        if (skillPromptComposer == null) {
+            return;
+        }
+        try {
+            if (!memoryManager.hasAttachment(sessionId, CompressingChatMemory.AttachmentType.CATALOG)) {
+                String catalog = skillPromptComposer.composeCatalogAttachment(sessionId);
+                if (catalog != null && !catalog.isBlank()) {
+                    memoryManager.addAttachment(sessionId,
+                            CompressingChatMemory.AttachmentType.CATALOG, catalog);
+                    log.info("会话目录附件已写入: sessionId={}", sessionId);
+                }
+            }
+        } catch (Exception e) {
+            // 降级：目录附件缺失仅损失技能路由元数据，不阻断主流程
+            log.warn("目录附件写入失败（降级跳过）: sessionId={}, error={}", sessionId, e.getMessage());
+        }
+    }
+
+    /**
+     * 构建规划判断的最近历史（最近 6 条消息，AC-N03；读取异常降级为空）
+     */
+    private List<ChatMessage> buildJudgeHistory() {
+        try {
+            List<ChatMessage> all = memoryManager.getMemory(sessionId).messages();
+            if (all.size() <= JUDGE_HISTORY_MAX) {
+                return all;
+            }
+            return new ArrayList<>(all.subList(all.size() - JUDGE_HISTORY_MAX, all.size()));
+        } catch (Exception e) {
+            log.warn("规划历史构建失败，降级无历史: sessionId={}, error={}", sessionId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 系统提示词指纹（SHA-256 前 8 位十六进制；异常时退化为 hashCode）
+     */
+    private String fingerprint(String text) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(text.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 4; i++) {
+                sb.append(String.format("%02x", digest[i]));
+            }
+            return sb.toString();
+        } catch (NoSuchAlgorithmException e) {
+            return Integer.toHexString(text.hashCode());
+        }
     }
 
     // ==================== 回调注册 ====================
@@ -664,6 +798,11 @@ public class UnifiedChatStream {
         breakdownStream.onAskUser((type, question, options, retryCount) -> {
             if (onAskUser != null) {
                 onAskUser.accept(type, question, options, retryCount);
+            }
+        });
+        breakdownStream.onSkillActivated((skillId, skillName, source, boundToolIds) -> {
+            if (onSkillActivated != null) {
+                onSkillActivated.accept(skillId, skillName, source, boundToolIds);
             }
         });
         breakdownStream.onComplete(() -> {

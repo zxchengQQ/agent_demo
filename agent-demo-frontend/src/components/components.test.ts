@@ -625,6 +625,302 @@ describe('MessageItem', () => {
     expect(wrapper.find('[data-testid="confirm-deny"]').exists()).toBe(true);
     expect(wrapper.find('.answered-line').exists()).toBe(false);
   });
+
+  // ===== CR-002 新增：HITL 交互卡片内嵌于 ReAct 推理过程区块（AC-N04/AC-N05）=====
+  // 验证标准来源：agent-human-interaction CR-002 Task-17 验证标准
+
+  /** 构造含 askUser ReAct 步骤的消息（卡片应内嵌于 askUser 工具步骤） */
+  function buildAskUserMsgWithReact(overrides: Partial<Message> = {}): Message {
+    return {
+      id: 'hitl-react-ask',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        {
+          iteration: 1,
+          thought: '用户未提供订单号，需要追问',
+          toolCalls: [
+            { toolName: 'askUser', arguments: '{"type":"text","question":"请提供订单号","options":[]}', result: '' },
+          ],
+        },
+      ],
+      askUserData: {
+        type: 'text',
+        question: '请提供订单号',
+        options: [],
+        retryCount: 0,
+      },
+      ...overrides,
+    };
+  }
+
+  it('askUser 卡片内嵌于 react-block 对应工具步骤，底部 ask-user-block 不重复渲染（CR-002 AC-N04）', () => {
+    const wrapper = mount(MessageItem, { props: { message: buildAskUserMsgWithReact() } });
+    // 卡片内嵌于 askUser 工具卡片内
+    expect(wrapper.find('.tool-card .ask-user-card').exists()).toBe(true);
+    // 底部兜底区块不重复渲染
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+    // 卡片内容可见
+    expect(wrapper.find('.question-text').text()).toBe('请提供订单号');
+  });
+
+  it('permission 卡片内嵌于对应工具步骤，底部 ask-user-block 不重复渲染（CR-002 AC-N04）', () => {
+    const msg: Message = {
+      id: 'hitl-react-perm',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        {
+          iteration: 1,
+          thought: '需要调用 httpGet 获取数据',
+          toolCalls: [
+            { toolName: 'httpGet', arguments: '{"url":"https://example.com"}', result: '' },
+          ],
+        },
+      ],
+      askUserData: {
+        type: 'confirm',
+        kind: 'permission',
+        question: '请求使用工具「httpGet」',
+        retryCount: 0,
+        toolName: 'httpGet',
+        toolDescription: '发送 HTTP GET 请求',
+        toolArguments: '{"url":"https://example.com"}',
+      },
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 确认卡片内嵌于 httpGet 工具卡片内
+    expect(wrapper.find('.tool-card .confirm-card').exists()).toBe(true);
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+    // 待决策：批准/拒绝按钮可见
+    expect(wrapper.find('[data-testid="confirm-approve"]').exists()).toBe(true);
+  });
+
+  it('含 HITL 卡片的消息 status=complete 时 react-block 仍展开（CR-002 AC-N05）', () => {
+    const wrapper = mount(MessageItem, { props: { message: buildAskUserMsgWithReact() } });
+    expect(wrapper.find('.react-content').attributes('style')).toContain('block');
+  });
+
+  it('不含 HITL 卡片的普通消息 react-block 维持折叠语义（CR-002 回归）', () => {
+    const msg: Message = {
+      id: 'react-normal-1',
+      role: 'assistant',
+      content: '普通回复',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '思考', toolCalls: [{ toolName: 'calc', arguments: '{}', result: '42' }] },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // complete 后默认折叠
+    expect(wrapper.find('.react-content').attributes('style')).toContain('none');
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
+
+  it('多轮追问：卡片内嵌于当前轮（最后一个）askUser 工具步骤（CR-002）', () => {
+    const msg = buildAskUserMsgWithReact({
+      reactSteps: [
+        { iteration: 1, thought: '第一轮追问', toolCalls: [{ toolName: 'askUser', arguments: '{}', result: '' }] },
+        { iteration: 2, thought: '第二轮追问', toolCalls: [{ toolName: 'askUser', arguments: '{}', result: '' }] },
+      ],
+      askUserData: { type: 'text', question: '请再次提供订单号', options: [], retryCount: 1 },
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 仅内嵌一次（当前轮），不重复渲染
+    expect(wrapper.findAll('.tool-card .ask-user-card')).toHaveLength(1);
+    // 位于最后一个工具卡片内（当前轮 askUser 步骤）
+    const toolCards = wrapper.findAll('.tool-card');
+    const lastToolCard = toolCards[toolCards.length - 1];
+    expect(lastToolCard.find('.ask-user-card').exists()).toBe(true);
+  });
+
+  it('无匹配工具步骤时卡片回退底部 ask-user-block 兜底渲染（CR-002 兜底）', () => {
+    const msg = buildAskUserMsgWithReact({
+      reactSteps: [
+        { iteration: 1, thought: '计算', toolCalls: [{ toolName: 'calc', arguments: '{}', result: '42' }] },
+      ],
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 无 askUser 工具步骤 -> 兜底底部渲染
+    expect(wrapper.find('.tool-card .ask-user-card').exists()).toBe(false);
+    expect(wrapper.find('.ask-user-block .ask-user-card').exists()).toBe(true);
+  });
+
+  it('内嵌卡片 reply 事件正常向上传递（CR-002）', async () => {
+    const msg = buildAskUserMsgWithReact({
+      askUserData: { type: 'confirm', question: '确认删除？', options: ['确认删除', '取消'], retryCount: 0 },
+    });
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    await wrapper.find('.tool-card .option-row').trigger('click');
+    expect(wrapper.emitted('reply')?.[0]).toEqual(['确认删除']);
+  });
+
+  // ===== CR-003 新增：多次审批/追问记录逐一保留（AC-N06）=====
+  // 验证标准来源：agent-human-interaction CR-003 Task-21 验证标准
+
+  it('多次权限审批：两条记录各自内嵌于对应工具步骤，各自锁定态（AC-N06）', () => {
+    const msg: Message = {
+      id: 'multi-perm-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '调用 httpGet', toolCalls: [{ toolName: 'httpGet', arguments: '{}', result: 'ok' }] },
+        { iteration: 2, thought: '调用 fileWrite', toolCalls: [{ toolName: 'fileWrite', arguments: '{}', result: '' }] },
+      ],
+      askUserData: {
+        type: 'confirm', kind: 'permission', question: '请求使用工具「fileWrite」', retryCount: 0,
+        toolName: 'fileWrite', toolDescription: '写文件', toolArguments: '{}',
+      },
+      askUserHistory: [
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+          toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: true,
+        },
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「fileWrite」', retryCount: 0,
+          toolName: 'fileWrite', toolDescription: '写文件', toolArguments: '{}',
+        },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // 两条记录各自内嵌
+    const inlineCards = wrapper.findAll('.tool-card .confirm-card');
+    expect(inlineCards).toHaveLength(2);
+    // 第一条（httpGet 步骤）锁定"已批准"
+    expect(wrapper.findAll('.tool-card')[0].find('.answered-line').text()).toBe('已批准');
+    // 第二条（fileWrite 步骤）待决策，显示批准/拒绝按钮
+    expect(wrapper.findAll('.tool-card')[1].find('[data-testid="confirm-approve"]').exists()).toBe(true);
+    expect(wrapper.findAll('.tool-card')[1].find('[data-testid="confirm-deny"]').exists()).toBe(true);
+    // 全部内嵌命中，底部不重复渲染
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
+
+  it('多次 askUser 追问：两条记录各自内嵌、各自锁定态（AC-N06）', () => {
+    const msg: Message = {
+      id: 'multi-ask-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '问订单号', toolCalls: [{ toolName: 'askUser', arguments: '{}', result: '' }] },
+        { iteration: 2, thought: '问物流方式', toolCalls: [{ toolName: 'askUser', arguments: '{}', result: '' }] },
+      ],
+      askUserData: { type: 'text', question: '物流方式？', options: [], retryCount: 1, answer: '顺丰' },
+      askUserHistory: [
+        { type: 'text', question: '订单号？', options: [], retryCount: 0, answer: 'ORD-12345' },
+        { type: 'text', question: '物流方式？', options: [], retryCount: 1, answer: '顺丰' },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    const inlineCards = wrapper.findAll('.tool-card .ask-user-card');
+    expect(inlineCards).toHaveLength(2);
+    // 各自锁定态可回看（已回答内容）
+    expect(wrapper.findAll('.tool-card')[0].text()).toContain('已回答：ORD-12345');
+    expect(wrapper.findAll('.tool-card')[1].text()).toContain('已回答：顺丰');
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
+
+  it('同一工具名被批准两次：两条记录分别内嵌于该工具的两次调用步骤（AC-N06）', () => {
+    const msg: Message = {
+      id: 'multi-same-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '首次 httpGet', toolCalls: [{ toolName: 'httpGet', arguments: '{}', result: '' }] },
+        { iteration: 2, thought: '再次 httpGet', toolCalls: [{ toolName: 'httpGet', arguments: '{}', result: '' }] },
+      ],
+      askUserData: {
+        type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+        toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: false,
+      },
+      askUserHistory: [
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+          toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: true,
+        },
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+          toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: false,
+        },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    const inlineCards = wrapper.findAll('.tool-card .confirm-card');
+    expect(inlineCards).toHaveLength(2);
+    // 首次调用步骤 -> 已批准；再次调用步骤 -> 已拒绝（首个未占用匹配）
+    expect(wrapper.findAll('.tool-card')[0].find('.answered-line').text()).toBe('已批准');
+    expect(wrapper.findAll('.tool-card')[1].find('.answered-line').text()).toBe('已拒绝');
+  });
+
+  it('部分记录无匹配：匹配的内嵌渲染，无匹配的兜底底部渲染，所有记录可见（AC-N06）', () => {
+    const msg: Message = {
+      id: 'multi-partial-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '调用 httpGet', toolCalls: [{ toolName: 'httpGet', arguments: '{}', result: '' }] },
+      ],
+      askUserData: {
+        type: 'confirm', kind: 'permission', question: '请求使用工具「fileWrite」', retryCount: 0,
+        toolName: 'fileWrite', toolDescription: '写文件', toolArguments: '{}', approved: false,
+      },
+      askUserHistory: [
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+          toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: true,
+        },
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「fileWrite」', retryCount: 0,
+          toolName: 'fileWrite', toolDescription: '写文件', toolArguments: '{}', approved: false,
+        },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    // httpGet 记录内嵌于对应工具步骤
+    expect(wrapper.findAll('.tool-card .confirm-card')).toHaveLength(1);
+    expect(wrapper.findAll('.tool-card')[0].find('.answered-line').text()).toBe('已批准');
+    // fileWrite 记录无匹配 -> 兜底底部渲染（已拒绝），不丢记录
+    const fallbackCards = wrapper.findAll('.ask-user-block .confirm-card');
+    expect(fallbackCards).toHaveLength(1);
+    expect(wrapper.find('.ask-user-block .answered-line').text()).toBe('已拒绝');
+  });
+
+  it('含历史记录的消息 status=complete 时 react-block 恒展开（AC-N05/N06 延续）', () => {
+    const msg: Message = {
+      id: 'multi-expand-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'complete',
+      reactSteps: [
+        { iteration: 1, thought: '调用 httpGet', toolCalls: [{ toolName: 'httpGet', arguments: '{}', result: '' }] },
+      ],
+      askUserData: {
+        type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+        toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: true,
+      },
+      askUserHistory: [
+        {
+          type: 'confirm', kind: 'permission', question: '请求使用工具「httpGet」', retryCount: 0,
+          toolName: 'httpGet', toolDescription: 'GET', toolArguments: '{}', approved: true,
+        },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    expect(wrapper.find('.react-content').attributes('style')).toContain('block');
+  });
 });
 
 describe('MessageInput', () => {
@@ -682,9 +978,19 @@ describe('MessageInput', () => {
   it('输入为 / 时点击提示条自动补全为 /plan （AC-N04）', async () => {
     const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [chatModel] } });
     await wrapper.find('textarea').setValue('/');
-    await wrapper.find('.plan-hint').trigger('click');
+    // 提示条现为 /plan 与 /skill 两个可点击项（CR-001）
+    await wrapper.find('.plan-hint-item').trigger('click');
     const textarea = wrapper.find('textarea');
     expect((textarea.element as HTMLTextAreaElement).value).toBe('/plan ');
+  });
+
+  it('输入 /s 时点击提示条补全 /skill 前缀（CR-001 AC-N07）', async () => {
+    const wrapper = mount(MessageInput, { props: { isStreaming: false, models: [chatModel] } });
+    await wrapper.find('textarea').setValue('/s');
+    const items = wrapper.findAll('.plan-hint-item');
+    await items[1].trigger('click');
+    const textarea = wrapper.find('textarea');
+    expect((textarea.element as HTMLTextAreaElement).value).toBe('/skill ');
   });
 
   // ===== Task-08 新增：知识库选择器集成（AC-011, AC-029）=====
@@ -954,14 +1260,15 @@ describe('ChatWindow', () => {
     const args = vi.mocked(streamChat).mock.calls[0];
     // message 参数（第2位）非空，通过前端拦截与后端 @NotBlank 校验
     expect(args[1].trim().length).toBeGreaterThan(0);
-    // toolApproved 参数（最后一位）为 true
-    expect(args[args.length - 1]).toBe(true);
+    // toolApproved 参数（第8位，index 7；后续 skills/excludedSkills 为 agent-skill 新增参数）为 true
+    expect(args[7]).toBe(true);
     // 交互优化：silent 静默恢复——不产生"已批准使用工具"用户消息气泡
     const session = store.sessions.find((s) => s.sessionId === store.currentSessionId);
     const userBubbles = session!.messages.filter((m) => m.role === 'user');
     expect(userBubbles.every((m) => !m.content.includes('已批准使用工具'))).toBe(true);
     expect(userBubbles.length).toBe(0);
-    expect(session!.messages.length).toBe(beforeCount + 1); // 仅新增助手占位
+    // CR-001：批准后不再新增助手占位（复用含确认卡片的原气泡续写）
+    expect(session!.messages.length).toBe(beforeCount);
     // 卡片决策已记录（approved=true 锁定）
     const confirmMsg = session!.messages.find((m) => m.askUserData?.kind === 'permission');
     expect(confirmMsg!.askUserData!.approved).toBe(true);
@@ -984,13 +1291,14 @@ describe('ChatWindow', () => {
     expect(streamChat).toHaveBeenCalledTimes(1);
     const args = vi.mocked(streamChat).mock.calls[0];
     expect(args[1].trim().length).toBeGreaterThan(0);
-    expect(args[args.length - 1]).toBe(false);
+    expect(args[7]).toBe(false);
     // 交互优化：silent 静默恢复——不产生"已拒绝使用工具"用户消息气泡
     const session = store.sessions.find((s) => s.sessionId === store.currentSessionId);
     const userBubbles = session!.messages.filter((m) => m.role === 'user');
     expect(userBubbles.every((m) => !m.content.includes('已拒绝使用工具'))).toBe(true);
     expect(userBubbles.length).toBe(0);
-    expect(session!.messages.length).toBe(beforeCount + 1); // 仅新增助手占位
+    // CR-001：拒绝后不再新增助手占位（复用含确认卡片的原气泡续写）
+    expect(session!.messages.length).toBe(beforeCount);
     const confirmMsg = session!.messages.find((m) => m.askUserData?.kind === 'permission');
     expect(confirmMsg!.askUserData!.approved).toBe(false);
   });

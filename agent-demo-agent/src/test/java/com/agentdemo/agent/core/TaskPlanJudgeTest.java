@@ -4,11 +4,15 @@ import com.agentdemo.agent.config.AgentConfig;
 import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import com.agentdemo.llm.registry.ModelFactory;
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
@@ -150,5 +154,42 @@ class TaskPlanJudgeTest {
         // 业务含义：judge 需调用 composeSystemPrompt(SCENARIO_TASK_PLAN) 组装规划提示词
         // （验证方式：通过 AgentConfig 默认模板存在性间接验证，此处验证 judge 不抛异常）
         assertTrue(true);
+    }
+
+    // ==================== Task-07: 历史注入（agent-context-engineering，AC-N03） ====================
+
+    @Test
+    @DisplayName("带历史时：历史注入于系统提示词之后、当前消息之前")
+    void judge_带历史_注入于当前消息之前() {
+        mockChatModelResponse("[]");
+        List<dev.langchain4j.data.message.ChatMessage> history = List.of(
+                UserMessage.from("上一轮：查一下订单 ORD-12345"),
+                AiMessage.from("您的订单已发货"));
+
+        judge.judge("sess-1", "帮我把它做个深度分析并拆解执行", null, history);
+
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).chat(captor.capture());
+        List<ChatMessage> sent = captor.getValue();
+        // 顺序：System(task-plan) -> 历史 -> 当前消息
+        assertTrue(sent.get(0) instanceof SystemMessage, "首位应为系统提示词");
+        assertTrue(sent.get(1) instanceof UserMessage);
+        assertEquals("上一轮：查一下订单 ORD-12345", ((UserMessage) sent.get(1)).singleText(),
+                "历史应注入于当前消息之前");
+        assertEquals("帮我把它做个深度分析并拆解执行", ((UserMessage) sent.get(sent.size() - 1)).singleText(),
+                "当前消息应为最后一条");
+    }
+
+    @Test
+    @DisplayName("历史为 null 时降级为仅当前消息（现状行为）")
+    void judge_无历史_仅当前消息() {
+        mockChatModelResponse("[]");
+
+        judge.judge("sess-1", "你好", null, null);
+
+        ArgumentCaptor<List<ChatMessage>> captor = ArgumentCaptor.forClass(List.class);
+        verify(chatModel).chat(captor.capture());
+        List<ChatMessage> sent = captor.getValue();
+        assertEquals(2, sent.size(), "System + 当前消息，共 2 条");
     }
 }

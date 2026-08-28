@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ref, computed, nextTick } from 'vue';
+import { ref, computed, nextTick, onMounted } from 'vue';
 import { useSessionStore } from '@/stores/session';
+import { useSkillStore } from '@/stores/skill';
 import KnowledgeBaseSelector from './KnowledgeBaseSelector.vue';
 import ModelSelector from './ModelSelector.vue';
 import ToolSelector from './ToolSelector.vue';
-import type { KnowledgeBase, TokenUsage, LlmModel } from '@/types';
+import type { KnowledgeBase, TokenUsage, LlmModel, SkillInfo } from '@/types';
 
 const props = withDefaults(defineProps<{
   isStreaming: boolean;
@@ -108,22 +109,62 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
-// ===== unified-chat-mode Task-19：/plan 前缀命令提示条 =====
+// ===== CR-001 交互改进：/skill 技能列表选择 =====
 
-/** 是否显示 /plan 提示条（输入以 / 开头且非流式时，AC-N04 可发现性） */
+const skillStore = useSkillStore();
+
+// 加载技能列表（供 /skill 前缀选择）
+onMounted(() => {
+  skillStore.loadSkills().catch(() => {
+    // 技能加载失败静默处理（对话不受影响）
+  });
+});
+
+/** 是否显示技能列表（输入以 /skill 开头且非流式时） */
+const showSkillSuggest = computed(
+  () => !props.isStreaming && /^\/skill/.test(inputText.value.trim()),
+);
+
+/** /skill 后的输入关键字（用于过滤技能列表） */
+const skillKeyword = computed(() => {
+  const m = inputText.value.trim().match(/^\/skill\s*(.*)$/);
+  return m ? m[1] : '';
+});
+
+/** 过滤后的可用技能（按名称或 id 匹配关键字） */
+const filteredSkills = computed(() => {
+  const kw = skillKeyword.value.toLowerCase();
+  return skillStore.skills.filter(
+    (s) => s.enabled && (!kw || s.name.toLowerCase().includes(kw) || s.id.toLowerCase().includes(kw)),
+  );
+});
+
+/**
+ * 选择技能：补全为 "/skill 技能id "（用户继续输入消息，发送时经 ChatWindow 解析指定技能）
+ */
+function selectSkill(skill: SkillInfo) {
+  if (props.isStreaming) return;
+  inputText.value = `/skill ${skill.id} `;
+  nextTick(autoResize);
+  nextTick(() => textareaRef.value?.focus());
+}
+
+// ===== 前缀命令提示条（/plan Task-19 + /skill CR-001，可发现性）=====
+
+/** 是否显示前缀命令提示条（输入以 / 开头且非流式时） */
 const showPlanHint = computed(
   () => !props.isStreaming && inputText.value.trim().startsWith('/'),
 );
 
 /**
- * 点击提示条自动补全 /plan 前缀（若尚未输入则补全，若已输入则聚焦）
- * 业务含义：提升 /plan 强制拆解指令的可发现性（需求 8.1：输入框支持 /plan 指令含可发现性提示）。
+ * 点击提示条自动补全对应前缀（/plan 强制任务拆解 /skill 指定技能）
+ * 业务含义：提升 /plan 与 /skill 指令的可发现性（需求 8.1 + AC-N07）。
  */
-function applyPlanHint() {
+function applyPlanHint(cmd: 'plan' | 'skill') {
   if (props.isStreaming) return;
   const trimmed = inputText.value.trim();
-  if (trimmed === '' || trimmed === '/') {
-    inputText.value = '/plan ';
+  if (trimmed === '' || trimmed === '/' || (cmd === 'skill' && trimmed.startsWith('/s'))) {
+    inputText.value = cmd === 'plan' ? '/plan ' : '/skill ';
     nextTick(autoResize);
     nextTick(() => textareaRef.value?.focus());
   }
@@ -183,10 +224,30 @@ function applyPlanHint() {
       </button>
     </div>
 
-    <!-- unified-chat-mode Task-19：/plan 前缀命令提示条（AC-N04 可发现性） -->
-    <div v-if="showPlanHint" class="plan-hint" @click="applyPlanHint">
-      <span class="plan-hint-icon">📋</span>
-      <span class="plan-hint-text">输入 /plan 可强制进行任务拆解</span>
+    <!-- 前缀命令提示条（/plan Task-19 + /skill CR-001，可发现性） -->
+    <div v-if="showPlanHint" class="plan-hint">
+      <span class="plan-hint-item" @click="applyPlanHint('plan')">
+        <span class="plan-hint-icon">📋</span>
+        <span class="plan-hint-text">/plan 强制任务拆解</span>
+      </span>
+      <span class="plan-hint-item" @click="applyPlanHint('skill')">
+        <span class="plan-hint-icon">✦</span>
+        <span class="plan-hint-text">/skill 指定技能</span>
+      </span>
+    </div>
+
+    <!-- CR-001 交互改进：/skill 技能列表选择（输入 /skill 后弹出，点击补全） -->
+    <div v-if="showSkillSuggest" class="skill-suggest">
+      <div
+        v-for="skill in filteredSkills"
+        :key="skill.id"
+        class="skill-suggest-item"
+        @mousedown.prevent="selectSkill(skill)"
+      >
+        <span class="skill-suggest-name">{{ skill.name }}</span>
+        <span class="skill-suggest-id">{{ skill.id }}</span>
+      </div>
+      <div v-if="filteredSkills.length === 0" class="skill-suggest-empty">暂无匹配技能</div>
     </div>
 
     <!-- 字符计数 + 超长提示 -->
@@ -355,7 +416,7 @@ function applyPlanHint() {
   min-height: 18px;
 }
 
-/* /plan 前缀命令提示条（unified-chat-mode Task-19，AC-N04 可发现性） */
+/* 前缀命令提示条（/plan /skill，可发现性） */
 .plan-hint {
   display: flex;
   align-items: center;
@@ -367,13 +428,18 @@ function applyPlanHint() {
   background: var(--accent-dim);
   color: var(--accent);
   font-size: 12px;
+}
+
+.plan-hint-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
-.plan-hint:hover {
-  border-color: var(--accent);
-  background: rgba(0, 212, 184, 0.15);
+.plan-hint-item:hover {
+  color: #fff;
 }
 
 .plan-hint-icon {
@@ -382,6 +448,51 @@ function applyPlanHint() {
 
 .plan-hint-text {
   font-family: var(--font-display);
+}
+
+/* CR-001 交互改进：/skill 技能列表选择 */
+.skill-suggest {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sidebar);
+  box-shadow: var(--shadow-sm);
+}
+
+.skill-suggest-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px 10px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.skill-suggest-item:hover {
+  background: var(--bg-hover);
+}
+
+.skill-suggest-name {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.skill-suggest-id {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-display);
+}
+
+.skill-suggest-empty {
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
 }
 
 .char-warn {

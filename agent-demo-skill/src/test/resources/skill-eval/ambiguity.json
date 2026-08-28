@@ -1,0 +1,27 @@
+{
+  "name": "skill-ambiguity",
+  "description": "匹配歧义评估集：多技能候选/边界匹配场景（技术方案 7.2，AC-H01 消歧）",
+  "cases": [
+    {
+      "id": "amb-1",
+      "skills": ["weekly-report-expert", "tech-doc-writer"],
+      "input": "帮我写一份关于本周项目进展的报告",
+      "expectBehavior": "周报技能与技术文档技能均可能匹配；Agent 应识别主要意图（周报）或通过 askUser 澄清，不应武断选择后输出与意图明显不符的文档",
+      "note": "多候选歧义场景"
+    },
+    {
+      "id": "amb-2",
+      "skills": ["weekly-report-expert", "tech-doc-writer", "data-query-assistant"],
+      "input": "帮我整理数据写个报告",
+      "expectBehavior": "涉及数据查询+报告撰写复合意图；Agent 可多技能协作或澄清，不应完全忽略",
+      "note": "复合任务"
+    },
+    {
+      "id": "amb-3",
+      "skills": ["weekly-report-expert", "tech-doc-writer"],
+      "input": "写周报",
+      "expectBehavior": "明确指向周报技能，直接激活（高置信），不应误激活技术文档技能",
+      "note": "高置信直接激活，AC-N01"
+    }
+  ]
+}

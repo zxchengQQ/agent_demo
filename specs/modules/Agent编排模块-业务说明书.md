@@ -157,6 +157,10 @@ flowchart TD
 | BR-AGT-013 | HITL 模式使用场景模板 "hitl"（含 askUser 使用规则 + 追问策略 + Few-shot 示例），通过 PromptTemplateLoader 组合提示词（20260820 新增） | 🔴 强制 |
 | BR-AGT-014 | HITL 模式使用显式 ReAct 循环（HITLReActStream），askUser 调用不消耗 ReAct 迭代次数；默认工具不含 askUser 时由 ensureAskUserTool 强制加入并按方法名去重（20260820 新增） | 🔴 强制 |
 | BR-AGT-015 | HITL pending 交互状态按 sessionId 隔离，同一会话同时只能有一个 pending；恢复时加载保存状态 + 用户回复作为 Observation 继续循环（20260820 新增） | 🔴 强制 |
+| BR-AGT-016 | 工具协议以 tools 参数为权威来源：`{{tools}}` 由会话基础工具集（SessionToolResolver.resolveSessionBaseTools，不含技能脚本工具）确定性生成，会话内冻结不变（20260828 新增） | 🔴 强制 |
+| BR-AGT-017 | 技能激活段从系统提示词移除，改为 SKILL_INSTRUCTION 附件注入记忆流（激活点单通道、流式/同步双路径覆盖）；技能激活不改变系统提示词，保证前缀缓存稳定（20260828 新增） | 🔴 强制 |
+| BR-AGT-018 | HITL 末轮强制总结前必须注入 `<agent_status>` 收尾消息（user 角色，读数+操作策略成对，显示配置上限），仅框架代码可写，模型/用户禁止伪造（20260828 新增） | 🔴 强制 |
+| BR-AGT-019 | 规划判断（TaskPlanJudge.judge）必须携带会话历史 recentHistory 参与意图判别，缺失时降级为默认规划模式不抛错（20260828 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

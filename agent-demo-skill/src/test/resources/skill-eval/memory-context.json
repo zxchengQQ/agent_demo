@@ -1,0 +1,37 @@
+{
+  "name": "skill-memory-context",
+  "description": "记忆上下文评估集（技术方案 7.2，AC-M01/M02/M03）：多轮指代/跨轮持续/会话隔离",
+  "cases": [
+    {
+      "id": "memory-1",
+      "scenario": "cross-turn",
+      "rounds": [
+        { "input": "帮我写周报" },
+        { "input": "把刚才那份改成表格版" }
+      ],
+      "expectBehavior": "第一轮激活周报技能后，第二轮'刚才那份'指代延续，继续按周报技能处理（AC-M01/M02）",
+      "note": "激活跨轮持续 + 指代延续"
+    },
+    {
+      "id": "memory-2",
+      "scenario": "session-isolation",
+      "rounds": [
+        { "session": "A", "input": "帮我写周报" },
+        { "session": "B", "input": "你好" }
+      ],
+      "expectBehavior": "会话 A 激活的技能不影响会话 B；会话 B 从零匹配（AC-M03）",
+      "note": "激活状态会话隔离"
+    },
+    {
+      "id": "memory-3",
+      "scenario": "exclusion-no-recurrence",
+      "rounds": [
+        { "input": "帮我写周报" },
+        { "input": "（用户排除周报技能）" },
+        { "input": "再帮我写份周报" }
+      ],
+      "expectBehavior": "排除后不再自主激活周报技能（AC-M04），Agent 以通用能力处理",
+      "note": "排除后不复发"
+    }
+  ]
+}

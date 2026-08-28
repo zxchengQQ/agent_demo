@@ -14,6 +14,7 @@ import com.agentdemo.common.result.Result;
 import com.agentdemo.common.utils.SimpleTokenEstimator;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.skill.session.SkillSessionManager;
 import com.agentdemo.tools.permission.ToolPermissionLevel;
 import com.agentdemo.tools.permission.ToolPermissionService;
 import com.agentdemo.tools.registry.ToolRegistry;
@@ -73,12 +74,18 @@ public class AgentController {
     private final AgentConfig agentConfig;
     private final HumanInteractionManager humanInteractionManager;
     private final ToolPermissionService toolPermissionService;
+    private final SkillSessionManager skillSessionManager;
+    /** 技能附件文本源（agent-context-engineering：排除状态附件；null 兼容场景跳过） */
+    private final com.agentdemo.skill.prompt.SkillPromptComposer skillPromptComposer;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent,
                            SessionManager sessionManager, ChatMemoryManager memoryManager,
                            ToolRegistry toolRegistry, AgentConfig agentConfig,
                            HumanInteractionManager humanInteractionManager,
-                           ToolPermissionService toolPermissionService) {
+                           ToolPermissionService toolPermissionService,
+                           SkillSessionManager skillSessionManager,
+                           com.agentdemo.skill.prompt.SkillPromptComposer skillPromptComposer) {
         this.simpleAgent = simpleAgent;
         this.planAgent = planAgent;
         this.sessionManager = sessionManager;
@@ -87,6 +94,21 @@ public class AgentController {
         this.agentConfig = agentConfig;
         this.humanInteractionManager = humanInteractionManager;
         this.toolPermissionService = toolPermissionService;
+        this.skillSessionManager = skillSessionManager;
+        this.skillPromptComposer = skillPromptComposer;
+    }
+
+    /**
+     * 兼容构造（未装配技能附件文本源：状态附件跳过，其余行为不变）
+     */
+    public AgentController(SimpleAgent simpleAgent, PlanAgent planAgent,
+                           SessionManager sessionManager, ChatMemoryManager memoryManager,
+                           ToolRegistry toolRegistry, AgentConfig agentConfig,
+                           HumanInteractionManager humanInteractionManager,
+                           ToolPermissionService toolPermissionService,
+                           SkillSessionManager skillSessionManager) {
+        this(simpleAgent, planAgent, sessionManager, memoryManager, toolRegistry, agentConfig,
+                humanInteractionManager, toolPermissionService, skillSessionManager, null);
     }
 
     /**
@@ -181,6 +203,11 @@ public class AgentController {
             throw new BusinessException(ErrorCode.PARAM_INVALID,
                     "askUser 工具权限固定为放行（allow），不可修改");
         }
+        // 业务含义：loadSkill 工具权限固定为放行（决策 6：技能激活只读可回滚，自主激活不被确认打断）
+        if (ToolPermissionService.LOAD_SKILL_TOOL_ID.equals(toolId)) {
+            throw new BusinessException(ErrorCode.PARAM_INVALID,
+                    "loadSkill 工具权限固定为放行（allow），不可修改");
+        }
         // 业务含义：校验工具存在性（格式错误/不存在抛 TOOL_NOT_FOUND），ForDirect 能力声明校验（AC-T01）
         toolRegistry.resolveToolsForDirect(List.of(toolId));
         // 业务含义：解析权限等级，非法值抛 IllegalArgumentException -> 转参数校验错误（400）
@@ -244,6 +271,10 @@ public class AgentController {
         // sessionId 在 if 中可能被重新赋值，lambda 要求 effectively final，故用 final 变量
         final String effectiveSessionId = sessionId;
 
+        // 业务含义：技能选择处理（agent-skill，AC-N03/S04）——在 HITL 恢复优先判定之前应用，
+        // 手动指定/排除状态立即写入会话，随后下发 manual 激活事件。技能不存在时返回 400。
+        applySkillSelection(effectiveSessionId, request, emitter);
+
         long start = System.currentTimeMillis();
 
         // 业务含义：读取前端指定的 modelId，null 时使用默认模型
@@ -298,9 +329,10 @@ public class AgentController {
             return emitter;
         }
 
-        // 业务含义：记录用户消息到记忆（/plan 剥离后的内容，控制指令不进入推理上下文，需求 6.6）
+        // 业务含义：剥离 /plan 前缀（控制指令不进入推理上下文，需求 6.6）+ 转义用户输入中的框架标记
+        // （agent-context-engineering AC-S03：防止用户伪造框架附件/状态消息）
         String baseMessage = planCommand.content() != null ? planCommand.content() : request.getMessage();
-        memoryManager.addUserMessage(effectiveSessionId, baseMessage);
+        baseMessage = stripFrameworkMarkers(baseMessage);
 
         // 业务含义：用户指定知识库时，将知识库名称注入用户消息末尾，
         // 引导 LLM 在 ReAct 循环中调用 searchKnowledge 工具时使用指定知识库。
@@ -313,6 +345,10 @@ public class AgentController {
         } else {
             effectiveMessage = baseMessage;
         }
+
+        // 业务含义（agent-context-engineering AC-M02 组装唯一化）：记忆只写入 effectiveMessage
+        // （模型实际所见，含知识库提示），组装层不再重复追加当前用户消息，消除重复注入。
+        memoryManager.addUserMessage(effectiveSessionId, effectiveMessage);
 
         // 业务含义：统一模式编排（首次/强制拆解）。强制拆解经 /plan 前缀表达（AC-N04）。
         UnifiedChatStream unifiedStream = planAgent.chatUnifiedStream(
@@ -396,6 +432,14 @@ public class AgentController {
                         Map.of("toolName", toolName, "toolDescription",
                                 toolDescription != null ? toolDescription : "", "arguments",
                                 arguments != null ? arguments : "")))
+                // 技能激活：skill_activated（agent-skill，AC-S04）
+                // 业务含义：loadSkill 拦截激活成功时推送激活事件（技能 id/名称/来源/绑定工具），
+                // 前端据此渲染激活徽标；手动指定激活由 chatStream 前置下发（source=manual）。
+                .onSkillActivated((skillId, skillName, source, boundToolIds) -> sendEvent(emitter, "skill_activated",
+                        Map.of("skillId", skillId != null ? skillId : "",
+                                "skillName", skillName != null ? skillName : "",
+                                "source", source != null ? source : "auto",
+                                "boundToolIds", boundToolIds != null ? boundToolIds : List.of())))
                 // 完成：写记忆 + usage + done（直答=最终回答，拆解=总结文本）
                 .onComplete(fullResponseStr -> {
                     memoryManager.addAssistantMessage(sessionId, fullResponseStr);
@@ -423,6 +467,104 @@ public class AgentController {
             log.warn("SSE 异常，取消统一编排: sessionId={}", sessionId);
             unifiedStream.cancel();
         });
+    }
+
+    /**
+     * 应用会话级技能选择（手动指定/排除），并下发 manual 激活事件
+     * <p>
+     * 业务含义（agent-skill，AC-N03/S04）：ChatRequest.skills/excludedSkills 落点。
+     * 手动指定（skills 非空）立即激活并下发 skill_activated（source=manual）；
+     * 指定不存在的技能返回 400。
+     * </p>
+     */
+    private void applySkillSelection(String sessionId, ChatRequest request, SseEmitter emitter) {
+        List<String> skills = request.getSkills();
+        List<String> excludedSkills = request.getExcludedSkills();
+        if (skills == null && excludedSkills == null) {
+            return;
+        }
+        // 手动指定存在性校验（仅非空时）
+        if (skills != null && !skills.isEmpty()) {
+            for (String skillId : skills) {
+                if (skillSessionManager.getSkillDefinition(skillId).isEmpty()) {
+                    sendEvent(emitter, "error", "技能不存在: " + skillId);
+                    emitter.complete();
+                    throw new BusinessException(ErrorCode.PARAM_INVALID, "技能不存在: " + skillId);
+                }
+            }
+        }
+        skillSessionManager.applyManualSelection(sessionId, skills, excludedSkills);
+        // 手动指定激活事件下发（source=manual）
+        if (skills != null && !skills.isEmpty()) {
+            for (String skillId : skills) {
+                skillSessionManager.getSkillDefinition(skillId).ifPresent(skill -> {
+                    List<String> boundToolIds = scriptToolNames(skillId, skill.getScripts());
+                    sendEvent(emitter, "skill_activated",
+                            Map.of("skillId", skill.getId(), "skillName", skill.getName(),
+                                    "source", "manual", "boundToolIds", boundToolIds));
+                });
+            }
+        }
+        // agent-context-engineering（AC-S01 状态持久化）：排除技能时写 STATUS 附件进会话记忆，
+        // 模型后续轮次据此不再尝试激活已排除技能
+        if (excludedSkills != null && !excludedSkills.isEmpty() && skillPromptComposer != null) {
+            for (String skillId : excludedSkills) {
+                try {
+                    String statusText = skillPromptComposer.composeStatusAttachment(
+                            "技能 " + skillId + " 已被用户排除，请勿再次尝试激活。");
+                    if (statusText != null && !statusText.isBlank()) {
+                        memoryManager.addAttachment(sessionId,
+                                com.agentdemo.memory.shortterm.CompressingChatMemory.AttachmentType.STATUS,
+                                statusText);
+                    }
+                } catch (Exception e) {
+                    log.warn("技能排除状态附件写入失败（降级跳过）: sessionId={}, skillId={}, error={}",
+                            sessionId, skillId, e.getMessage());
+                }
+            }
+        }
+        log.info("技能选择应用: sessionId={}, skills={}, excludedSkills={}", sessionId, skills, excludedSkills);
+    }
+
+    /**
+     * 转义用户输入开头的框架标记（agent-context-engineering，AC-S03 防伪造路径）
+     * <p>
+     * 业务含义：框架附件（【框架附件·）、摘要（【历史对话摘要】）、状态（<agent_status>）均为
+     * 平台专属通道，仅框架代码可写入。用户输入若以这些标记开头，视为伪造尝试，替换为转义文本，
+     * 使其不再匹配框架标记前缀（不会被当作附件/摘要/状态进入记忆流）。
+     * </p>
+     */
+    private String stripFrameworkMarkers(String text) {
+        if (text == null) {
+            return null;
+        }
+        String stripped = text;
+        for (String marker : new String[]{
+                com.agentdemo.memory.shortterm.CompressingChatMemory.ATTACHMENT_PREFIX,
+                com.agentdemo.memory.shortterm.CompressingChatMemory.SUMMARY_PREFIX,
+                "<agent_status>"}) {
+            if (stripped.startsWith(marker)) {
+                stripped = "用户消息（已转义系统标记）" + stripped.substring(marker.length());
+                break;
+            }
+        }
+        return stripped;
+    }
+
+    /**
+     * 自带脚本工具名列表（skill_{skillId}_{scriptName}，手动指定事件载荷，CR-001）
+     */
+    private List<String> scriptToolNames(String skillId, List<com.agentdemo.skill.entity.SkillScript> scripts) {
+        if (scripts == null || scripts.isEmpty()) {
+            return List.of();
+        }
+        List<String> names = new ArrayList<>();
+        for (var script : scripts) {
+            if (script != null && script.getName() != null && !script.getName().isBlank()) {
+                names.add(com.agentdemo.skill.script.SkillScriptToolRegistrar.buildToolName(skillId, script.getName()));
+            }
+        }
+        return names;
     }
 
     /**

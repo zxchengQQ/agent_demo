@@ -1,0 +1,70 @@
+{
+  "name": "skill-normal-interaction",
+  "description": "正常交互评估集：3 个预置技能的标准对话场景（技术方案 7.2，AC-N01/N02/N05）",
+  "cases": [
+    {
+      "id": "weekly-1",
+      "skillId": "weekly-report-expert",
+      "input": "帮我写本周的工作周报",
+      "expectActivation": true,
+      "expectBehavior": "应激活周报技能，输出按周报结构（本周成果/数据/风险/下周计划）组织",
+      "note": "直接命中周报技能描述"
+    },
+    {
+      "id": "weekly-2",
+      "skillId": "weekly-report-expert",
+      "input": "整理一下我这周的进展，按周报格式输出",
+      "expectActivation": true,
+      "expectBehavior": "应激活周报技能（'周报格式'触发），输出遵循周报结构",
+      "note": "间接命中（周报格式提示）"
+    },
+    {
+      "id": "techdoc-1",
+      "skillId": "tech-doc-writer",
+      "input": "帮我写一份技术方案文档",
+      "expectActivation": true,
+      "expectBehavior": "应激活技术文档技能，输出遵循技术文档模板（概述/背景/方案/接口/风险）",
+      "note": "直接命中技术文档技能"
+    },
+    {
+      "id": "techdoc-2",
+      "skillId": "tech-doc-writer",
+      "input": "给我起草一个接口设计文档",
+      "expectActivation": true,
+      "expectBehavior": "应激活技术文档技能并使用模板结构",
+      "note": "接口文档属技术文档范围"
+    },
+    {
+      "id": "dataq-1",
+      "skillId": "data-query-assistant",
+      "input": "帮我查一下最新的编程语言排行榜数据",
+      "expectActivation": true,
+      "expectBehavior": "应激活数据查询技能并优先使用自带脚本工具（http-get）获取数据",
+      "note": "数据查询请求，绑定工具演示场景"
+    },
+    {
+      "id": "generic-1",
+      "skillId": null,
+      "input": "你好，今天天气怎么样？",
+      "expectActivation": false,
+      "expectBehavior": "不应激活任何技能，以通用能力正常对话",
+      "note": "与任何技能不匹配，AC-E02"
+    },
+    {
+      "id": "generic-2",
+      "skillId": null,
+      "input": "1+1 等于几？",
+      "expectActivation": false,
+      "expectBehavior": "不应激活任何技能，直接回答（可调用计算器）",
+      "note": "通用计算，AC-E02"
+    },
+    {
+      "id": "weekly-3",
+      "skillId": "weekly-report-expert",
+      "input": "我本周完成了订单模块的重构，性能提升了 30%，但没有遇到什么风险。帮我写周报。",
+      "expectActivation": true,
+      "expectBehavior": "应激活周报技能，按结构输出，周报内容包含用户提供的信息",
+      "note": "带信息的周报请求"
+    }
+  ]
+}

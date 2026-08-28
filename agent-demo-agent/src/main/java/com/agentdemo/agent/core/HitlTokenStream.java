@@ -87,4 +87,27 @@ public interface HitlTokenStream extends ThinkingTokenStream {
     interface ToolConfirmConsumer {
         void accept(String toolCallId, String toolName, String toolDescription, String arguments);
     }
+
+    /**
+     * 注册技能激活回调（默认空实现，不破坏现有实现类）
+     * <p>
+     * 业务含义：HITLReActStream 拦截 loadSkill 工具调用并激活成功后触发，携带技能名、来源与绑定工具。
+     * Controller 收到此回调后发送 skill_activated SSE 事件（前端渲染激活徽标，AC-S04）。
+     * 默认返回 this 保证链式调用。
+     * </p>
+     *
+     * @param consumer 技能激活消费者
+     * @return this（链式调用）
+     */
+    default HitlTokenStream onSkillActivated(SkillActivatedConsumer consumer) {
+        return this;
+    }
+
+    /**
+     * 技能激活消费者（携带技能 id、名称、激活来源与绑定工具）
+     */
+    @FunctionalInterface
+    interface SkillActivatedConsumer {
+        void accept(String skillId, String skillName, String source, java.util.List<String> boundToolIds);
+    }
 }

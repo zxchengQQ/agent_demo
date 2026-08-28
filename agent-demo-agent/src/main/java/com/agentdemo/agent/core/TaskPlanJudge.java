@@ -54,12 +54,7 @@ public class TaskPlanJudge {
     }
 
     /**
-     * 前置规划判断
-     * <p>
-     * 业务含义：调用 ChatModel 同步判断消息是否需要任务拆解。
-     * 使用 task-plan 场景提示词 + 用户消息，解析 LLM 返回的 JSON 数组为子任务列表。
-     * 任何异常/解析失败返回空列表（降级直答），不向上抛出（保证对话不中断）。
-     * </p>
+     * 前置规划判断（兼容签名：无历史注入）
      *
      * @param sessionId 会话 ID（仅用于日志追踪）
      * @param message   用户消息（已剥离 /plan 前缀后的有效内容）
@@ -67,6 +62,26 @@ public class TaskPlanJudge {
      * @return 子任务列表（空列表表示无需拆解/判断失败降级直答）
      */
     public List<SubTask> judge(String sessionId, String message, String modelId) {
+        return judge(sessionId, message, modelId, null);
+    }
+
+    /**
+     * 前置规划判断（agent-context-engineering Task-07，AC-N03：携带最近会话历史）
+     * <p>
+     * 业务含义：统一对话模式下每条普通消息（无 /plan 前缀）先执行一次轻量规划判断，
+     * 判定任务复杂度：返回非空子任务列表则进入拆解执行，返回空列表则直接回答。
+     * 历史注入：调用方传入最近 N 条记忆消息（默认 6 条），保证指代类消息（"那它的物流呢"）
+     * 可正确解析指代对象；历史为空/异常时降级为仅当前消息（现状行为）。
+     * 判断调用失败/异常/结果解析失败一律返回空列表降级直答（AC-E01，不中断对话）。
+     * </p>
+     *
+     * @param sessionId      会话 ID（仅用于日志追踪）
+     * @param message        用户消息（已剥离 /plan 前缀后的有效内容）
+     * @param modelId        模型 ID（null 使用默认模型）
+     * @param recentHistory  最近会话历史消息（可为 null，注入于当前消息之前）
+     * @return 子任务列表（空列表表示无需拆解/判断失败降级直答）
+     */
+    public List<SubTask> judge(String sessionId, String message, String modelId, List<ChatMessage> recentHistory) {
         try {
             // 业务含义：按 modelId 选择 ChatModel，null 时使用默认模型
             ChatModel chatModel = (modelId != null)
@@ -76,12 +91,17 @@ public class TaskPlanJudge {
             List<ChatMessage> messages = new ArrayList<>();
             messages.add(SystemMessage.from(
                     promptTemplateLoader.composeSystemPrompt(PromptTemplateLoader.SCENARIO_TASK_PLAN)));
+            // AC-N03：历史注入（位于当前消息之前，供指代解析）
+            if (recentHistory != null && !recentHistory.isEmpty()) {
+                messages.addAll(recentHistory);
+            }
             messages.add(UserMessage.from(message));
 
             ChatResponse response = chatModel.chat(messages);
             String responseText = response.aiMessage().text();
 
-            log.info("规划判断响应: sessionId={}, responseLength={}", sessionId,
+            log.info("规划判断响应: sessionId={}, historyMessages={}, responseLength={}", sessionId,
+                    recentHistory != null ? recentHistory.size() : 0,
                     responseText != null ? responseText.length() : 0);
 
             return parseTaskPlan(responseText);

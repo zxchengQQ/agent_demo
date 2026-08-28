@@ -3,14 +3,17 @@ import { ref, computed, onMounted } from 'vue';
 import { useSessionStore } from '@/stores/session';
 import { useRagStore } from '@/stores/rag';
 import { useLlmStore } from '@/stores/llm';
+import { useSkillStore } from '@/stores/skill';
 import { streamChat } from '@/api/chat';
 import type { Message } from '@/types';
 import MessageList from './MessageList.vue';
 import MessageInput from './MessageInput.vue';
+import SkillSelector from './SkillSelector.vue';
 
 const store = useSessionStore();
 const ragStore = useRagStore();
 const llmStore = useLlmStore();
+const skillStore = useSkillStore();
 const isStreaming = ref(false);
 
 /** 跳转到 LLM 配置视图（Task-22 空状态引导） */
@@ -23,6 +26,10 @@ onMounted(() => {
   llmStore.loadChatModels();
   llmStore.loadConfigStatus();
   llmStore.initLastUsedModelId();
+  // agent-skill：加载技能列表（选择器与激活徽标数据源）
+  skillStore.loadSkills().catch(() => {
+    // 技能加载失败静默处理（对话不受影响）
+  });
 });
 
 /** 是否具备可用的 chat 模型（Task-22 空状态判断） */
@@ -85,6 +92,55 @@ function handleToolsChange(tools: string[]) {
   store.setTools(store.currentSessionId, tools);
 }
 
+/**
+ * 当前会话的技能选择（agent-skill Task-20，AC-N03 手动指定入口）
+ * 业务含义：从 session store 读取用户手动指定的技能 id 列表。
+ * 空数组表示"自动"模式（Agent 自主匹配激活）。
+ */
+const selectedSkills = computed(() => store.getSkills(store.currentSessionId));
+
+/**
+ * 技能选择变更处理
+ * 业务含义：用户通过 SkillSelector 切换选择时，更新 session store 中的会话级状态。
+ */
+function handleSkillsChange(skills: string[]) {
+  store.setSkills(store.currentSessionId, skills);
+}
+
+/**
+ * 当前会话的技能排除集合（agent-skill）
+ * 业务含义：从 session store 读取用户排除的技能 id 列表（激活徽标"×"操作）。
+ */
+const selectedExcludedSkills = computed(() => store.getExcludedSkills(store.currentSessionId));
+
+// ===== CR-001: /skill 前缀指令（AC-N07，与 /plan 同构）=====
+
+/** /skill 指令错误提示（可视化区块展示） */
+const skillCommandError = ref('');
+
+/**
+ * 解析 /skill 前缀指令
+ * 业务含义：形如 "/skill 技能名 消息内容"，返回技能名与剥离前缀后的剩余消息；非 /skill 指令返回 null。
+ */
+function parseSkillCommand(message: string): { skillName: string; rest: string } | null {
+  const m = message.trim().match(/^\/skill\s+(\S+)\s*([\s\S]*)$/);
+  if (!m) return null;
+  return { skillName: m[1], rest: m[2] ?? '' };
+}
+
+/**
+ * 应用 /skill 指令：匹配技能（id 或名称精确），设为会话手动指定；不存在时提示并保持自动模式（AC-N07）
+ */
+function applySkillCommand(skillName: string): void {
+  const skill = skillStore.skills.find((s) => s.id === skillName || s.name === skillName);
+  if (!skill) {
+    skillCommandError.value = `技能不存在: ${skillName}，请在技能选择器或设置页确认`;
+    return;
+  }
+  skillCommandError.value = '';
+  store.setSkills(store.currentSessionId, [skill.id]);
+}
+
 let abortController: AbortController | null = null;
 
 /** 当前会话的消息列表 */
@@ -100,12 +156,14 @@ function generateId(): string {
 
 /**
  * 发送消息（AC-002: 流式输出）
- * 业务含义：用户发送消息 -> 创建助手占位 -> 流式接收 -> 完成/中断/错误
+ * 业务含义：用户发送消息 -> 创建助手占位（或复用 HITL 卡片气泡）-> 流式接收 -> 完成/中断/错误
  *
  * @param message 用户消息
  * @param toolApproved 工具权限确认结果（true=批准/继续执行，false=拒绝/换方案；undefined=普通消息，Task-17）
- * @param silent 静默模式（权限确认决策专用）：请求正常发出但不在对话中产生用户消息气泡——
- *               决策结果已由 ConfirmCard 锁定态可视化，重复气泡属冗余信息（交互优化）
+ * @param silent 静默模式（HITL 交互专用）：请求正常发出但不在对话中产生用户消息气泡——
+ *               决策/答案已由交互卡片锁定态可视化，重复气泡属冗余信息（交互优化）。
+ *               CR-001 扩展：批准/拒绝（toolApproved 已定义）与 askUser 卡片回复（silent=true）
+ *               均走 HITL 恢复路径，续写复用卡片气泡（AC-N03/AC-N04）。
  */
 async function sendMessage(message: string, toolApproved?: boolean, silent?: boolean) {
   // AC-014: 空消息拦截
@@ -121,6 +179,29 @@ async function sendMessage(message: string, toolApproved?: boolean, silent?: boo
   }
   const sessionId = store.currentSessionId;
 
+  // CR-001/CR-002: /skill 前缀指令——指定技能后剥离前缀发送；仅指令无内容时不发送（AC-N07）。
+  // CR-002: 用户消息气泡保留原始输入（含技能名，所见即所得），LLM 内容剥离前缀。
+  const userDisplay = message;
+  const skillCmd = parseSkillCommand(message);
+  if (skillCmd) {
+    applySkillCommand(skillCmd.skillName);
+    if (!skillCmd.rest.trim()) return;
+    message = skillCmd.rest.trim();
+  }
+
+  // CR-001（agent-human-interaction）：HITL 恢复同气泡续写检测。
+  // 场景：① 批准/拒绝（toolApproved 已定义）；② askUser 卡片回复（silent=true）；
+  // ③ 主输入框在等待态下的回复（isWaitingForUserInput 为真，最后一条为未回答卡片）。
+  // 上述路径复用最后一条含交互卡片的助手气泡作为流式目标，不再新建助手气泡，
+  // 让续写展示为对同一对话问题的延续（AC-N03/AC-N04）。
+  const sessionBefore = store.sessions.find((s) => s.sessionId === sessionId);
+  const lastMsg =
+    sessionBefore && sessionBefore.messages.length > 0
+      ? sessionBefore.messages[sessionBefore.messages.length - 1]
+      : null;
+  const isHitlResume =
+    toolApproved !== undefined || silent === true || store.isWaitingForUserInput;
+
   // unified-chat-mode（决策 7 双通道收敛，技术方案 11.1 风险 4 对策）：
   // 等待态下用户通过主输入框发送的任意消息，先记录为对 askUser 卡片的回答
   // （卡片进入锁定态可回看），再作为普通消息/恢复消息发送。
@@ -129,28 +210,41 @@ async function sendMessage(message: string, toolApproved?: boolean, silent?: boo
     store.setAskUserAnswer(sessionId, message);
   }
 
-  // 乐观添加用户消息（silent 模式跳过：权限确认决策不产生对话气泡）
-  if (!silent) {
+  // 乐观添加用户消息（silent 模式跳过：HITL 交互不产生对话气泡，卡片锁定态已展示）
+  // CR-002: 气泡内容=原始输入（userDisplay，/skill 指令时含技能名前缀）
+  if (!silent && !isHitlResume) {
     store.addMessage(sessionId, {
       id: generateId(),
       role: 'user',
-      content: message,
+      content: userDisplay,
       createdAt: Date.now(),
       status: 'complete',
       reasoning: '',
     });
   }
 
-  // 创建助手消息占位（流式追加内容）
-  const assistantMsgId = generateId();
-  store.addMessage(sessionId, {
-    id: assistantMsgId,
-    role: 'assistant',
-    content: '',
-    createdAt: Date.now(),
-    status: 'incomplete',
-    reasoning: '',
-  });
+  // 流式目标消息 id（CR-001）：
+  // - HITL 恢复：复用最后一条含交互卡片的助手气泡，并置回流式态（不新建气泡）
+  // - 普通消息：新建助手消息占位（流式追加内容）
+  const hitlCardMsg =
+    isHitlResume && lastMsg && lastMsg.role === 'assistant' && lastMsg.askUserData
+      ? lastMsg
+      : null;
+  let assistantMsgId: string;
+  if (hitlCardMsg) {
+    assistantMsgId = hitlCardMsg.id;
+    store.markStreaming(assistantMsgId);
+  } else {
+    assistantMsgId = generateId();
+    store.addMessage(sessionId, {
+      id: assistantMsgId,
+      role: 'assistant',
+      content: '',
+      createdAt: Date.now(),
+      status: 'incomplete',
+      reasoning: '',
+    });
+  }
 
   // 流式调用
   isStreaming.value = true;
@@ -275,9 +369,19 @@ async function sendMessage(message: string, toolApproved?: boolean, silent?: boo
         onToolConfirm: (data) => {
           store.setToolConfirmData(assistantMsgId, data);
         },
+
+        // agent-skill: 技能激活事件（skill_activated）
+        // CR-002: 不再插入 AI"已加载技能"提示消息（技能反馈由用户消息保留原始输入承载），
+        // 仅记录激活状态（供会话级状态与排除逻辑使用）。
+        onSkillActivated: (data) => {
+          store.addActivatedSkill(assistantMsgId, data);
+          store.addActivatedSkillToSession(store.currentSessionId, data.skillId);
+        },
       },
       abortController.signal,
       toolApproved,
+      selectedSkills.value,
+      selectedExcludedSkills.value,
     );
   } finally {
     isStreaming.value = false;
@@ -303,10 +407,12 @@ function stopGeneration() {
  * 业务含义：用户在统一交互卡片中回复（选项值或输入文本）后，先记录回答
  * （setAskUserAnswer 写入 answer + 持久化，卡片锁定可回看），再作为用户消息发送
  * （后端 hasPending 检测后走恢复路径）。
+ * CR-001：askUser 回复改为 silent——答案由卡片锁定态展示，不再产生用户气泡；
+ * 由 sendMessage 检测 HITL 恢复并复用卡片气泡续写（AC-N03）。
  */
 function handleAskUserReply(value: string) {
   store.setAskUserAnswer(store.currentSessionId, value);
-  sendMessage(value);
+  sendMessage(value, undefined, true);
 }
 
 /**
@@ -372,6 +478,19 @@ function handleDeny() {
       @update:selected-model="handleModelChange"
       @navigate-to-config="emit('navigate-to-config')"
     />
+
+    <!-- 技能选择器（agent-skill Task-20，AC-N03 手动指定入口）：空=自动模式 -->
+    <div v-if="hasChatModels && skillStore.skills.length > 0" class="skill-selector-bar">
+      <SkillSelector
+        :model-value="selectedSkills"
+        :skills="skillStore.skills.filter((s) => s.enabled)"
+        :disabled="isStreaming"
+        @update:model-value="handleSkillsChange"
+      />
+    </div>
+
+    <!-- CR-001: /skill 指令错误提示（技能不存在，AC-N07：提示并保持自动模式） -->
+    <div v-if="skillCommandError" class="cmd-error">{{ skillCommandError }}</div>
   </div>
 </template>
 
@@ -383,9 +502,24 @@ function handleDeny() {
   background: var(--bg-primary);
 }
 
+/* 技能选择器栏（agent-skill）：输入区上方，右侧对齐 */
+.skill-selector-bar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px var(--spacing-md) 0;
+}
+
+.cmd-error {
+  font-size: 12px;
+  color: #ff6b6b;
+}
+
 /* 未配置模型空状态引导（Task-22） */
 .config-guide {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-sm);
   flex-direction: column;
   align-items: center;
   gap: var(--spacing-sm);

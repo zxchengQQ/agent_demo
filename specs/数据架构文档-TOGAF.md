@@ -87,7 +87,7 @@ graph TB
 | 数据域 | 存储方式 | 数据量级 | 业务归属模块 | 状态 |
 |--------|---------|---------|------------|------|
 | **会话数据域** | 内存 ConcurrentHashMap | 小（活跃会话数） | agent-demo-memory | ✅ |
-| **记忆数据域** | 内存 MessageWindowChatMemory | 小（20 条/会话） | agent-demo-memory | ✅ |
+| **记忆数据域** | 内存 CompressingChatMemory | 小（20 条/会话 + 滚动摘要） | agent-demo-memory | ✅ |
 | **模型缓存域** | 内存 ConcurrentHashMap | 极小（按 modelName） | agent-demo-llm | ✅ |
 | **前端会话缓存域** | 浏览器 localStorage | 小（50 会话，key=`agent-demo:sessions`） | agent-demo-frontend | ✅ |
 | **配置数据域** | application.yml + 环境变量 | 极小 | agent-demo-bootstrap | ✅ |
@@ -207,13 +207,16 @@ erDiagram
 
 ### 4.3 记忆数据域
 
-#### ChatMemory（会话记忆）
+#### ChatMemory（会话记忆，2026-08-28 升级为 CompressingChatMemory）
 
 | 字段 | 类型 | 可空 | 说明 |
 |------|------|------|------|
 | `sessionId` | String | NO | 主键，关联 SessionMetadata |
 | `maxMessages` | int | NO | 窗口大小（默认 20） |
-| `messages` | List<Message> | NO | 消息列表（UserMessage/AiMessage） |
+| `messages` | List<Message> | NO | 消息列表（UserMessage/AiMessage/SystemMessage + 附件消息） |
+| `summary` | String | YES | LLM 滚动摘要（前缀 `【历史对话摘要】`），压缩后注入消息首部 |
+
+**附件消息标记**：`【框架附件·TYPE】`（TYPE=CATALOG 目录/SKILL_INSTRUCTION 技能指令/STATUS 状态），以 UserMessage 形式存储，**不参与压缩、不参与淘汰**。
 
 **存储位置**：`ChatMemoryManager.memoryMap`（ConcurrentHashMap<String, ChatMemory>）
 
@@ -222,8 +225,10 @@ erDiagram
 - `addUserMessage(sessionId, message)`：添加用户消息
 - `addAssistantMessage(sessionId, message)`：添加助手回复
 - `clearMemory(sessionId)`：清空会话记忆
+- `addAttachment(sessionId, type, content)`：写入框架附件（20260828 新增）
+- `containsAttachmentType(sessionId, type)`：查询附件存在性（20260828 新增）
 
-**淘汰策略**：基于 LangChain4j `MessageWindowChatMemory`，超出 maxMessages 后自动淘汰最旧消息（FIFO）。
+**淘汰策略**：基于自定义 `CompressingChatMemory`。消息数 ≥ 窗口（20）时：剔除附件/系统消息 → LLM 滚动摘要 → 压缩至半窗（10），滞回触发；摘要失败降级为 FIFO 淘汰，不中断对话；`agent.memory-compression.enabled=false` 回退纯 FIFO。
 
 ### 4.4 模型缓存域
 

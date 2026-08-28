@@ -87,6 +87,9 @@ graph TB
 *   **暂停-恢复周期**：
     *   暂停：保存消息列表 + 追问计数 -> 发送 ask_user SSE 事件 -> 流结束
     *   恢复：用户回复 -> 加载消息列表 -> 添加用户回复为 Observation -> 创建新 HITLReActStream -> 继续循环
+    *   **前端展示（CR-001）**：恢复后的流式输出**复用**暂停时承载 HITL 卡片/问题的助手气泡作为流式目标（不新启助手气泡），续写内容在卡片下方同气泡内继续展示；askUser 文本/选项回复与批准/拒绝一致采用 silent 模式（不插入用户气泡，交互卡片锁定态展示答案/决策）
+    *   **前端展示（CR-002）**：交互卡片（AskUserCard/ConfirmCard）**内嵌于 ReAct 推理过程区块内对应工具调用步骤处**展示，而非气泡底部；卡片-步骤按 `askUser` / 权限工具 `toolName` 匹配，无匹配回退底部 `ask-user-block`；含 HITL 卡片的消息 `react-block` 恒展开（卡片始终可见可交互/可回看），其他消息维持原折叠语义
+    *   **前端数据模型（CR-003）**：`Message` 新增 `askUserHistory?: AskUserData[]` 历史记录数组，`askUserData` 保留为**最新一条镜像**（不破坏 `isWaitingForUserInput` / ChatWindow 恢复检测 / 兜底渲染）。`setToolConfirmData`/`setAskUserData` 追加新记录并同步镜像；`setToolConfirmApproved`/`setAskUserAnswer` 更新最后一条历史并同步镜像。MessageItem 遍历历史逐条内嵌渲染（首个未占用匹配），无匹配兜底底部，保证多次审批记录互不覆盖、可回看
 *   **会话终止**：复用现有流程（会话超时 30 分钟清理），HumanInteractionManager 同步清理 pending 状态
 *   **超时控制**：SseEmitter 配置为永不超时（`new SseEmitter(0L)`），复用 BR-APP-SSE-001
 
@@ -435,7 +438,10 @@ graph TB
 |-------|--------|--------|-------------|
 | AC-N01 | 歧义检测与主动追问 | 正常交互 | HITLReActStream ReAct 循环 + hitl.txt 系统提示词行为规则 + AskUserTool Function Calling Schema |
 | AC-N02 | 关键操作前确认 | 正常交互 | hitl.txt 行为规则引导 LLM 对有副作用操作调用 askUser(type=confirm) + HITLReActStream 拦截 |
-| AC-N03 | 用户回复后恢复执行 | 正常交互 | HumanInteractionManager 状态保存 + AgentController 检测 pending + HITLReActStream 恢复（加载消息列表 + 添加 Observation） |
+| AC-N03 | 用户回复后恢复执行 | 正常交互 | HumanInteractionManager 状态保存 + AgentController 检测 pending + HITLReActStream 恢复（加载消息列表 + 添加 Observation）；**CR-001：前端 sendMessage HITL 恢复分支复用气泡，同气泡续写** |
+| AC-N04 | HITL 决策后同气泡续写 | 正常交互 | **CR-001：前端 ChatWindow.vue sendMessage 复用最后一条含 HITL 卡片的气泡 id 作为流式目标；session.ts markStreaming 恢复流式状态；卡片锁定态 + 续写同气泡展示。CR-002：交互卡片内嵌于 ReAct 推理过程区块内对应工具调用步骤处。CR-003：同一气泡内可连续多次交互，记录互不覆盖** |
+| AC-N05 | HITL 推理过程区块保持展开 | 正常交互 | **CR-002：前端 MessageItem.vue react-block 折叠逻辑——含 HITL 卡片（askUserData 存在）的消息强制展开；卡片-步骤关联（按 askUser / 权限工具 toolName 匹配），无匹配回退底部 ask-user-block** |
+| AC-N06 | 多次审批/追问记录保留 | 正常交互 | **CR-003：Message.askUserHistory 历史记录数组 + askUserData 最新镜像；session.ts 追加/更新历史；MessageItem.vue 遍历历史内嵌渲染（首个未占用匹配），无匹配兜底底部** |
 | AC-T01 | 开放式追问使用纯文本形式 | 工具调用 | SSE ask_user 事件(type=text) + 前端 handleSseEvent 新增 onAskUser 回调 + 复用现有消息展示 |
 | AC-T02 | 确认型交互使用结构化卡片 | 工具调用 | SSE ask_user 事件(type=confirm, options) + 前端新增 ConfirmCard.vue 组件 + 按钮点击回复 |
 | AC-S01 | 追问次数上限 | 安全护栏 | PendingInteraction.retryCount 计数器 + HITLReActStream 检查 retryCount >= 3 时返回错误 Observation |
@@ -556,3 +562,36 @@ graph TB
 | agent-demo-frontend | `components/MessageItem.vue`（修改） | 新增 askUser 卡片渲染 |
 | agent-demo-frontend | `components/ConfirmCard.vue`（新建） | 确认型交互结构化卡片组件 |
 | agent-demo-frontend | `components/ChatWindow.vue`（修改） | 新增 enableHitl 开关 + askUser 回调处理 |
+
+---
+
+## 变更日志 (Change Log)
+
+### CR-001: HITL 恢复后续写同气泡展示 (2026-08-28)
+
+**影响范围**: 前端交互层（ChatWindow.vue / session.ts / 前端测试）
+**变更内容摘要**:
+- [新增] 前端 HITL 恢复分支：`sendMessage` 在 HITL 恢复场景（toolApproved 已定义，或存在待回复的 askUser 卡片）复用最后一条含 HITL 卡片/问题的助手气泡 id 作为流式目标，不新启助手气泡（Sec 1.4 暂停-恢复周期）
+- [新增] `session.ts` 新增 `markStreaming(messageId)` 方法：把复用气泡 status 置回 `incomplete`（流式续写展示），`onDone` 后 `markComplete`
+- [修改] `handleAskUserReply` 改为 silent 模式：askUser 文本/选项回复不再插入用户气泡，答案由 AskUserCard 锁定态展示（与批准/拒绝 silent 设计一致，交互优化）
+- [修改] AC-N03 恢复执行的展示约束 + 新增 AC-N04（见 Sec 9 AC 映射表）
+- [无影响] 后端 `AgentController.resumeUnifiedStream` / `HITLReActStream` / `AskUserTool` / Prompt 制品均无改动（续写仍走同一套 SSE 事件协议）
+
+### CR-002: HITL 交互卡片内嵌于 ReAct 推理过程区块 (2026-08-28)
+
+**影响范围**: 前端交互层（MessageItem.vue / AskUserCard.vue / ConfirmCard.vue / 前端测试）
+**变更内容摘要**:
+- [新增] 卡片-步骤关联：`react-block` 内对对应工具调用步骤内嵌渲染 AskUserCard/ConfirmCard——askUser 类按 `toolName === 'askUser'` 匹配；权限确认（kind=permission）按卡片 `toolName` 匹配工具卡片；无匹配回退底部 `ask-user-block`（兜底保留，不丢卡片）
+- [新增] 折叠逻辑：含 HITL 卡片（`message.askUserData` 存在）的消息 `react-block` 恒展开（等待态可交互、完成后可回看锁定态）；不含卡片消息维持原折叠语义（isReactExpanded 基于 status 与手动切换）
+- [修改] AC-N04 展示约束 + 新增 AC-N05（见 Sec 9 AC 映射表）
+- [无影响] 后端 / Prompt 制品无改动（纯前端展示层；沿用 CR-001 不补 toolCallId，前端启发式匹配）
+
+### CR-003: 多次审批/追问记录保留 (2026-08-28)
+
+**影响范围**: 前端交互层（types/index.ts / session.ts / MessageItem.vue / 前端测试）
+**变更内容摘要**:
+- [新增] 数据模型：`Message.askUserHistory?: AskUserData[]` 历史记录数组；`askUserData` 保留为最新一条镜像（向后兼容旧数据、不破坏 isWaitingForUserInput / ChatWindow 恢复检测 / 兜底渲染）
+- [修改] `session.ts`：`setToolConfirmData`/`setAskUserData` 由覆盖写改为"追加历史 + 同步镜像"；`setToolConfirmApproved`/`setAskUserAnswer` 改为"更新最后一条历史 + 同步镜像"
+- [修改] `MessageItem.vue`：遍历 `askUserHistory` 逐条内嵌渲染于对应工具步骤（首个未占用匹配，延续 CR-002 内嵌布局）；无匹配记录兜底渲染于底部 `ask-user-block`（不丢记录）
+- [修改] AC-N04（同一气泡多次交互不覆盖）+ 新增 AC-N06（见 Sec 9 AC 映射表）
+- [无影响] 后端 / Prompt 制品无改动（纯前端数据模型与渲染）

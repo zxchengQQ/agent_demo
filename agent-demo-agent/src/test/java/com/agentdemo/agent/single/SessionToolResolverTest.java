@@ -151,6 +151,56 @@ class SessionToolResolverTest {
 
     // ==================== Task-05: 能力声明路径过滤 ====================
 
+    // ==================== Task-01: resolveSessionBaseTools（冻结工具集，agent-context-engineering） ====================
+
+    @Test
+    @DisplayName("resolveSessionBaseTools 未指定时返回默认工具（与全量解析一致）")
+    void baseTools_null未指定_返回默认工具() {
+        List<Object> tools = resolver.resolveSessionBaseTools("sess-1", null);
+
+        assertEquals(List.of(fakeTimeTool), tools, "基础工具集未指定时应仅含默认工具");
+    }
+
+    @Test
+    @DisplayName("resolveSessionBaseTools 指定工具时合并默认（默认不可排除）")
+    void baseTools_指定工具_解析并合并默认() {
+        FakeHttpTool httpTool = new FakeHttpTool();
+        when(toolRegistry.resolveToolsForStreaming(eq(List.of("builtin:httpGet"))))
+                .thenReturn(List.of(httpTool));
+
+        List<Object> tools = resolver.resolveSessionBaseTools("sess-1", List.of("builtin:httpGet"));
+
+        assertTrue(tools.contains(httpTool), "应包含指定工具");
+        assertTrue(tools.contains(fakeTimeTool), "默认工具不可排除，应始终包含");
+    }
+
+    @Test
+    @DisplayName("resolveSessionBaseTools 两次调用字节级一致（顺序稳定）")
+    void baseTools_两次调用_顺序字节级一致() {
+        FakeHttpTool httpTool = new FakeHttpTool();
+        when(toolRegistry.resolveToolsForStreaming(eq(List.of("builtin:httpGet"))))
+                .thenReturn(List.of(httpTool));
+
+        List<Object> first = resolver.resolveSessionBaseTools("sess-1", List.of("builtin:httpGet"));
+        List<Object> second = resolver.resolveSessionBaseTools("sess-1", List.of("builtin:httpGet"));
+
+        assertEquals(first, second, "同会话同参数两次解析应字节级一致（列表元素与顺序相同）");
+    }
+
+    @Test
+    @DisplayName("resolveSessionBaseTools 空列表清除会话缓存，恢复仅默认工具")
+    void baseTools_空列表_清除缓存恢复默认() {
+        FakeHttpTool httpTool = new FakeHttpTool();
+        when(toolRegistry.resolveToolsForStreaming(eq(List.of("builtin:httpGet"))))
+                .thenReturn(List.of(httpTool));
+
+        resolver.resolveSessionBaseTools("sess-1", List.of("builtin:httpGet"));
+        List<Object> cleared = resolver.resolveSessionBaseTools("sess-1", List.of());
+
+        assertFalse(cleared.contains(httpTool), "空列表应清除会话绑定");
+        assertEquals(List.of(fakeTimeTool), cleared, "恢复仅默认工具");
+    }
+
     @Test
     @DisplayName("askSupported=false 走 ForDirect（剔除 deny + ask）")
     void askSupportedFalseUsesForDirect() {

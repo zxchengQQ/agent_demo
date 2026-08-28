@@ -270,6 +270,8 @@ flowchart TD
 | BR-WEB-018 | ask 级工具拦截时 onToolConfirm 回调发送 `tool_confirm` SSE 事件（JSON: toolName/toolDescription/arguments），事件后**不发送 done 也不 complete**——emitter 保持打开、pending 挂起，等用户批准/拒绝后经同一端点携带 toolApproved 恢复（20260824 新增） | 🔴 强制 |
 | BR-WEB-019 | 工具权限恢复请求必须携带非空 message：message 为空会被 `@NotBlank` 校验 400 拒绝（前端亦有空消息拦截），双重拦截导致确认流程卡死（2026-08-24 BUG 修复沉淀） | 🔴 强制 |
 | BR-WEB-020 | `PUT /api/agent/tools/{toolId}/permission` 变更权限持久化至 JSON 文件，无需重启即时生效，下一轮对话重建工具列表（20260824 新增） | 🔴 强制 |
+| BR-WEB-021 | 对话请求入参中的框架标记（`【框架附件·`/`【历史对话摘要】`/`<agent_status>`）必须经 stripFrameworkMarkers 剥离后写入，禁止用户伪造框架消息（20260828 新增） | 🔴 强制 |
+| BR-WEB-022 | 会话记忆写入唯一化：有效消息经 effectiveMessage 单点写入（聊天/子任务/收集回调共用），重复框架标记/无效消息去重，防止记忆膨胀；技能激活不写 STATUS 附件（20260828 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

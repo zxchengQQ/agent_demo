@@ -12,6 +12,7 @@ import dev.langchain4j.agent.tool.ToolExecutionRequest;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.ToolExecutionResultMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.model.output.TokenUsage;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -45,18 +46,25 @@ public class HITLReActStream implements HitlTokenStream {
     /** askUser 工具名（用于拦截判断） */
     private static final String ASK_USER_TOOL_NAME = "askUser";
 
+    /** loadSkill 工具名（用于拦截判断，agent-skill 决策 4） */
+    private static final String LOAD_SKILL_TOOL_NAME = "loadSkill";
+
     /** 最大追问次数（超过后返回错误 Observation） */
     private static final int MAX_RETRY_COUNT = 3;
 
     private final ThinkingStreamingChatModel model;
     private final List<ChatMessage> messages;
-    private final String toolsJson;
+    /** toolsJson（可变：loadSkill 激活后热刷新绑定工具，技术方案 3.2） */
+    private String toolsJson;
     private final ToolExecutor toolExecutor;
     private final HumanInteractionManager humanInteractionManager;
     private final String sessionId;
     private final String modelId;
     private final int retryCount;
     private final int maxIterations;
+
+    /** 技能拦截器（可选：null = 无技能拦截/热刷新，app 模块等场景与现有行为一致） */
+    private final SkillToolInterceptor skillInterceptor;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -73,7 +81,11 @@ public class HITLReActStream implements HitlTokenStream {
     private ErrorConsumer errorConsumer;
     private AskUserConsumer askUserConsumer;
     private ToolConfirmConsumer toolConfirmConsumer;
+    private SkillActivatedConsumer skillActivatedConsumer;
 
+    /**
+     * 构造器（兼容：无技能拦截器，与现有行为一致）
+     */
     public HITLReActStream(ThinkingStreamingChatModel model,
                            List<ChatMessage> messages,
                            String toolsJson,
@@ -83,6 +95,25 @@ public class HITLReActStream implements HitlTokenStream {
                            String modelId,
                            int retryCount,
                            int maxIterations) {
+        this(model, messages, toolsJson, toolExecutor, humanInteractionManager,
+                sessionId, modelId, retryCount, maxIterations, null);
+    }
+
+    /**
+     * 构造器（技能拦截器版本，agent-skill 决策 4）
+     *
+     * @param skillInterceptor 技能拦截器（null 则跳过 loadSkill 拦截与热刷新）
+     */
+    public HITLReActStream(ThinkingStreamingChatModel model,
+                           List<ChatMessage> messages,
+                           String toolsJson,
+                           ToolExecutor toolExecutor,
+                           HumanInteractionManager humanInteractionManager,
+                           String sessionId,
+                           String modelId,
+                           int retryCount,
+                           int maxIterations,
+                           SkillToolInterceptor skillInterceptor) {
         this.model = model;
         this.messages = messages;
         this.toolsJson = toolsJson;
@@ -92,6 +123,7 @@ public class HITLReActStream implements HitlTokenStream {
         this.modelId = modelId;
         this.retryCount = retryCount;
         this.maxIterations = maxIterations;
+        this.skillInterceptor = skillInterceptor;
     }
 
     // ==================== 回调注册方法 ====================
@@ -105,6 +137,12 @@ public class HITLReActStream implements HitlTokenStream {
     @Override
     public HitlTokenStream onToolConfirm(ToolConfirmConsumer consumer) {
         this.toolConfirmConsumer = consumer;
+        return this;
+    }
+
+    @Override
+    public HitlTokenStream onSkillActivated(SkillActivatedConsumer consumer) {
+        this.skillActivatedConsumer = consumer;
         return this;
     }
 
@@ -244,6 +282,9 @@ public class HITLReActStream implements HitlTokenStream {
             IterationResult result = new IterationResult();
             ThinkingStreamHandler handler = createHandler(result, currentIteration);
 
+            // agent-context-engineering（AC-N02/E02）：强制总结前注入收尾状态消息——
+            // 读数 + 操作策略成对给出，模型据此立即收尾，避免继续尝试调用已移除的工具。
+            messages.add(buildWrapUpStatusMessage());
             model.stream(messages, null, handler);
 
             if (result.error != null) {
@@ -299,6 +340,16 @@ public class HITLReActStream implements HitlTokenStream {
                 return handleAskUser(tc, iteration);
             }
 
+            if (LOAD_SKILL_TOOL_NAME.equals(tc.getFunctionName())) {
+                // 业务含义：拦截 loadSkill 调用（agent-skill 决策 4）——激活技能 + 热刷新绑定工具 + 事件回调，
+                // 不暂停循环（区别于 askUser/tool_confirm）。拦截器为 null 时按普通工具执行。
+                if (skillInterceptor != null) {
+                    // handleLoadSkill 恒返回 false（不暂停），回填观察值后继续处理
+                    handleLoadSkill(tc, iteration);
+                    continue;
+                }
+            }
+
             // 业务含义：执行期权限裁决（AC-N03）——askUser 之外的每个 toolCall 先检查权限再执行
             ToolExecutor.ToolPermissionCheck check = toolExecutor.checkPermission(tc.getFunctionName());
 
@@ -326,6 +377,52 @@ public class HITLReActStream implements HitlTokenStream {
 
             messages.add(ToolExecutionResultMessage.from(tc.getId(), tc.getFunctionName(), toolResult));
         }
+        return false;
+    }
+
+    /**
+     * 处理 loadSkill 工具调用（agent-skill 决策 4：激活 + 热刷新，不暂停）
+     * <p>
+     * 业务含义：委托 SkillToolInterceptor 完成激活与工具热刷新，回填观察值并继续循环。
+     * 激活成功时：触发 onSkillActivated 回调（SSE skill_activated 事件）、刷新 toolsJson
+     * （下一迭代 LLM 即可调用绑定工具，AC-T02）。失败时：回填引导观察值，循环继续。
+     * </p>
+     *
+     * @param tc        loadSkill toolCall
+     * @param iteration 当前迭代
+     * @return true=暂停（本实现不暂停，恒 false），false=继续
+     */
+    private boolean handleLoadSkill(ToolCall tc, int iteration) {
+        String skillName = "";
+        try {
+            JsonNode args = objectMapper.readTree(tc.getArguments());
+            if (args.has("skillName")) {
+                skillName = args.get("skillName").asText();
+            }
+        } catch (Exception e) {
+            log.warn("解析 loadSkill 参数失败: {}", e.getMessage());
+        }
+
+        SkillToolInterceptor.SkillInterceptionResult result =
+                skillInterceptor.interceptLoadSkill(sessionId, skillName, toolsJson, iteration);
+
+        // 激活成功 → 触发事件回调 + 热刷新 toolsJson
+        if (result.activated()) {
+            if (skillActivatedConsumer != null) {
+                skillActivatedConsumer.accept(result.skillId(), result.skillName(),
+                        result.source(), result.boundToolIds());
+            }
+            if (result.refreshedToolsJson() != null) {
+                toolsJson = result.refreshedToolsJson();
+                log.info("loadSkill 激活后热刷新工具集: sessionId={}, skillId={}", sessionId, result.skillId());
+            }
+        }
+
+        // 回填观察值（激活成功=指令要点；失败=引导）
+        if (observationConsumer != null) {
+            observationConsumer.accept(result.observation(), iteration);
+        }
+        messages.add(ToolExecutionResultMessage.from(tc.getId(), LOAD_SKILL_TOOL_NAME, result.observation()));
         return false;
     }
 
@@ -462,5 +559,22 @@ public class HITLReActStream implements HitlTokenStream {
         final StringBuilder content = new StringBuilder();
         final List<String> roundTokens = new ArrayList<>();
         Throwable error;
+    }
+
+    /**
+     * 末轮收尾状态消息（agent-context-engineering，AC-N02/E02/H02）
+     * <p>
+     * 业务含义：以 user 角色 + <agent_status> 标签包裹，读数（迭代 N/M）与收尾操作策略成对给出，
+     * 追加到循环消息末尾（紧邻生成位置，注意力最高）。纯框架代码注入，内容不来自工具/用户输入
+     * （AC-S01 可信源；AC-H02 不冒充用户指令——标签显式标识来源）。
+     * </p>
+     */
+    private UserMessage buildWrapUpStatusMessage() {
+        String text = "<agent_status>\n"
+                + "已达最大迭代次数(" + maxIterations + "/" + maxIterations + ")。\n"
+                + "操作策略：不要再发起工具调用，立即基于已收集的信息组织最终回答；"
+                + "若信息不足以完整回答，如实说明已完成的部分与缺失的部分。\n"
+                + "</agent_status>";
+        return UserMessage.from(text);
     }
 }

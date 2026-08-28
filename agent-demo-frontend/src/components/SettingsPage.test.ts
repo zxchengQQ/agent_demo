@@ -47,13 +47,14 @@ describe('SettingsPage 默认状态', () => {
     expect(wrapper.find('.mock-mcp').exists()).toBe(false);
   });
 
-  it('显示三个标签按钮，LLM 配置默认激活', async () => {
+  it('显示四个标签按钮，LLM 配置默认激活', async () => {
     const wrapper = await mountPage();
     const tabs = wrapper.findAll('.settings-tab');
-    expect(tabs).toHaveLength(3);
+    expect(tabs).toHaveLength(4);
     expect(tabs[0].text()).toBe('LLM 配置');
     expect(tabs[1].text()).toBe('MCP 服务');
     expect(tabs[2].text()).toBe('工具管理');
+    expect(tabs[3].text()).toBe('技能管理');
     expect(tabs[0].classes()).toContain('active');
     expect(tabs[1].classes()).not.toContain('active');
   });
