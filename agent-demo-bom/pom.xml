@@ -27,6 +27,7 @@
         <tabula.version>1.0.5</tabula.version>
         <commonmark.version>0.22.0</commonmark.version>
         <bytebuddy.version>1.14.19</bytebuddy.version>
+        <opentelemetry.version>1.42.1</opentelemetry.version>
     </properties>
 
     <!-- 集中管理所有依赖版本 -->
@@ -180,6 +181,22 @@
                 <groupId>com.agentdemo</groupId>
                 <artifactId>agent-demo-splitter</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <!-- 新增内部模块：可观测性模块（LangSmith 接入，2026-08-29） -->
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-observability</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- OpenTelemetry（LangSmith OTLP 上报，技术方案 §1.6，BOM 统一版本） -->
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
         </dependencies>
     </dependencyManagement>

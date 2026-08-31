@@ -1,10 +1,13 @@
 package com.agentdemo.tools.registry;
 
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.tools.permission.ToolPermissionLevel;
 import com.agentdemo.tools.permission.ToolPermissionService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.Tool;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.lang.reflect.Method;
@@ -31,6 +34,8 @@ import java.util.Optional;
 @Component
 public class ToolExecutor {
 
+    private static final Logger log = LoggerFactory.getLogger(ToolExecutor.class);
+
     /**
      * 执行期权限检查结果（技术方案 §3.4）
      * <p>
@@ -55,11 +60,14 @@ public class ToolExecutor {
 
     private final ToolRegistry toolRegistry;
     private final ToolPermissionService toolPermissionService;
+    private final TraceCollector traceCollector;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public ToolExecutor(ToolRegistry toolRegistry, ToolPermissionService toolPermissionService) {
+    public ToolExecutor(ToolRegistry toolRegistry, ToolPermissionService toolPermissionService,
+                        TraceCollector traceCollector) {
         this.toolRegistry = toolRegistry;
         this.toolPermissionService = toolPermissionService;
+        this.traceCollector = traceCollector;
     }
 
     /**
@@ -75,15 +83,20 @@ public class ToolExecutor {
     public String execute(String toolName, String argumentsJson) {
         // 业务含义：执行期 deny 兜底拦截——即便工具绕过加载期过滤（提示注入诱导/旁路调用），
         // 也在方法体触发前再次校验，deny 工具方法体零触发（AC-S01，纵深防御第二道防线）。
+        // 埋点：工具调用（含成败）统一在返回前采集（AC-N04/T03）。
+        long startNanos = System.nanoTime();
         ToolPermissionCheck check = checkPermission(toolName);
         if (check.level() == ToolPermissionLevel.DENY) {
+            recordTool(toolName, argumentsJson, DENY_MESSAGE, startNanos, false, DENY_MESSAGE);
             return DENY_MESSAGE;
         }
         try {
             // 1. 查找工具方法
             MethodAndBean target = findToolMethod(toolName);
             if (target == null) {
-                return "工具不存在: " + toolName + "。可用工具: " + listAvailableToolNames();
+                String msg = "工具不存在: " + toolName + "。可用工具: " + listAvailableToolNames();
+                recordTool(toolName, argumentsJson, msg, startNanos, false, msg);
+                return msg;
             }
 
             // 2. 解析参数 JSON
@@ -92,12 +105,34 @@ public class ToolExecutor {
 
             // 3. 反射调用
             Object result = target.method.invoke(target.bean, args);
-            return result != null ? result.toString() : "null";
+            String resultStr = result != null ? result.toString() : "null";
+            recordTool(toolName, argumentsJson, resultStr, startNanos, true, null);
+            return resultStr;
         } catch (Exception e) {
             // 工具执行失败：返回错误信息，不抛出异常
             // 反射调用抛出 InvocationTargetException 时，真实异常在 getCause() 中
             String errorMsg = e.getCause() != null ? e.getCause().getMessage() : e.getMessage();
+            // AC-T03：失败也记录（含异常信息），再返回错误信息
+            recordTool(toolName, argumentsJson, null, startNanos, false, errorMsg);
             return "工具执行失败: " + errorMsg;
+        }
+    }
+
+    /**
+     * 采集工具调用事件（AC-N04 五要素：工具名/入参/出参/耗时/成败；AC-T03 失败含异常信息）
+     * <p>
+     * 业务含义：旁路采集，内部 try-catch 保证采集失败不影响工具执行主流程（AC-S04）。
+     * </p>
+     */
+    private void recordTool(String toolName, String argumentsJson, String result,
+                            long startNanos, boolean success, String errorMessage) {
+        try {
+            long durationMs = (System.nanoTime() - startNanos) / 1_000_000L;
+            traceCollector.recordTool(new TraceCollector.ToolCallEvent(
+                    toolName, argumentsJson, result, durationMs, success, errorMessage));
+        } catch (Exception e) {
+            // AC-S04：采集失败仅 WARN，不影响工具执行
+            log.warn("LangSmith 工具采集失败（降级跳过）: tool={}, error={}", toolName, e.getMessage());
         }
     }
 

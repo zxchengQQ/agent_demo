@@ -42,6 +42,12 @@
             <artifactId>agent-demo-skill</artifactId>
         </dependency>
 
+        <!-- 可观测性模块（异步边界上下文捕获：TraceContextHolder） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
+
         <!-- Spring Boot Web（含 Tomcat、Spring MVC） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

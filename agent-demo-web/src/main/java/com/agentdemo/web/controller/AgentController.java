@@ -14,6 +14,8 @@ import com.agentdemo.common.result.Result;
 import com.agentdemo.common.utils.SimpleTokenEstimator;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.observability.TraceCollector;
+import com.agentdemo.observability.TraceContextHolder;
 import com.agentdemo.skill.session.SkillSessionManager;
 import com.agentdemo.tools.permission.ToolPermissionLevel;
 import com.agentdemo.tools.permission.ToolPermissionService;
@@ -75,6 +77,7 @@ public class AgentController {
     private final HumanInteractionManager humanInteractionManager;
     private final ToolPermissionService toolPermissionService;
     private final SkillSessionManager skillSessionManager;
+    private final TraceCollector traceCollector;
     /** 技能附件文本源（agent-context-engineering：排除状态附件；null 兼容场景跳过） */
     private final com.agentdemo.skill.prompt.SkillPromptComposer skillPromptComposer;
 
@@ -85,6 +88,7 @@ public class AgentController {
                            HumanInteractionManager humanInteractionManager,
                            ToolPermissionService toolPermissionService,
                            SkillSessionManager skillSessionManager,
+                           TraceCollector traceCollector,
                            com.agentdemo.skill.prompt.SkillPromptComposer skillPromptComposer) {
         this.simpleAgent = simpleAgent;
         this.planAgent = planAgent;
@@ -95,6 +99,7 @@ public class AgentController {
         this.humanInteractionManager = humanInteractionManager;
         this.toolPermissionService = toolPermissionService;
         this.skillSessionManager = skillSessionManager;
+        this.traceCollector = traceCollector;
         this.skillPromptComposer = skillPromptComposer;
     }
 
@@ -106,9 +111,10 @@ public class AgentController {
                            ToolRegistry toolRegistry, AgentConfig agentConfig,
                            HumanInteractionManager humanInteractionManager,
                            ToolPermissionService toolPermissionService,
-                           SkillSessionManager skillSessionManager) {
+                           SkillSessionManager skillSessionManager,
+                           TraceCollector traceCollector) {
         this(simpleAgent, planAgent, sessionManager, memoryManager, toolRegistry, agentConfig,
-                humanInteractionManager, toolPermissionService, skillSessionManager, null);
+                humanInteractionManager, toolPermissionService, skillSessionManager, traceCollector, null);
     }
 
     /**
@@ -309,7 +315,7 @@ public class AgentController {
                 unifiedStream = planAgent.resumeUnifiedStream(effectiveSessionId, request.getMessage());
             }
             registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, request.getMessage(), start);
-            CompletableFuture.runAsync(unifiedStream::start);
+            runTracedAsync(unifiedStream, effectiveSessionId);
             return emitter;
         }
 
@@ -354,9 +360,35 @@ public class AgentController {
         UnifiedChatStream unifiedStream = planAgent.chatUnifiedStream(
                 effectiveSessionId, effectiveMessage, modelId, toolIds, planCommand.forced());
         registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, effectiveMessage, start);
-        CompletableFuture.runAsync(unifiedStream::start);
+        runTracedAsync(unifiedStream, effectiveSessionId);
 
         return emitter;
+    }
+
+    /**
+     * 在异步线程执行统一编排，并包裹可观测上下文（langsmith-observability，Task-11）
+     * <p>
+     * 业务含义：SSE 编排运行在 {@code CompletableFuture.runAsync} 异步线程，MDC traceId
+     * 是 ThreadLocal 不跨线程传播（技术难点 2）。故在 Controller 线程（TraceIdInterceptor
+     * 已写入 MDC）捕获 traceId/sessionId，经 {@link TraceContextHolder} 显式注入异步线程；
+     * 同时包裹请求级根 span 生命周期（startRequest/endRequest，AC-T01 共享 trace）。
+     * </p>
+     */
+    private void runTracedAsync(UnifiedChatStream unifiedStream, String sessionId) {
+        // 业务含义：Controller 线程捕获 MDC traceId（同步路径回退逻辑见 TraceContextHolder）
+        String traceId = TraceContextHolder.currentTraceId();
+        TraceContextHolder.TraceContext ctx = new TraceContextHolder.TraceContext(traceId, sessionId);
+        CompletableFuture.runAsync(() -> {
+            try {
+                TraceContextHolder.set(ctx);
+                traceCollector.startRequest();
+                unifiedStream.start();
+            } finally {
+                // 业务含义：根 span 与 ThreadLocal 必须清理，防线程池复用泄漏
+                traceCollector.endRequest();
+                TraceContextHolder.clear();
+            }
+        });
     }
 
     /**

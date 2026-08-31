@@ -1,5 +1,6 @@
 package com.agentdemo.tools.registry;
 
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.tools.builtin.CalculatorTool;
 import com.agentdemo.tools.builtin.TimeTool;
 import com.agentdemo.tools.permission.ToolPermissionLevel;
@@ -26,13 +27,15 @@ class ToolExecutorTest {
 
     private ToolRegistry toolRegistry;
     private ToolPermissionService permissionService;
+    private TraceCollector traceCollector;
     private ToolExecutor toolExecutor;
 
     @BeforeEach
     void setUp() {
         toolRegistry = mock(ToolRegistry.class);
         permissionService = mock(ToolPermissionService.class);
-        toolExecutor = new ToolExecutor(toolRegistry, permissionService);
+        traceCollector = mock(TraceCollector.class);
+        toolExecutor = new ToolExecutor(toolRegistry, permissionService, traceCollector);
     }
 
     @Test
@@ -251,5 +254,74 @@ class ToolExecutorTest {
         public String echoCount(int count) {
             return "count: " + count;
         }
+    }
+
+    // ==================== 可观测埋点（langsmith-observability Task-10） ====================
+
+    @Test
+    void execute_success_recordsToolCallEvent() {
+        // given：allow 工具正常执行
+        when(toolRegistry.listTools()).thenReturn(List.of(new CalculatorTool()));
+        when(toolRegistry.getToolMeta("calculate"))
+                .thenReturn(Optional.of(new ToolRegistry.ToolMeta("builtin:calculator", "计算器")));
+        when(permissionService.getPermission("builtin:calculator")).thenReturn(ToolPermissionLevel.ALLOW);
+
+        // when
+        toolExecutor.execute("calculate", "{\"expression\":\"2+3\"}");
+
+        // then：AC-N04 成功事件含五要素
+        org.mockito.ArgumentCaptor<TraceCollector.ToolCallEvent> captor =
+                org.mockito.ArgumentCaptor.forClass(TraceCollector.ToolCallEvent.class);
+        org.mockito.Mockito.verify(traceCollector).recordTool(captor.capture());
+        TraceCollector.ToolCallEvent event = captor.getValue();
+        assertEquals("calculate", event.toolName());
+        assertEquals("{\"expression\":\"2+3\"}", event.arguments());
+        assertTrue(event.result().contains("5"), "出参应包含执行结果");
+        assertTrue(event.success(), "成功执行应标记 success=true");
+        assertNull(event.errorMessage());
+    }
+
+    @Test
+    void execute_failure_recordsToolCallEvent_withError() {
+        // given：FailingTool 总是抛异常
+        when(toolRegistry.listTools()).thenReturn(List.of(new FailingTool()));
+        when(toolRegistry.getToolMeta("fail"))
+                .thenReturn(Optional.of(new ToolRegistry.ToolMeta("builtin:fail", "失败工具")));
+        when(permissionService.getPermission("builtin:fail")).thenReturn(ToolPermissionLevel.ALLOW);
+
+        // when
+        String result = toolExecutor.execute("fail", "{}");
+
+        // then：AC-T03 失败也记录（含异常信息），且仍返回错误信息
+        assertTrue(result.startsWith("工具执行失败:"), "失败仍应返回错误信息字符串");
+        org.mockito.ArgumentCaptor<TraceCollector.ToolCallEvent> captor =
+                org.mockito.ArgumentCaptor.forClass(TraceCollector.ToolCallEvent.class);
+        org.mockito.Mockito.verify(traceCollector).recordTool(captor.capture());
+        TraceCollector.ToolCallEvent event = captor.getValue();
+        assertEquals("fail", event.toolName());
+        assertFalse(event.success(), "失败执行应标记 success=false");
+        assertTrue(event.errorMessage().contains("故意失败"), "失败事件应含异常信息");
+    }
+
+    @Test
+    void denyTool_execute_recordsFailureEvent() {
+        // given：deny 工具
+        CountingTool countingTool = new CountingTool();
+        when(toolRegistry.listTools()).thenReturn(List.of(countingTool));
+        when(toolRegistry.getToolMeta("deniedAction"))
+                .thenReturn(Optional.of(new ToolRegistry.ToolMeta("builtin:deniedAction", "被禁止的动作")));
+        when(permissionService.getPermission("builtin:deniedAction")).thenReturn(ToolPermissionLevel.DENY);
+
+        // when
+        toolExecutor.execute("deniedAction", "{}");
+
+        // then：deny 拦截也记录失败事件（方法体零触发）
+        assertEquals(0, countingTool.invocationCount, "deny 工具方法体不应被调用");
+        org.mockito.ArgumentCaptor<TraceCollector.ToolCallEvent> captor =
+                org.mockito.ArgumentCaptor.forClass(TraceCollector.ToolCallEvent.class);
+        org.mockito.Mockito.verify(traceCollector).recordTool(captor.capture());
+        TraceCollector.ToolCallEvent event = captor.getValue();
+        assertFalse(event.success(), "deny 拦截应标记 success=false");
+        assertNotNull(event.errorMessage(), "deny 拦截应含拒绝原因");
     }
 }

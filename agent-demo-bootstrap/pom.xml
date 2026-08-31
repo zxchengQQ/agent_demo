@@ -22,6 +22,12 @@
             <artifactId>agent-demo-web</artifactId>
         </dependency>
 
+        <!-- 可观测性模块（条件装配扫描 com.agentdemo.observability 包） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
+
         <!-- 开发工具（开发环境热重载） -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

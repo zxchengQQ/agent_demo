@@ -11,9 +11,9 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>agent-demo-llm</artifactId>
-    <name>agent-demo-llm</name>
-    <description>LLM 接入层 - 火山引擎方舟 Coding Plan 适配、模型工厂</description>
+    <artifactId>agent-demo-observability</artifactId>
+    <name>agent-demo-observability</name>
+    <description>可观测性模块 - LangSmith 接入（TraceCollector 接口 + OTel OTLP 实现 + 脱敏）</description>
 
     <dependencies>
         <!-- 内部模块 -->
@@ -22,22 +22,28 @@
             <artifactId>agent-demo-common</artifactId>
         </dependency>
 
-        <!-- 可观测性模块（LLM 调用埋点：ChatModelListener / Thinking 装饰器） -->
+        <!-- OpenTelemetry API（span 构建） -->
         <dependency>
-            <groupId>com.agentdemo</groupId>
-            <artifactId>agent-demo-observability</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-api</artifactId>
         </dependency>
 
-        <!-- LangChain4j OpenAI 适配器（火山引擎兼容 OpenAI 协议） -->
+        <!-- OpenTelemetry SDK（OpenTelemetrySdk / BatchSpanProcessor） -->
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-open-ai</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
         </dependency>
 
-        <!-- LangChain4j 核心 -->
+        <!-- OpenTelemetry OTLP HTTP Exporter（上报 LangSmith） -->
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j</artifactId>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+        </dependency>
+
+        <!-- Spring Boot（条件装配注解） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
         </dependency>
 
         <!-- Lombok -->
@@ -51,6 +57,13 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- OpenTelemetry 内存 Span Exporter（测试无外联断言） -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk-testing</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

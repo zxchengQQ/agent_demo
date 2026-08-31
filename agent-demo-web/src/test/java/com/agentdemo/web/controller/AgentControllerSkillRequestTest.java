@@ -7,6 +7,7 @@ import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.skill.config.SkillProperties;
 import com.agentdemo.skill.entity.SkillDefinition;
 import com.agentdemo.skill.session.SkillSessionManager;
@@ -73,7 +74,7 @@ class AgentControllerSkillRequestTest {
         AgentController controller = new AgentController(
                 simpleAgent, planAgent, sessionManager, memoryManager,
                 mock(ToolRegistry.class), new AgentConfig(), new HumanInteractionManager(),
-                mock(ToolPermissionService.class), skillSessionManager);
+                mock(ToolPermissionService.class), skillSessionManager, mock(TraceCollector.class));
 
         mockMvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())

@@ -180,6 +180,22 @@ skill:
   max-active-skills: 3  # 单会话并发激活技能上限（AC-S05）
   storage-dir: data/skills  # 技能定义持久化目录
 
+# LangSmith 可观测性配置（langsmith-observability，2026-08-29）
+# 业务含义：Agent 执行链路（LLM+工具调用）经 OpenTelemetry OTLP 上报 LangSmith 云。
+# 三重护栏：默认关闭（enabled=false 或未配 Key 时零初始化零外联，AC-S02）+
+# 基础脱敏（上报前密钥模式/环境密钥值替换，AC-S01）+ 静默降级（上报失败仅 WARN 不影响主流程，AC-S04）。
+langsmith:
+  enabled: false  # 总开关：false 时整个可观测子系统不装配（NoopTraceCollector，零开销）
+  api-key: ${LANGSMITH_API_KEY:}  # LangSmith API Key，仅经环境变量注入（禁止硬编码，AC-S03）
+  endpoint: https://api.smith.langchain.com/otel/v1/traces  # OTLP trace 完整端点（OTel Java exporter 直接使用此 URL，缺 /v1/traces 会导致 404；也可只配 base .../otel 由代码补全）
+  project: agent-demo  # LangSmith 项目名：作为 service.name 资源属性 + Langsmith-Project header 归属项目（未设置时落 unknown_service:java 导致找不到记录）
+  max-field-chars: 4000  # 单字段上报上限（字符），超过截断并标记 [TRUNCATED]（AC-E02）
+  export-timeout-ms: 5000  # OTLP 导出请求超时（毫秒）
+  export-interval-ms: 5000  # 批量导出间隔（毫秒）
+  max-queue-size: 2048  # 导出内存队列上限（防内存膨胀）
+  # proxy-host: ""  # 可选 HTTP 代理主机（直连场景留空）
+  # proxy-port: 0    # 可选 HTTP 代理端口
+
 # Springdoc Swagger
 springdoc:
   api-docs:

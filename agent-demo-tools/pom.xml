@@ -22,6 +22,12 @@
             <artifactId>agent-demo-common</artifactId>
         </dependency>
 
+        <!-- 可观测性模块（工具调用埋点：ToolExecutor 采集） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
+
         <!-- LangChain4j（提供 @Tool 注解） -->
         <dependency>
             <groupId>dev.langchain4j</groupId>

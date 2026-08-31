@@ -24,6 +24,7 @@
     <modules>
         <module>agent-demo-bom</module>
         <module>agent-demo-common</module>
+        <module>agent-demo-observability</module>
         <module>agent-demo-llm</module>
         <module>agent-demo-tools</module>
         <module>agent-demo-memory</module>

@@ -6,6 +6,7 @@
     业务含义：自动化设置环境变量、Maven 打包、启动 Spring Boot 应用。
     支持 dev / prod 多环境切换，支持跳过打包直接启动。
     支持通过 -Provider 参数切换 LLM 提供商（ark 火山引擎方舟 / bailian 阿里百炼）。
+    支持通过 -LangSmithKey 参数开启 LangSmith 可观测性（OTel 采集 → smith.langchain.com）。
 
 .EXAMPLE
     .\start.ps1
@@ -20,6 +21,10 @@
     # 切换为阿里百炼启动，指定百炼 API Key
 
 .EXAMPLE
+    .\start.ps1 -LangSmithKey "lsv2_xxxx"
+    # 开启 LangSmith 可观测性（需先到 smith.langchain.com 创建 API Key）
+
+.EXAMPLE
     .\start.ps1 -Profile prod -SkipBuild
     # 使用 prod 环境启动已有 jar（跳过打包）
 
@@ -32,6 +37,7 @@ param(
     [string]$Provider = "ark",
     [string]$ApiKey = $env:ARK_API_KEY,
     [string]$BailianApiKey = $env:BAILIAN_API_KEY,
+    [string]$LangSmithKey = $env:LANGSMITH_API_KEY,
     [string]$Profile = "dev",
     [string]$JavaHome = "D:\java\jdk-17.0.7",
     [string]$TestMessage = "你好，请简单介绍一下自己",
@@ -49,6 +55,7 @@ if ($Help) {
     Write-Host "  .\start.ps1                                      # 默认启动（ark 提供商，dev 环境）"
     Write-Host "  .\start.ps1 -ApiKey 'ark-xxxx'                   # 指定火山引擎 API Key"
     Write-Host "  .\start.ps1 -Provider bailian -BailianApiKey 'sk-xxxx'  # 切换阿里百炼启动"
+    Write-Host "  .\start.ps1 -LangSmithKey 'lsv2_xxxx'            # 开启 LangSmith 可观测性"
     Write-Host "  .\start.ps1 -Profile prod                        # 指定 profile（dev / prod）"
     Write-Host "  .\start.ps1 -SkipBuild                           # 跳过打包，直接启动已有 jar"
     Write-Host "  .\start.ps1 -Test                                # 测试对话接口（需应用已启动）"
@@ -59,6 +66,10 @@ if ($Help) {
     Write-Host "LLM 提供商切换:" -ForegroundColor Yellow
     Write-Host "  -Provider ark      # 火山引擎方舟（默认），需设置 ARK_API_KEY"
     Write-Host "  -Provider bailian  # 阿里百炼，需设置 BAILIAN_API_KEY"
+    Write-Host ""
+    Write-Host "LangSmith 可观测性:" -ForegroundColor Yellow
+    Write-Host "  -LangSmithKey 'lsv2_xxxx'  # 开启 OTel 采集上报 smith.langchain.com（不提供则默认关闭、零开销）"
+    Write-Host "  # 未提供时可通过环境变量 LANGSMITH_API_KEY 设置"
     Write-Host ""
     Write-Host "启动后访问地址:" -ForegroundColor Yellow
     Write-Host "  Swagger UI:  http://localhost:8080/swagger-ui.html"
@@ -125,6 +136,12 @@ Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "项目目录: $ProjectRoot"
 Write-Host "Profile:  $Profile"
 Write-Host "Provider: $Provider"
+$enableLangSmith = -not [string]::IsNullOrWhiteSpace($LangSmithKey)
+if ($enableLangSmith) {
+    Write-Host "LangSmith: 启用" -ForegroundColor Green
+} else {
+    Write-Host "LangSmith: 关闭（未提供 Key，零开销）" -ForegroundColor Yellow
+}
 Write-Host ""
 
 # ========================================
@@ -154,6 +171,18 @@ if ($Provider -eq "bailian") {
     }
     $env:ARK_API_KEY = $ApiKey
     Write-Host "[OK] ARK_API_KEY 已设置（隐藏显示）" -ForegroundColor Green
+}
+
+# ========================================
+# 1.5 可选：LangSmith 可观测性（默认关闭，零开销）
+# 业务含义：提供 -LangSmithKey（或环境变量 LANGSMITH_API_KEY）即开启 OTel 采集上报；
+# 不提供则保持默认关闭（NoopTraceCollector），不影响对话行为。
+# ========================================
+if ($enableLangSmith) {
+    $env:LANGSMITH_API_KEY = $LangSmithKey
+    Write-Host "[OK] LANGSMITH_API_KEY 已设置，LangSmith 可观测性已启用（隐藏显示）" -ForegroundColor Green
+} else {
+    Write-Host "[跳过] 未提供 LANGSMITH_API_KEY，LangSmith 可观测性保持关闭（零开销）" -ForegroundColor Yellow
 }
 
 # ========================================
@@ -245,4 +274,8 @@ $javaArgs = @(
     "--spring.profiles.active=$Profile",
     "--llm.provider=$Provider"
 )
+# 开启 LangSmith 时覆盖 application.yml，将可观测性开关置为启用
+if ($enableLangSmith) {
+    $javaArgs += "--langsmith.enabled=true"
+}
 & java @javaArgs

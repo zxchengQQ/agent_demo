@@ -8,6 +8,8 @@ import com.agentdemo.llm.config.LlmVendorConfig;
 import com.agentdemo.llm.thinking.ArkThinkingStreamingChatModel;
 import com.agentdemo.llm.thinking.BailianThinkingStreamingChatModel;
 import com.agentdemo.llm.thinking.ThinkingStreamingChatModel;
+import com.agentdemo.llm.thinking.TracingThinkingStreamingChatModel;
+import com.agentdemo.observability.TraceCollector;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -16,6 +18,7 @@ import dev.langchain4j.model.openai.OpenAiEmbeddingModel;
 import dev.langchain4j.model.openai.OpenAiStreamingChatModel;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -29,13 +32,15 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class ModelFactory {
     private final LlmConfigStore configStore;
+    private final TraceCollector traceCollector;
     private final ConcurrentHashMap<String, ChatModel> chatModelCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, StreamingChatModel> streamingModelCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, ThinkingStreamingChatModel> thinkingModelCache = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, EmbeddingModel> embeddingModelCache = new ConcurrentHashMap<>();
 
-    public ModelFactory(LlmConfigStore configStore) {
+    public ModelFactory(LlmConfigStore configStore, TraceCollector traceCollector) {
         this.configStore = configStore;
+        this.traceCollector = traceCollector;
     }
 
     public ChatModel getChatModelByModelId(String modelId) {
@@ -152,37 +157,52 @@ public class ModelFactory {
     }
 
     private ChatModel createChatModel(LlmVendorConfig vendor, String modelName) {
-        return OpenAiChatModel.builder()
+        OpenAiChatModel.OpenAiChatModelBuilder builder = OpenAiChatModel.builder()
                 .baseUrl(vendor.getBaseUrl())
                 .apiKey(vendor.getApiKey())
                 .modelName(modelName)
                 .temperature(vendor.getTemperature())
                 .timeout(vendor.getTimeout())
-                .maxRetries(vendor.getMaxRetries())
-                .build();
+                .maxRetries(vendor.getMaxRetries());
+        if (traceCollector.isEnabled()) {
+            // 业务含义：仅 LangSmith 启用时挂载监听（AC-S02 默认关零开销，无 Key 时不产生采集事件）
+            builder.listeners(List.of(new TraceChatModelListener(traceCollector)));
+        }
+        return builder.build();
     }
 
     private StreamingChatModel createStreamingChatModel(LlmVendorConfig vendor, String modelName) {
-        return OpenAiStreamingChatModel.builder()
+        OpenAiStreamingChatModel.OpenAiStreamingChatModelBuilder builder = OpenAiStreamingChatModel.builder()
                 .baseUrl(vendor.getBaseUrl())
                 .apiKey(vendor.getApiKey())
                 .modelName(modelName)
                 .temperature(vendor.getTemperature())
-                .timeout(vendor.getTimeout())
-                .build();
+                .timeout(vendor.getTimeout());
+        if (traceCollector.isEnabled()) {
+            builder.listeners(List.of(new TraceChatModelListener(traceCollector)));
+        }
+        return builder.build();
     }
 
     private ThinkingStreamingChatModel createThinkingStreamingChatModel(LlmVendorConfig vendor, String modelName) {
         // 按 thinkingTrigger 配置选择实现类
         // enabled: 请求体含 thinking.type=enabled（火山引擎风格）
         // none: 模型名称自身触发思考（阿里百炼风格）
+        ThinkingStreamingChatModel raw;
         if ("enabled".equals(vendor.getThinkingTrigger())) {
-            return new ArkThinkingStreamingChatModel(
+            raw = new ArkThinkingStreamingChatModel(
                     vendor.getBaseUrl(), vendor.getApiKey(), modelName, vendor.getTimeout());
         } else {
-            return new BailianThinkingStreamingChatModel(
+            raw = new BailianThinkingStreamingChatModel(
                     vendor.getBaseUrl(), vendor.getApiKey(), modelName, vendor.getTimeout());
         }
+        if (!traceCollector.isEnabled()) {
+            // 业务含义：默认关闭（AC-S02）时不包装装饰器，Thinking 系零额外开销
+            return raw;
+        }
+        // 业务含义：Thinking 系无 listener 机制，包装追踪装饰器覆盖主链路采集（Task-09）。
+        // 一处包装覆盖全部 Thinking 调用方（直答/拆解/恢复），业务流类零修改。
+        return new TracingThinkingStreamingChatModel(raw, traceCollector, modelName);
     }
 
     private EmbeddingModel createEmbeddingModel(LlmVendorConfig vendor, String modelName) {

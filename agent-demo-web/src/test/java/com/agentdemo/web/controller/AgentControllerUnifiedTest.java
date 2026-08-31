@@ -12,6 +12,8 @@ import com.agentdemo.common.result.Result;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
 import com.agentdemo.memory.shortterm.CompressingChatMemory;
+import com.agentdemo.observability.TraceCollector;
+import com.agentdemo.observability.TraceContextHolder;
 import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.skill.session.SkillSessionManager;
 import com.agentdemo.tools.permission.ToolPermissionLevel;
@@ -40,6 +42,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -51,6 +54,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doNothing;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
@@ -94,7 +98,7 @@ class AgentControllerUnifiedTest {
         agentConfig = new AgentConfig();
         controller = new AgentController(simpleAgent, planAgent, sessionManager, memoryManager,
                 toolRegistry, agentConfig, humanInteractionManager, toolPermissionService,
-                mock(SkillSessionManager.class), skillPromptComposer);
+                mock(SkillSessionManager.class), mock(TraceCollector.class), skillPromptComposer);
         // 业务含义：统一路由工具校验只校验不执行，空 tools 时无需 stub（request.getTools() 为 null）
     }
 
@@ -327,7 +331,10 @@ class AgentControllerUnifiedTest {
                 "sess-1", "你好", null, false, false, null, null,
                 null, memoryManager, agentConfig, null, null, null,
                 humanInteractionManager, null, null));
-        doNothing().when(unifiedStream).start();
+        // lenient：异步线程调用 start() 与测试主线程严格 stub 检查存在竞态（langsmith Task-11
+        // 在 start() 前增加上下文注入，放大该竞态窗口）；本测试仅需抑制异步副作用，不校验 start() 调用，
+        // 故 lenient 容忍其未在严格检查窗口内被消费。
+        lenient().doNothing().when(unifiedStream).start();
         when(planAgent.chatUnifiedStream(anyString(), anyString(), isNull(), any(), anyBoolean()))
                 .thenReturn(unifiedStream);
 
@@ -469,5 +476,87 @@ class AgentControllerUnifiedTest {
 
         verify(memoryManager).addAttachment("sess-1",
                 CompressingChatMemory.AttachmentType.STATUS, "技能 s1 已被用户排除，请勿再次尝试激活。");
+    }
+
+    // ========== 可观测上下文捕获（langsmith-observability Task-11） ==========
+
+    /**
+     * 捕获采集器：在 startRequest/endRequest 时记录当前线程的 TraceContextHolder 状态，
+     * 用于断言异步边界上下文注入与清理。
+     */
+    private static class CapturingTraceCollector implements com.agentdemo.observability.TraceCollector {
+        final java.util.concurrent.atomic.AtomicReference<TraceContextHolder.TraceContext> startCtx =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        final java.util.concurrent.atomic.AtomicReference<TraceContextHolder.TraceContext> endCtx =
+                new java.util.concurrent.atomic.AtomicReference<>();
+
+        @Override
+        public void startRequest() {
+            startCtx.set(TraceContextHolder.get());
+        }
+
+        @Override
+        public void endRequest() {
+            endCtx.set(TraceContextHolder.get());
+        }
+
+        @Override
+        public void recordLlm(TraceCollector.LlmCallEvent event) {
+        }
+
+        @Override
+        public void recordTool(TraceCollector.ToolCallEvent event) {
+        }
+    }
+
+    @Test
+    @DisplayName("异步边界注入并清理采集上下文（AC-M01，MDC 回退 + sessionId）")
+    void 异步边界_注入并清理采集上下文() throws Exception {
+        // given：捕获采集器 + MDC 注入 traceId（模拟 TraceIdInterceptor 已写入）
+        CapturingTraceCollector capturing = new CapturingTraceCollector();
+        AgentController tracedController = new AgentController(simpleAgent, planAgent, sessionManager,
+                memoryManager, toolRegistry, agentConfig, humanInteractionManager, toolPermissionService,
+                mock(SkillSessionManager.class), capturing, skillPromptComposer);
+        when(sessionManager.exists("sess-1")).thenReturn(true);
+        when(humanInteractionManager.hasPending("sess-1")).thenReturn(false);
+        UnifiedChatStream unifiedStream = spy(new UnifiedChatStream(
+                "sess-1", "你好", null, false, false, null, null,
+                null, memoryManager, agentConfig, null, null, null,
+                humanInteractionManager, null, null));
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.atomic.AtomicReference<TraceContextHolder.TraceContext> seenInside =
+                new java.util.concurrent.atomic.AtomicReference<>();
+        org.mockito.Mockito.doAnswer(inv -> {
+            // 业务含义：异步线程内（start 执行时）上下文已注入
+            seenInside.set(TraceContextHolder.get());
+            latch.countDown();
+            return null;
+        }).when(unifiedStream).start();
+        when(planAgent.chatUnifiedStream(anyString(), anyString(), isNull(), any(), anyBoolean()))
+                .thenReturn(unifiedStream);
+
+        ChatRequest request = new ChatRequest();
+        request.setSessionId("sess-1");
+        request.setMessage("你好");
+        org.slf4j.MDC.put(TraceContextHolder.TRACE_ID_MDC_KEY, "mdc-trace-1");
+        try {
+            // when
+            tracedController.chatStream(request);
+
+            // then：异步线程内上下文已注入（traceId 回退 MDC + sessionId）
+            assertTrue(latch.await(5, java.util.concurrent.TimeUnit.SECONDS),
+                    "异步任务应在超时内执行完成");
+            assertNotNull(seenInside.get(), "异步线程内应能读到采集上下文");
+            assertEquals("mdc-trace-1", seenInside.get().traceId(), "traceId 应从 MDC 回退");
+            assertEquals("sess-1", seenInside.get().sessionId(), "sessionId 应正确注入");
+            // 采集器 startRequest 时同样读到上下文
+            assertNotNull(capturing.startCtx.get(), "startRequest 时应能读到上下文");
+            assertEquals("sess-1", capturing.startCtx.get().sessionId());
+        } finally {
+            org.slf4j.MDC.clear();
+        }
+
+        // then：异步任务结束后上下文已清理（finally clear，防线程池复用泄漏）
+        assertNull(TraceContextHolder.get(), "异步任务结束后 ThreadLocal 应已清理");
     }
 }

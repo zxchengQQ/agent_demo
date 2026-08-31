@@ -6,6 +6,7 @@ import com.agentdemo.agent.single.PlanAgent;
 import com.agentdemo.agent.single.SimpleAgent;
 import com.agentdemo.memory.session.SessionManager;
 import com.agentdemo.memory.shortterm.ChatMemoryManager;
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.skill.prompt.SkillPromptComposer;
 import com.agentdemo.skill.session.SkillSessionManager;
 import com.agentdemo.tools.registry.ToolRegistry;
@@ -71,7 +72,7 @@ class AttachmentForgeBehaviorTest {
     void setUp() {
         controller = new AgentController(simpleAgent, planAgent, sessionManager, memoryManager,
                 toolRegistry, new AgentConfig(), humanInteractionManager, toolPermissionService,
-                skillSessionManager, skillPromptComposer);
+                skillSessionManager, mock(TraceCollector.class), skillPromptComposer);
         when(sessionManager.exists("sess-1")).thenReturn(true);
         when(humanInteractionManager.hasPending("sess-1")).thenReturn(false);
         when(planAgent.chatUnifiedStream(anyString(), anyString(), isNull(), any(), anyBoolean())).thenReturn(
