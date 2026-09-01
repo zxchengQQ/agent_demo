@@ -1,7 +1,10 @@
 package com.agentdemo.skill.session;
 
+import com.agentdemo.observability.NoopTraceCollector;
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.skill.config.SkillProperties;
 import com.agentdemo.skill.entity.SkillDefinition;
+import com.agentdemo.skill.entity.SkillScript;
 import com.agentdemo.skill.store.SkillStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,6 +16,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * 会话级技能激活态管理器
@@ -28,6 +32,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * 4. 有效性实时过滤：读取时校验技能存在且启用，禁用/删除自动退出激活集（AC-E04）
  * 5. 手动指定（applyManualSelection 非空）时仅保留手动技能；空数组重置自动（与 SessionToolResolver 三态同构）
  * </p>
+ * <p>
+ * CR-001：Skill 激活埋点（AC-N09）——activate 各返回路径（成功/被拒）统一经 recordActivation
+ * 上报，applyManualSelection 手动批量路径逐项上报；埋点异常静默降级（AC-E05）。
+ * </p>
  */
 @Component
 public class SkillSessionManager {
@@ -39,6 +47,7 @@ public class SkillSessionManager {
 
     private final SkillStore skillStore;
     private final SkillProperties properties;
+    private final TraceCollector traceCollector;
 
     /** 会话技能状态（key: sessionId） */
     private final ConcurrentHashMap<String, SessionSkillState> sessionStates = new ConcurrentHashMap<>();
@@ -102,14 +111,26 @@ public class SkillSessionManager {
     }
 
     public SkillSessionManager(SkillStore skillStore, SkillProperties properties) {
+        this(skillStore, properties, new NoopTraceCollector());
+    }
+
+    /**
+     * @param skillStore      技能存储
+     * @param properties      技能配置
+     * @param traceCollector  追踪采集器（CR-001 Task-22：激活事件上报）
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public SkillSessionManager(SkillStore skillStore, SkillProperties properties, TraceCollector traceCollector) {
         this.skillStore = skillStore;
         this.properties = properties;
+        this.traceCollector = traceCollector != null ? traceCollector : new NoopTraceCollector();
     }
 
     /**
      * 自主激活技能（Agent 匹配后调用，source=AUTO）
      * <p>
      * 业务含义：LLM 调 loadSkill 的落点。校验存在/启用/排除/上限/重复幂等。
+     * 各返回路径（成功/被拒）统一上报激活事件（CR-001 Task-22，AC-N09）。
      * </p>
      *
      * @param sessionId 会话 ID
@@ -117,6 +138,15 @@ public class SkillSessionManager {
      * @return 激活结果
      */
     public ActivationResult activate(String sessionId, String skillId) {
+        ActivationResult result = doActivate(sessionId, skillId);
+        recordActivation(sessionId, skillId, result, SkillActivationSource.AUTO);
+        return result;
+    }
+
+    /**
+     * 激活核心逻辑（CR-001 抽取，返回结果由 activate 统一上报）
+     */
+    private ActivationResult doActivate(String sessionId, String skillId) {
         if (!properties.isEnabled()) {
             return ActivationResult.fail(skillId, "技能能力未启用");
         }
@@ -196,6 +226,16 @@ public class SkillSessionManager {
                     if (opt.isPresent() && opt.get().isEnabled()
                             && state.activeSkillIds().size() < properties.getMaxActiveSkills()) {
                         state.activeSkillIds().add(skillId);
+                        // CR-001 Task-22：手动批量激活逐项上报（AC-N09，source=MANUAL）
+                        recordActivation(sessionId, skillId, ActivationResult.ok(skillId, SkillActivationSource.MANUAL),
+                                SkillActivationSource.MANUAL);
+                    } else {
+                        // 被拒（不存在/禁用/上限）也留痕
+                        String reason = opt.isEmpty() ? "技能不存在"
+                                : !opt.get().isEnabled() ? "技能已被禁用"
+                                : "已达并发激活上限（" + properties.getMaxActiveSkills() + "）";
+                        recordActivation(sessionId, skillId, ActivationResult.fail(skillId, reason),
+                                SkillActivationSource.MANUAL);
                     }
                 }
                 log.info("技能手动指定: sessionId={}, skills={}", sessionId, skills);
@@ -346,5 +386,29 @@ public class SkillSessionManager {
 
     private void touch(String sessionId) {
         lastActive.put(sessionId, System.currentTimeMillis());
+    }
+
+    /**
+     * Skill 激活埋点（CR-001 Task-22，AC-N09）
+     * <p>
+     * 业务含义：激活成功/被拒统一上报 SkillActivationEvent（skillId/skillName/source/绑定脚本
+     * 工具名/拒绝原因）；埋点自身异常静默降级（AC-E05），不影响激活主流程。
+     * </p>
+     */
+    private void recordActivation(String sessionId, String skillId, ActivationResult result,
+                                  SkillActivationSource source) {
+        try {
+            var skill = skillStore.get(skillId);
+            String skillName = skill.map(SkillDefinition::getName).orElse(null);
+            String boundTools = skill
+                    .map(def -> def.getScripts() == null || def.getScripts().isEmpty()
+                            ? null
+                            : def.getScripts().stream().map(SkillScript::getName).collect(Collectors.joining(",")))
+                    .orElse(null);
+            traceCollector.recordSkillActivation(new TraceCollector.SkillActivationEvent(
+                    skillId, skillName, source.name(), boundTools, result.success(), result.reason()));
+        } catch (Exception e) {
+            log.warn("LangSmith 技能激活采集失败（降级跳过）: {}", e.getMessage());
+        }
     }
 }

@@ -30,6 +30,11 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-memory</artifactId>
         </dependency>
+        <!-- CR-001：Skill 激活埋点（SkillSessionManager 上报 TraceCollector） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
 
         <!-- LangChain4j 核心（@Tool 注解） -->
         <dependency>

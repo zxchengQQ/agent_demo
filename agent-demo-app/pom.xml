@@ -33,6 +33,11 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-mcp</artifactId>
         </dependency>
+        <!-- CR-001：工作流编排埋点（根 span 传播 + 步骤 span 上报 TraceCollector） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
 
         <!-- LangChain4j Agentic - 多 Agent 编排 -->
         <dependency>

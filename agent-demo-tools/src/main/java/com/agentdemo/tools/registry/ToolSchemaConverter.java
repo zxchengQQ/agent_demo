@@ -105,8 +105,6 @@ public class ToolSchemaConverter {
                 }
             }
         }
-        sb.append("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具。");
-        sb.append("调用工具后，在回答中简要提及使用了哪个工具及获取的关键信息。");
         return sb.toString();
     }
 

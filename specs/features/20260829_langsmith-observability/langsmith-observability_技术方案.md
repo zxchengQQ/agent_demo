@@ -44,14 +44,21 @@ graph TB
         AC[AgentController<br/>异步边界捕获 traceId/sessionId] -->|ThreadLocal| TCH[TraceContextHolder]
         MF[ModelFactory<br/>OpenAI系: 挂 listener<br/>Thinking系: 装饰器包装] --> TC[TraceCollector 接口]
         TE[ToolExecutor.execute<br/>统一工具收口埋点] --> TC
+        KRT[KnowledgeRetrieverTool.searchByKbId<br/>RAG 检索埋点 CR-001] --> TC
+        CMM[CompressingChatMemory 压缩回调<br/>记忆压缩埋点 CR-001] --> TC
+        WES[WorkflowExecutionService 三入口<br/>工作流根 span 传播 CR-001] --> TCH
+        AES[AbstractExecutionStrategy.executeOrSkip<br/>步骤统一收口埋点 CR-001] --> TC
+        MTE[McpToolExecutor.execute<br/>MCP 协议层埋点 CR-001] --> TC
+        SSM[SkillSessionManager<br/>Skill 激活埋点 CR-001] --> TC
         TC --> MASK[SensitiveDataMasker<br/>密钥脱敏+超长截断]
         MASK --> OTel[OTel SDK<br/>BatchSpanProcessor 异步队列]
     end
     OTel -->|OTLP HTTP + API Key 认证头<br/>异步批量| LS[LangSmith 云]
     LS --> UI[LangSmith 控制台<br/>trace/thread/Token/评估实验]
     subgraph 覆盖范围声明
-        M1[统一对话链路: LLM+工具全埋]
-        M2[同步/chat、TaskPlanJudge、工作流: 仅 LLM span]
+        M1[统一对话链路: LLM+工具+RAG/记忆/Skill 事件全埋]
+        M2[工作流: 编排层+步骤+LLM+MCP/RAG 工具埋]
+        M3[AiServices 反射路径通用工具: 不埋（既有边界）]
     end
 ```
 
@@ -71,6 +78,7 @@ graph TB
 | 模块名 | 职责（一句话） | 不负责（边界） | 复用/新建 | 包含文件 |
 | :--- | :--- | :--- | :--- | :--- |
 | agent-demo-observability | 采集接口定义 + OTel 实现与导出 + 脱敏截断 + 上下文持有 | 不负责埋点位置（由业务模块决定）、不依赖任何业务模块 | 新建（叶子模块，仅依赖 agent-demo-common 与 OTel SDK） | `com.agentdemo.observability` 包（6 文件，见清单） |
+| agent-demo-evaluation（CR-002） | 本地评估 harness：数据集执行 + judge 调用 + 基线管理与对比报告 | 不负责采集/脱敏规则本体（复用 observability 的 masker）、不参与对话主链路 | 新建（依赖 agent + llm + observability + tools） | `com.agentdemo.evaluation` 包（数据集加载/judge 评估器/基线/对比运行器） |
 | agent-demo-llm（埋点扩展） | OpenAI 系 listener 适配 + Thinking 系装饰器采集 | 不负责脱敏/导出（只调 collector） | 复用（新增 2 类 + ModelFactory 改造） | `TraceChatModelListener` / `TracingThinkingStreamingChatModel` |
 | agent-demo-tools（埋点扩展） | ToolExecutor 统一收口工具采集 | 同上 | 复用（ToolExecutor 改造） | - |
 | agent-demo-web（埋点扩展） | Controller 异步边界捕获上下文 | 同上 | 复用（AgentController 改造） | - |
@@ -98,6 +106,22 @@ graph TB
 | `agent-demo-bom/pom.xml` | 修改 | OTel 版本 properties + dependencyManagement + 模块登记 |
 | `agent-demo-llm` / `agent-demo-tools` / `agent-demo-web` / `agent-demo-bootstrap` 的 `pom.xml` | 修改 | 增加 observability 依赖（bootstrap 经 web 传递亦可，显式声明符合项目惯例） |
 | `agent-demo-bootstrap/.../application.yml` | 修改 | 新增 `langsmith` 配置段 |
+| `agent-demo-observability/.../TraceCollector.java` | 修改（CR-001） | 接口扩展：新增 6 方法（recordRag/recordMemoryCompression/recordWorkflow/recordWorkflowStep/recordMcp/recordSkillActivation）+ 6 事件嵌套 record |
+| `agent-demo-observability/.../NoopTraceCollector.java` | 修改（CR-001） | 6 方法空实现（未启用时零开销） |
+| `agent-demo-observability/.../OtlpTraceCollector.java` | 修改（CR-001） | 6 类新 span 构建（属性见 §7.1 span 设计表） |
+| `agent-demo-rag/.../retriever/KnowledgeRetrieverTool.java` | 修改（CR-001） | RAG 检索埋点：searchByKbId 计时 + recordRag（动态 Tool 唯一收口） |
+| `agent-demo-memory/.../shortterm/ChatMemoryManager.java` + `CompressingChatMemory.java` | 修改（CR-001） | 记忆压缩埋点：创建 memory 时注入回调闭包捕获 sessionId，压缩完成点记录 |
+| `agent-demo-app/.../service/WorkflowExecutionService.java` | 修改（CR-001） | 工作流根 span：三入口（execute/resume/hitlReply）runAsync 内 TraceContextHolder set/startRequest/finally 清理 |
+| `agent-demo-app/.../strategy/AbstractExecutionStrategy.java` + `ParallelExecutionStrategy.java` | 修改（CR-001） | 步骤埋点（executeOrSkip 收口 + 终态处理）+ 并行线程池 Runnable 包装传播上下文 |
+| `agent-demo-mcp/.../tool/McpToolExecutor.java` | 修改（CR-001） | MCP 协议层埋点：execute 计时 + recordMcp（原始参数 + 协议耗时） |
+| `agent-demo-skill/.../session/SkillSessionManager.java` | 修改（CR-001） | Skill 激活埋点：activate + applyManualSelection 两处 |
+| `agent-demo-rag/memory/app/mcp/skill` 五模块 `pom.xml` | 修改（CR-001） | 补 observability 直接依赖（依赖方向无环） |
+| `agent-demo-evaluation/pom.xml` | 新增（CR-002） | 模块定义（依赖 agent + llm + observability + tools，BOM 登记） |
+| `agent-demo-evaluation/.../EvalDataset.java` + 数据集 JSON | 新增（CR-002） | 数据集模型与加载（>=10 用例含陷阱任务，从 LangSmith 沉淀 + 手工构造） |
+| `agent-demo-evaluation/.../EvaluationRunner.java` | 新增（CR-002） | 逐例执行 harness：真实对话发起 + 执行记录采集 + 单例失败不中断（AC-N10） |
+| `agent-demo-evaluation/.../JudgeEvaluator.java` + judge Prompt 制品 | 新增（CR-002） | LLM-as-judge 评估器：结构化评分契约解析 + 同源 WARN + 缺席标注（AC-N11/E06，Prompt 走 EDD） |
+| `agent-demo-evaluation/.../BaselineManager.java` + 对比报告输出 | 新增（CR-002） | 基线生成/加载/对比（劣化标注 + 噪声带宽声明，AC-N12）；A/B 双配置对比运行（AC-N13） |
+| `agent-demo-evaluation/.../resources/application.yml` | 新增（CR-002，落地偏差） | 新增 `eval` 配置段（judge-model-id / runs / dataset 路径 / baseline 路径）。实现采用模块内 application.yml 而非 bootstrap（评估 CLI 为独立 spring-boot:run 自包含上下文，模块内配置自动加载，不污染主应用配置；技术方案 §1.6 原声明 bootstrap 修改，经审查确认此偏差更合理并已对齐） |
 
 *   **依赖方向验证**：observability -> common（无环）；llm/tools/web -> observability（新增方向，不与既有依赖冲突）；agent 模块**零修改**（ThreadLocal 透传，见决策 5）。
 *   **结构最小化声明**：无投机性分层--TraceCollector 接口有两个实现（Noop/Otlp）非单实现接口；无工厂；配置项仅 7 个（见 12 节）均有对应 AC。
@@ -115,11 +139,17 @@ graph TB
 | 采集点 | 挂载位置 | 覆盖链路 | 采集内容 | 副作用 |
 |-------|---------|---------|---------|--------|
 | OpenAI 系 listener | `ModelFactory.createChatModel` / `createStreamingChatModel` 加 `.listeners(TraceChatModelListener)` | 同步 /chat、TaskPlanJudge、工作流 Agentic 路径、视觉模型 | 消息列表/模型名/参数/回复/TokenUsage/耗时/错误 | 无（只读旁路） |
-| Thinking 系装饰器 | `ModelFactory.createThinkingStreamingChatModel` 返回 `TracingThinkingStreamingChatModel` 包装 | 统一对话主链路（直答/拆解/恢复全部 Thinking 调用） | stream() 请求侧（messages/toolsJson/modelName）+ onComplete 真实 TokenUsage/finishReason | 无（只读旁路） |
+| Thinking 系装饰器 | `ModelFactory.createThinkingStreamingChatModel` 返回 `TracingThinkingStreamingChatModel` 包装 | 统一对话主链路（直答/拆解/恢复全部 Thinking 调用方） | stream() 请求侧（messages/toolsJson/modelName）+ onComplete 真实 TokenUsage/finishReason | 无（只读旁路） |
 | 工具收口埋点 | `ToolExecutor.execute` 前后 | 统一对话全部工具（内置/MCP/RAG/技能脚本）+ 工作流 HITL 路径 | 工具名/入参（LLM 生成 argumentsJson）/出参（已过 sanitize 管道）/耗时/成败/异常 | 无（只读旁路） |
+| RAG 检索埋点（CR-001） | `KnowledgeRetrieverTool.searchByKbId` 前后 | 对话+工作流全部知识库检索（CR-003 动态 Tool 唯一收口，含旧入口 searchKnowledge 转调） | kbId/查询词/命中块数/来源元数据/相似度/Top-N/耗时/成败 | 无（只读旁路） |
+| 记忆压缩埋点（CR-001） | CompressingChatMemory 压缩回调（ChatMemoryManager 创建 memory 时注入，闭包捕获 sessionId） | 全部会话滚动压缩（含 FIFO 降级路径） | 压缩前后消息数/压缩条数/摘要（脱敏截断）/降级标记 | 无（只读旁路） |
+| 工作流根 span（CR-001） | `WorkflowExecutionService` 三入口（execute/resume/hitlReply）runAsync 内 | 全部工作流执行（含 HITL 恢复） | executionId 聚合键/traceId/模板/模式/状态/总耗时 | 无（只读旁路） |
+| 工作流步骤埋点（CR-001） | `AbstractExecutionStrategy.executeOrSkip` 收口 + `WorkflowExecutionService` 终态处理 | 六种编排模式全部步骤（含恢复步） | 步骤名/索引/状态/耗时/重试/输出（脱敏截断） | 无（只读旁路） |
+| MCP 协议埋点（CR-001） | `McpToolExecutor.execute` 前后 | 对话+工作流全部 MCP 调用（协议层） | serverName/原始 toolName/原始 argsJson/协议耗时/状态/断连标记 | 无（只读旁路） |
+| Skill 激活埋点（CR-001） | `SkillSessionManager.activate` + `applyManualSelection` | 自主激活 + 手动单选/批量选择 + 被拒激活 | skillId/名称/来源/绑定脚本工具/拒绝原因 | 无（只读旁路） |
 | OTLP 导出通道 | `ObservabilityAutoConfiguration` 装配 | - | span 批量 | **有**（数据出境，不可回滚）--由三重护栏对冲 |
 
-*   **覆盖范围声明（用户已确认）**：AiServices 反射路径的工具 span（同步 /chat 与工作流非 HITL 路径）**本期不做**，列入演进项；上述入口的 LLM span 经 listener 自动覆盖。
+*   **覆盖范围声明（CR-001 更新，用户已确认）**：同步 /chat 与工作流非 HITL 路径中经 AiServices 反射调用的**通用工具**（内置计算器/时间等非 MCP/RAG 收口类）仍不采集（既有边界，决策 3）；该两路径的 **MCP 与 RAG 工具**经各自协议/检索层收口埋点自 CR-001 起覆盖；上述入口的 LLM span 经 listener 自动覆盖。
 
 ### 3.2 采集执行编排
 *   **串行语义**：单次对话内 LLM span 与工具 span 按真实执行顺序生成（span 起止时间戳天然反映执行序，AC-T01）；父子关系：同一次用户消息的 span 共享 TraceContext（traceId/sessionId）。
@@ -207,12 +237,18 @@ graph TB
 |-----------|----------|-----------------------------------|------|
 | LLM span | `chat {model}` | `gen_ai.operation.name=chat`、`gen_ai.system`、`gen_ai.request.model`、`gen_ai.usage.input_tokens/output_tokens`、输入消息、输出回复、`error.type`（失败时）、`session.id`（=sessionId）、`log.trace_id`（本地日志互查键，AC-M01）、`gen_ai.conversation.id`（thread 聚合承载键） | listener（OpenAI 系）/ 装饰器（Thinking 系） |
 | 工具 span | `{toolName}` | `tool.name`、`tool.arguments`（入参）、`tool.result`（出参，已过 sanitize）、状态 OK/ERROR（异常信息）、span 时长天然记录 | ToolExecutor 埋点 |
+| 检索 span（CR-001） | `rag search {kbName}` | `rag.query`、`rag.kb.id`、`rag.kb.name`、`rag.hit_count`、`rag.top_k`、`rag.chunks`（命中块列表文本，脱敏截断）、`rag.max_score`、状态 OK/ERROR | KnowledgeRetrieverTool 埋点 |
+| 压缩 span（CR-001） | `memory compress` | `memory.messages_before/after`、`memory.compressed_count`、`memory.window`、`memory.summary`（脱敏截断）、`memory.degraded`（降级标记）、`session.id` | CompressingChatMemory 回调埋点 |
+| 工作流 span（CR-001） | `workflow {templateName}` | `workflow.template.id/name`、`workflow.mode`、`workflow.status`、`workflow.duration_ms`、`workflow.execution_id`（thread 聚合承载键=executionId）、`log.trace_id` | WorkflowExecutionService 埋点 |
+| 步骤 span（CR-001） | `step {agentName}` | `workflow.step.index`、`workflow.step.status`、`workflow.step.duration_ms`、`workflow.step.retry_count`、`workflow.step.output`（脱敏截断）、`workflow.execution_id` | AbstractExecutionStrategy 埋点 |
+| MCP span（CR-001） | `mcp {server}.{tool}` | `mcp.server`、`mcp.tool`（原始名，非 mcp_{server}_{tool} 拼接）、`mcp.arguments`（原始 argsJson 脱敏截断）、`mcp.duration_ms`、`mcp.status`、`mcp.disconnected` | McpToolExecutor 埋点 |
+| 激活 span（CR-001） | `skill activate {skillName}` | `skill.id`、`skill.name`、`skill.source`（auto/manual）、`skill.bound_tools`、`skill.rejected_reason`（被拒时）、`session.id` | SkillSessionManager 埋点 |
 
 *   **Token 真实值保障**（技术难点 3 落地）：Thinking 系从 `handler.onComplete` 的 TokenUsage 取真实值；OpenAI 系从 listener onResponse 的 `TokenUsage` 取--**不使用**现有 SSE 的 SimpleTokenEstimator 估算值。
 *   **traceId 传播链**：`TraceIdInterceptor`（MDC）-> `AgentController` 捕获 -> `TraceContextHolder`（ThreadLocal）-> collector 写入 `log.trace_id` 属性（AC-M01）。
-*   **thread 聚合承载键**：`gen_ai.conversation.id` 承载 sessionId（OTel semconv 标准属性）；同时双写 `langsmith.thread.id` 作为联调备选（见风险 1），验证后保留生效者。
+*   **thread 聚合承载键**：`gen_ai.conversation.id` 承载 sessionId（OTel semconv 标准属性）；同时双写 `langsmith.thread.id` 作为联调备选（见风险 1），验证后保留生效者。**CR-001 扩展**：工作流路径以 executionId 承载（每个工作流执行聚合为独立 thread，决策 8）。
 
-### 7.2 评估框架（最小闭环，五要素）
+### 7.2 评估框架（最小闭环，五要素；CR-002 扩展为完整体系：judge 评估器 + 回归基线 + 对比实验）
 
 > 评估对象是「agent-demo Agent 整体（模型 + Harness）」而非 LangSmith 集成本身；trace 是证据来源，LangSmith 实验环境是执行平台。
 
@@ -246,7 +282,27 @@ graph TB
 | 效率 | 上报成功率 | 导出批次成功比例 | >= 99%（失败仅 WARN） |
 
 *   **统计显著性（强制声明）**：每配置至少 3 次运行取均值；10 例规模下 95% 置信区间约 ±30 个百分点，**分差小于噪声带宽不做迭代决策**；评估结论以 Pass^3（稳定性）为准，不与 Pass@k 混用。
-*   **评估方式**：确定性评估器为主（LangSmith 平台 code evaluator：断言工具选择、关键词、脱敏后比对），**不用 LLM-as-Judge**（最小闭环避免长度偏差/同源模型问题；引入 judge 列演进项）。
+*   **评估方式**：确定性评估器为主（LangSmith 平台 code evaluator：断言工具选择、关键词、脱敏后比对）。**CR-002 扩展**：本地 `agent-demo-evaluation` harness 新增 LLM-as-Judge 评估器（回答完整性/幻觉复核/风格维度，结构化评分契约，见 §7.2.1），与确定性评估器分层协作--veto 项（脱敏命中/工具选择）始终确定性断言，judge 仅覆盖语义类维度。
+*   **A/B 测试方案**：**CR-002 交付**（同一数据集双配置运行，各配置 Pass^3 后输出逐指标对比报告，含统计显著性声明；用于 Prompt/模型/参数变更的候选验证）。
+
+### 7.2.1 本地评估 harness 设计（CR-002）
+
+**分层架构**（agent-demo-evaluation 模块）：
+
+| 层 | 组件 | 职责 | 验证策略 |
+|----|------|------|---------|
+| 数据层 | `EvalDataset` + JSON 数据集 | 用例加载（输入/预期要点/确定性断言/陷阱标记）；数据集内容构造时即经 maskSafe（AC-S07） | TDD |
+| 执行层 | `EvaluationRunner` | 逐例真实发起对话（复用 Agent 服务），采集执行记录（请求/回复/工具轨迹），单例失败标注后继续（AC-N10） | TDD |
+| 评分层 | `DeterministicEvaluator` + `JudgeEvaluator` | 确定性断言（工具选择/关键词/脱敏命中）+ judge 结构化评分（AC-N11）；judge 不可用时缺席标注（AC-E06） | TDD + EDD |
+| 报告层 | `BaselineManager` + 对比报告 | 基线生成/加载/劣化标注/噪声带宽声明（AC-N12）+ A/B 双配置对比（AC-N13） | TDD |
+
+**Judge Prompt 制品设计要点**（文本由 `agent-prompt-designer` 落地，EDD 调优）：
+*   输入契约：用例输入 + Agent 最终回复 + 工具轨迹摘要（已脱敏）；
+*   评分维度：回答完整性（essential）/幻觉复核（veto 语义层）/风格（optional）--与技术方案 §7.2 Rubric 表对齐；
+*   输出契约：严格 JSON（各维度 score/rationale + 总体判定），解析失败该维度记缺失不参与聚合（AC-N11）；
+*   反偏差指令：明确"评分与回答长度无关""仅依据给定证据判断"（对冲长度偏差与同源偏差）；
+*   同源策略：judge-model-id 可配置，与被评模型相同则启动 WARN（不阻断，决策 13）。
+
 *   **对抗测试方案**：
 
 | 攻击面 | 测试场景 | 数据来源 | 预期行为 | 通过标准 |
@@ -254,8 +310,7 @@ graph TB
 | 注入（经 trace 记录） | 工具返回含"忽略此前指令"类文本 | 复用 20260826 对抗用例库 | 内容被记录为数据，无执行（AC-S05） | 100% |
 | 密钥泄漏 | 输入/工具返回含 sk-xxx 密钥 | 脱敏正例集 | LangSmith 侧无明文 | 100% |
 | 无 Key 外联 | 未配置 Key 启动并发起对话 | 启动用例 | 零网络请求（AC-S02） | 100% |
-
-*   **A/B 测试方案**：本期不适用（单配置验证链路；Prompt/模型对比实验列演进项）。
+| judge 出境与落盘（CR-002） | 评估数据集含密钥正例，执行评估运行 | 脱敏正例集 | judge prompt 与落盘产物无明文（AC-S07） | 100% |
 
 ### 7.3 监控与告警
 *   **实时监控**：LangSmith 平台侧（Token 消耗/延迟/错误率/工具失败率--由 span 数据自动聚合，需求 3.1 第 6 项 Token 统计的落地形态）；本地侧 WARN 日志（导出失败原因摘要）。
@@ -309,6 +364,20 @@ graph TB
 | AC-M02 | 模型切换如实记录 | 记忆上下文 | span 模型名取自当轮实际调用实例（ModelFactory 按 modelId 解析，逐请求构建） |
 | AC-H01 | 评估结果可追溯排查 | 人机协作 | LangSmith trace->数据集->实验链路（§7.2 五要素） |
 | AC-H02 | 泄漏处置流程 | 人机协作 | 流程文档化（删 trace -> 补脱敏规则 -> 记变更日志），演练用例进评估（§7.2 对抗测试） |
+| AC-N05 | RAG 检索上报 | 正常交互 | KnowledgeRetrieverTool.searchByKbId 收口埋点 + 检索 span（§3.1，§7.1） |
+| AC-N06 | 记忆压缩上报 | 正常交互 | 压缩回调注入埋点（闭包捕获 sessionId）+ 压缩 span（§3.1，§7.1） |
+| AC-N07 | 工作流编排上报 | 正常交互 | WorkflowExecutionService 三入口根 span + executeOrSkip 步骤收口埋点（§3.1） |
+| AC-N08 | MCP 协议层上报 | 正常交互 | McpToolExecutor.execute 埋点 + MCP span（双层平级，决策 9） |
+| AC-N09 | Skill 激活上报 | 正常交互 | SkillSessionManager.activate + applyManualSelection 两处埋点 |
+| AC-S06 | 新采集域脱敏前置 | 安全护栏 | 六类新 span 属性全部经 OtlpTraceCollector 构建时统一脱敏（单一出口，§6.2） |
+| AC-E05 | 新埋点零回归 | 边界降级 | 埋点 try-catch 吞异常 + WARN + 上下文 finally 清理（§3.3 埋点采集行） |
+| AC-M03 | 工作流 trace 会话关联 | 记忆上下文 | executionId 聚合键 + 并行线程池 Runnable 包装传播（决策 8） |
+| AC-N10 | 本地评估数据集执行 | 正常交互 | EvaluationRunner 逐例执行 + 单例失败标注后继续（§7.2.1 执行层） |
+| AC-N11 | LLM-as-judge 结构化评分 | 正常交互 | JudgeEvaluator 结构化契约解析 + 缺失维度不计聚合（§7.2.1 评分层） |
+| AC-N12 | 回归基线生成与对比 | 正常交互 | BaselineManager 劣化标注 + 噪声带宽声明 + 显式重建（§7.2.1 报告层） |
+| AC-N13 | A/B 对比实验 | 正常交互 | 双配置各 Pass^3 + 逐指标对比报告（§7.2 A/B 方案） |
+| AC-S07 | 评估出境与落盘零明文 | 安全护栏 | 数据集构造时经 maskSafe + judge 出境与产物落盘单一出口复用（§7.2.1 数据层，决策 14） |
+| AC-E06 | judge 失败降级 | 边界降级 | judge 不可用时缺席标注 + 不误计 0 分（§7.2.1 评分层） |
 
 ## 10. 技术决策说明 (Technical Decisions)
 
@@ -340,6 +409,34 @@ graph TB
     *   选项：OTLP HTTP（protobuf）/ OTLP gRPC
     *   选择：OTLP HTTP
     *   理由：LangSmith 端点为 https，HTTP 443 出口对代理/防火墙环境友好（预留代理配置，用户确认可直连）；免 gRPC 依赖。
+*   **决策 8：工作流 trace 聚合键（CR-001）**
+    *   选项：executionId 独立 thread / 传播 sessionId / 不加根 span
+    *   选择：executionId 独立 thread
+    *   理由：工作流为独立执行单元（独立页面发起，无对话 sessionId 概念），每次执行聚合为独立 thread 语义最准确；跨请求 HITL 断裂与对话 HITL 同为已知边界（聚合键=executionId 保持 thread 级连续）。用户已确认。
+*   **决策 9：MCP 协议层与工具层采集关系（CR-001）**
+    *   选项：双层平级 span / 仅盲区补齐（无上下文时才记）/ 字段经 ThreadLocal 并入 tool span
+    *   选择：双层平级 span（属性关联）
+    *   理由：对话路径 tool span（反射层）与 mcp span（协议层）时间重叠、各记各的耗时，类比传统 APM 的 HTTP+DB 双层；两处独立埋点零耦合（无需跨层传递）；工作流非 HITL 盲区同时被协议层埋点自然补齐。用户已确认。
+*   **决策 10：记忆压缩埋点方式（CR-001）**
+    *   选项：回调注入（ChatMemoryManager 创建 memory 时闭包捕获 sessionId）/ 改造 CompressingChatMemory 传参 / 在 summarize 层埋
+    *   选择：回调注入
+    *   理由：CompressingChatMemory 实例按会话隔离但自身无 sessionId 且 compactIfNeeded 为 private；回调注入最小侵入（构造器可选参数），sessionId 经闭包天然正确，不改既有方法签名。
+*   **决策 11：五域采集范围开关（CR-001）**
+    *   选项：无细分开关（langsmith.enabled 统一控制）/ 每域独立布尔配置
+    *   选择：无细分开关
+    *   理由：与既有「全量采集不采样」决策一致、最小 diff（YAGNI）；排障隔离可经日志实现。用户已确认。
+*   **决策 12：评估 harness 模块归属（CR-002）**
+    *   选项：独立 `agent-demo-evaluation` 模块 / observability 内 evaluation 包 / bootstrap 测试目录
+    *   选择：独立模块（依赖 agent + llm + observability + tools）
+    *   理由：评估是横切能力（后续所有特性的 EDD 回归均复用）；observability 保持叶子特性（若内置 evaluation 需新增 llm 依赖打破叶子约束或采用注入式装配，复杂度反增）；bootstrap 测试目录跨特性复用性差。用户已确认。
+*   **决策 13：judge 模型同源策略（CR-002）**
+    *   选项：可配置 + 同源 WARN / 强制异源校验（拒绝运行）/ 无约束
+    *   选择：可配置 + 同源 WARN（不阻断）
+    *   理由：技术方案 §7.2 明确警惕长度偏差/同源模型问题，但强制异源在单模型环境直接不可用（学习项目常仅一个可用 Key）；WARN 提示风险 + judge prompt 内置反偏差指令（"评分与长度无关""仅依据给定证据"）双重对冲。用户已确认。
+*   **决策 14：基线与对比的评估产物形态（CR-002）**
+    *   选项：JSON 基线文件（版本库管理）/ Markdown 报告 / 数据库表
+    *   选择：JSON 基线 + Markdown 对比报告（文件产物，data/eval/ 目录）
+    *   理由：JSON 结构化（指标值+运行元数据：日期/模型/配置版本）便于程序化 diff；Markdown 报告人读友好；不引入数据库表（评估产物非运行时数据，保持最小 diff）；基线更新须显式重建命令（AC-N12 防静默覆盖）。
 
 ## 11. 风险与注意事项 (Risks & Notes)
 
@@ -347,7 +444,12 @@ graph TB
     1.  **LangSmith OTLP 行为待联调**（技术难点 4）：GenAI semconv 识别与 thread 聚合属性键不确定 -> 缓解：`gen_ai.conversation.id` + `langsmith.thread.id` 双写，实现阶段联调验证后保留生效者（AC-N02 验收前完成）；若平台不自动聚合，备选方案为平台侧按属性过滤（需求验收场景仍可达成）。
     2.  **网络可达性**：国内直连 `api.smith.langchain.com` 可达性需实测 -> 缓解：OTLP exporter 预留代理配置项（用户已确认当前可直连）；不可达时全部降级路径已设计（AC-S04），主功能不受阻。
     3.  **OTel 依赖引入**：净新增第三方依赖 -> 缓解：BOM properties 统一版本（GUARDRAILS 新依赖约束）；无既有 micrometer/otel 依赖，冲突风险趋零。
-    4.  **HITL 暂停/恢复的 trace 断裂**：暂停前与恢复后的 span 分属两个 traceId（恢复是新的 HTTP 请求，TraceIdInterceptor 生成新 ID）-> 本期接受（跨请求断点为既有 MDC 语义），span 元数据中 sessionId 保持连续，thread 级关联不受影响；列为已知边界而非缺陷。
+    4.  **HITL 暂停/恢复的 trace 断裂（2026-09-01 已修复）**：~~暂停前与恢复后的 span 分属两个 traceId（恢复是新的 HTTP 请求，TraceIdInterceptor 生成新 ID）-> 本期接受（跨请求断点为既有 MDC 语义），span 元数据中 sessionId 保持连续，thread 级关联不受影响；列为已知边界而非缺陷。~~ **修复方案（BUG 20260901）**：暂停点（onAskUser/onToolConfirm/工作流 WAITING_USER）经 `markHITLPause(resumeKey)` 保存根 span 上下文，恢复轮经 `resumeRequest(resumeKey)` 以其为远程父上下文续接同一 traceId——单任务多轮人机交互在 LangSmith 呈现一条完整链路；`log.trace_id`（本地日志互查键）仍为每 HTTP 请求独立，保持逐请求日志可查。
+    5.  **并行工作流线程上下文（CR-001）**：workflow-parallel-N 固定线程池中步骤并行执行，ThreadLocal 不自动传播 -> 缓解：并行任务 Runnable 包装 set/clear 显式传播 TraceContext（Task-19 专项）；上下文缺失时该 span 降级为无关联记录（不丢主流程，仅损失聚合属性）。
+    6.  **span 数量与体积增长（CR-001）**：五域新增 span（工作流步骤粒度最细）-> 缓解：截断阈值统一 4000 字符不变；学习项目流量量级下 BatchSpanProcessor 队列（2048）余量充足；对话 Token 成本零增量不变。
+    7.  **记忆压缩高频触发（CR-001）**：压缩在消息写入路径同步执行，埋点若阻塞将影响主流程 -> 缓解：埋点仅内存操作（微秒级）+ try-catch 吞异常（AC-E05）；压缩摘要 LLM 调用本身已被 listener 采为 LLM span（时间线可对齐）。
+    8.  **judge 非确定性（CR-002）**：LLM-as-judge 评分存在运行间波动 -> 缓解：veto 项（脱敏命中/工具选择）始终走确定性断言不依赖 judge；judge 维度多次运行取均值 + 反偏差指令；分差小于噪声带宽不做迭代决策（§7.2 统计显著性声明）。
+    9.  **评估运行成本（CR-002）**：每用例真实发起对话，10 例 × Pass^3 = 30 次模型调用，A/B 对比翻倍 -> 缓解：评估按需手动触发（非随构建执行）；成本统计随评估报告输出（模型调用次数/Token 用量）。
 *   **兼容性**：业务行为零变更（只读旁路）；既有单测零回归预期（唯一风险点 ModelFactory 构造器变更影响其测试，需同步适配）。
 *   **性能影响**：主流程新增微秒级内存操作（span 构建 + 脱敏正则），SSE 首字延迟无可测量劣化（§8.2）。
 *   **安全风险**：数据出境面收敛于 OTLP 单通道（脱敏前置）；Key 全程不出环境变量。
@@ -359,8 +461,35 @@ graph TB
 ## 12. 数据隐私与合规 (Data Privacy & Compliance)
 
 *   **数据出境边界（本项目核心合规决策，需求 1 调研结论落地）**：trace 数据出境至 LangChain 托管服务器（美国），保留期 180 天；三重护栏（默认关/脱敏/静默降级）为出境控制手段，用户对话内容不脱敏的决策依据为学习项目无真实敏感数据（需求 6.3 已确认）。
-*   **数据传输加密**：OTLP over HTTPS（TLS）。
-*   **PII 识别与脱敏**：密钥类模式脱敏（§6.2 规则集）；PII（身份证/手机号）识别**不在本期范围**（需求 3.2 已界定，深度脱敏列演进）。
+*   **数据传输加密**：OTLP over HTTPS（TLS）；judge 评估调用复用项目既有 LLM 出站链路（HTTPS）。
+*   **PII 识别与脱敏**：密钥类模式脱敏（§6.2 规则集）；PII（身份证/手机号）识别**不在本期范围**（需求 3.2 已界定，深度脱敏列演进）。**CR-002**：评估数据集构造时即经 maskSafe，judge 出境与评估产物（数据集/基线/报告）落盘均无密钥明文（AC-S07，出境面新增通道纳入统一出口管控）。
 *   **日志保留与审计**：本地 WARN 日志随 logback 策略（7 天滚动）；无审计不可篡改要求（学习项目，无 WORM 需求）。
 *   **用户数据权利**：不适用（无真实用户数据）；trace 删除机制 = LangSmith 平台删除操作（AC-H02 处置流程第一环）。
 *   **合规要求**：无 GDPR/个保法强制适用场景（学习演示项目）；设计已为生产化预留路径（脱敏规则可扩展、后端可切换 Langfuse 自托管--OTel 标准不锁定）。
+
+---
+## 变更日志 (Change Log)
+### CR-001: 观察空间扩展--五域事件采集 (2026-08-31)
+**影响范围**: 采集点适配层（新增 5 域埋点）、span 数据结构设计（新增 6 类 span）、代码结构（五模块埋点改造 + pom 依赖）、技术决策（新增决策 8~11）、风险清单（新增风险 5~7）
+**变更内容摘要**:
+- [新增] §3.1 采集点适配层 5 行（RAG 检索/记忆压缩/工作流根 span+步骤/MCP 协议/Skill 激活埋点）
+- [新增] §7.1 span 设计表 6 行（检索/压缩/工作流/步骤/MCP/激活 span，属性遵循 GenAI semconv + 自定义命名空间）
+- [新增] §10 决策 8（工作流聚合键=executionId）、决策 9（MCP 双层平级 span）、决策 10（记忆压缩回调注入）、决策 11（无细分采集开关）
+- [新增] §11 风险 5~7（并行线程上下文/span 体积增长/压缩高频触发）
+- [修改] §1.3 集成架构图（五域挂钩 + 工作流根 span 传播 + 覆盖范围声明更新）
+- [修改] §1.6 文件清单（11 个 CR-001 变更文件行）
+- [修改] §9 AC 映射表（新增 AC-N05~N09/S06/E05/M03 共 8 行）
+- [关联] 需求文档 v1.1 变更日志；增量任务计划 `langsmith-observability_变更任务_CR001.md`（Task-15~25）
+
+### CR-002: 完整评估体系--LLM-as-judge 评估器与回归基线 (2026-08-31)
+**影响范围**: 评估框架（§7.2 扩展 + §7.2.1 新增本地 harness 设计）、代码结构（新增 agent-demo-evaluation 模块）、技术决策（新增决策 12~14）、风险清单（新增风险 8~9）、数据隐私（judge 出境通道）、AC 映射（新增 6 行）
+**变更内容摘要**:
+- [新增] §7.2.1 本地评估 harness 设计（数据/执行/评分/报告四层 + judge Prompt 制品设计要点）
+- [新增] §1.6 领域模块表 agent-demo-evaluation 行 + 文件清单 6 行（CR-002）
+- [新增] §10 决策 12（评估 harness 独立模块）、决策 13（judge 可配置+同源 WARN）、决策 14（JSON 基线 + Markdown 报告）
+- [新增] §11 风险 8（judge 非确定性）/风险 9（评估运行成本）
+- [修改] §7.2 评估方式行（"不用 LLM-as-Judge" -> CR-002 引入分层协作：veto 项始终确定性断言）；A/B 测试方案（"本期不适用" -> CR-002 交付）
+- [修改] §7.2 对抗测试表新增 judge 出境与落盘行（AC-S07）
+- [修改] §9 AC 映射表新增 AC-N10~N13/S07/E06 共 6 行
+- [修改] §12 数据隐私：judge 出境复用既有 LLM 出站链路，评估数据集构造时经 maskSafe（AC-S07）
+- [关联] 需求文档 v1.2 变更日志；增量任务计划 `langsmith-observability_变更任务_CR002.md`（Task-26~34）

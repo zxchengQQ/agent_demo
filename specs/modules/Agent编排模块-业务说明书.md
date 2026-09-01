@@ -161,6 +161,10 @@ flowchart TD
 | BR-AGT-017 | 技能激活段从系统提示词移除，改为 SKILL_INSTRUCTION 附件注入记忆流（激活点单通道、流式/同步双路径覆盖）；技能激活不改变系统提示词，保证前缀缓存稳定（20260828 新增） | 🔴 强制 |
 | BR-AGT-018 | HITL 末轮强制总结前必须注入 `<agent_status>` 收尾消息（user 角色，读数+操作策略成对，显示配置上限），仅框架代码可写，模型/用户禁止伪造（20260828 新增） | 🔴 强制 |
 | BR-AGT-019 | 规划判断（TaskPlanJudge.judge）必须携带会话历史 recentHistory 参与意图判别，缺失时降级为默认规划模式不抛错（20260828 新增） | 🔴 强制 |
+| BR-AGT-020 | 模板公共规则单源化：hitl.txt/hitl-guidance.txt 公共规则经 `{{include:hitl-shared-rules}}` 共享片段引用（PromptTemplateLoader 片段加载，单层展开、片段缺失保留占位符降级不中断）（CR-001 新增） | 🔴 强制 |
+| BR-AGT-021 | 场景模板采用 XML 语义标签段（`<guardrails>`/`<scenario_behavior>`/`<interaction_rules>` 等），护栏条文内容零变更，仅结构标签包裹（CR-001 新增） | 🔴 强制 |
+| BR-AGT-022 | 工具引导语单源：convertToDescriptionText 仅输出工具清单本体（不含尾部通用引导），工具调用引导由场景模板差异化承载（CR-001 新增） | 🔴 强制 |
+| BR-AGT-023 | AgentConfig 降级默认值与场景模板语义一致（模板缺失降级质量不骤降），由一致性守护测试双向锚点防漂移（CR-001 新增） | 🔴 强制 |
 
 ## 10. 异常处理
 

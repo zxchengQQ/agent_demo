@@ -53,6 +53,11 @@ agent:
       # 模式规则组默认在 ToolSanitizeProperties 中定义，可通过以下配置覆盖注入：
       # suspicious-patterns: ["..."]   # 一般可疑（命中保留原文+警示标记）
       # high-risk-patterns: ["..."]    # 高危（命中移除+占位标记）
+      # CR-001 新增：三道清洗层增强开关（默认开启，可独立回退）
+      redact-secrets: true     # 秘密赋值形态脱敏（AC-S09）
+      invisible-chars: true    # 隐形字符（零宽/双向控制符）剥离（AC-S11）
+      random-delimiter: true   # 随机化分隔符（AC-S10）
+      # secret-patterns: ["..."]  # 秘密赋值形态规则组（捕获组 1 = 秘密值），默认在 ToolSanitizeProperties 中定义
   # 工具按需加载配置
   tools:
     # 默认加载的工具（Agent 始终可用，无需 API 指定）

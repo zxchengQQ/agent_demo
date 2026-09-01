@@ -103,6 +103,7 @@ Skill 能力域模块（agent-demo-skill）是 AI Agent 示例项目的**第 10 
 | agent-demo-agent | 被依赖：HITLReActStream 拦截、SessionToolResolver 合并、三路径提示词注入 |
 | agent-demo-web | 被依赖：SkillController 管理 API、ChatRequest 技能字段、skill_activated SSE |
 | agent-demo-bootstrap | 被依赖：skill.* 配置、default-tools 增加 builtin:loadSkill |
+| agent-demo-observability | 依赖（CR-001）：SkillSessionManager 激活事件上报 TraceCollector（激活成功/被拒/手动批量留痕，AC-N09） |
 
 ## 6. 接口清单
 

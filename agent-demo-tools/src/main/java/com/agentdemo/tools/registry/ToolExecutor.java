@@ -119,6 +119,33 @@ public class ToolExecutor {
     }
 
     /**
+     * 采集 AiServices 反射路径的工具执行事件（CR-002 评估观测补链）
+     * <p>
+     * 业务含义：SimpleAgent 同步路径经 LangChain4j AiServices 内置 ReAct 反射直调工具，
+     * 不经 {@link #execute}。评估 harness 需观测该路径工具轨迹（含结果）以支持工具选择
+     * 断言与 judge 幻觉复核，故注册为 AiServices 的 afterToolExecution 回调（SimpleAgent
+     * 接线）。生产同步路径此前该埋点缺失（技术方案决策 3 既有边界），本方法同时补齐。
+     * 采集失败仅 WARN 降级跳过（AC-S04），不影响工具执行。
+     * </p>
+     *
+     * @param execution AiServices 工具执行结果（LangChain4j）
+     */
+    public void recordToolExecution(dev.langchain4j.service.tool.ToolExecution execution) {
+        if (execution == null || execution.request() == null) {
+            return;
+        }
+        try {
+            boolean success = !execution.hasFailed();
+            recordTool(execution.request().name(), execution.request().arguments(),
+                    execution.result(), System.nanoTime(), success,
+                    success ? null : "工具执行失败");
+        } catch (Exception e) {
+            log.warn("AiServices 工具执行采集失败（降级跳过）: tool={}, error={}",
+                    execution.request().name(), e.getMessage());
+        }
+    }
+
+    /**
      * 采集工具调用事件（AC-N04 五要素：工具名/入参/出参/耗时/成败；AC-T03 失败含异常信息）
      * <p>
      * 业务含义：旁路采集，内部 try-catch 保证采集失败不影响工具执行主流程（AC-S04）。

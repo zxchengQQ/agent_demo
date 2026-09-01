@@ -10,6 +10,9 @@ import com.agentdemo.app.strategy.AbstractExecutionStrategy;
 import com.agentdemo.app.strategy.WorkflowExecutionStrategy;
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.common.exception.ErrorCode;
+import com.agentdemo.observability.NoopTraceCollector;
+import com.agentdemo.observability.TraceCollector;
+import com.agentdemo.observability.TraceContextHolder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -48,6 +51,9 @@ public class WorkflowExecutionService {
     /** 策略注册中心：mode -> strategy（Spring 自动注入所有 @Component 策略） */
     private final Map<OrchestrationMode, WorkflowExecutionStrategy> strategies;
 
+    /** 追踪采集器（CR-001 Task-19：工作流根 span） */
+    private final TraceCollector traceCollector;
+
     /** 执行实例存储（内存，BR-APP-008） */
     private final ConcurrentHashMap<String, WorkflowExecution> executions = new ConcurrentHashMap<>();
 
@@ -65,14 +71,26 @@ public class WorkflowExecutionService {
     private static final long DEFAULT_HITL_TIMEOUT_MS = 30 * 60 * 1000L;
 
     /**
-     * Spring 自动注入所有策略实现，构建分发表
-     * 新增模式只需新增 @Component 策略类，此处零修改（OCP）
+     * 兼容构造（测试场景：追踪走 Noop）
      *
      * @param strategyList 所有策略实现
      */
     public WorkflowExecutionService(List<WorkflowExecutionStrategy> strategyList) {
+        this(strategyList, new NoopTraceCollector());
+    }
+
+    /**
+     * Spring 自动注入所有策略实现，构建分发表 + 注入追踪采集器（CR-001 Task-19）
+     * 新增模式只需新增 @Component 策略类，此处零修改（OCP）
+     *
+     * @param strategyList   所有策略实现
+     * @param traceCollector 追踪采集器（工作流根 span）
+     */
+    @org.springframework.beans.factory.annotation.Autowired
+    public WorkflowExecutionService(List<WorkflowExecutionStrategy> strategyList, TraceCollector traceCollector) {
         this.strategies = strategyList.stream()
                 .collect(Collectors.toMap(WorkflowExecutionStrategy::supportedMode, s -> s));
+        this.traceCollector = traceCollector != null ? traceCollector : new NoopTraceCollector();
     }
 
     /**
@@ -110,11 +128,12 @@ public class WorkflowExecutionService {
                 executionId, template.getId(), template.getMode());
 
         // 异步执行（独立线程，不阻塞请求线程）
-        CompletableFuture.runAsync(() -> {
+        runAsyncWithTrace(executionId, () -> {
             try {
                 String result = strategy.execute(template, parameters, emitter,
                         execution, modelId, cancelFlag);
                 execution.complete(result);
+                recordWorkflowTerminal(execution, "COMPLETED");
                 emitter.complete();
             } catch (WorkflowHITLException e) {
                 // 业务含义：HITL 暂停信号（checkpoint/askUser）——进入 WAITING_USER（可恢复，AC-N01/N02）。
@@ -219,6 +238,7 @@ public class WorkflowExecutionService {
     private void handleTerminated(SseEmitter emitter, WorkflowExecution execution, String message) {
         log.warn("工作流被终止: executionId={}, reason={}", execution.getExecutionId(), message);
         execution.terminate();
+        recordWorkflowTerminal(execution, "TERMINATED");
         com.agentdemo.app.execution.WorkflowEventPublisher.send(emitter, "workflow_failed", Map.of(
                 "executionId", execution.getExecutionId(),
                 "status", WorkflowExecutionStatus.TERMINATED.name(),
@@ -232,6 +252,7 @@ public class WorkflowExecutionService {
     private void handleTimeout(SseEmitter emitter, WorkflowExecution execution, String message) {
         log.warn("工作流执行超时: executionId={}", execution.getExecutionId());
         execution.timeout();
+        recordWorkflowTerminal(execution, "TIMEOUT");
         com.agentdemo.app.execution.WorkflowEventPublisher.send(emitter, "workflow_failed", Map.of(
                 "executionId", execution.getExecutionId(),
                 "status", WorkflowExecutionStatus.TIMEOUT.name(),
@@ -245,6 +266,7 @@ public class WorkflowExecutionService {
     private void handleFailure(SseEmitter emitter, WorkflowExecution execution, String message) {
         log.error("工作流执行失败: executionId={}, error={}", execution.getExecutionId(), message);
         execution.fail(message);
+        recordWorkflowTerminal(execution, "FAILED");
         WorkflowEventPublisher.send(emitter, "workflow_failed", Map.of(
                 "executionId", execution.getExecutionId(),
                 "status", WorkflowExecutionStatus.FAILED.name(),
@@ -281,6 +303,7 @@ public class WorkflowExecutionService {
                 "resumable", true));
         emitter.complete();
         execution.pause(e.getFailedAgentName(), e.getMessage());
+        recordWorkflowTerminal(execution, "PAUSED");
     }
 
     /**
@@ -337,6 +360,7 @@ public class WorkflowExecutionService {
                 "resumable", true));
         emitter.complete();
         execution.waitUser();
+        recordWorkflowTerminal(execution, "WAITING_USER");
     }
 
     /**
@@ -381,11 +405,12 @@ public class WorkflowExecutionService {
 
         String snapshotModelId = snapshot.getModelId();
         Map<String, Object> snapshotParams = snapshot.getParameters();
-        CompletableFuture.runAsync(() -> {
+        runAsyncWithTrace(executionId, () -> {
             try {
                 String result = strategy.execute(snapshot.getTemplate(), snapshotParams, emitter,
                         execution, snapshotModelId, cancelFlag);
                 execution.complete(result);
+                recordWorkflowTerminal(execution, "COMPLETED");
                 // 恢复成功：清理快照（防止对 COMPLETED 执行再次 resume）
                 resumableStates.remove(executionId);
                 emitter.complete();
@@ -466,6 +491,13 @@ public class WorkflowExecutionService {
                     "status", WorkflowExecutionStatus.TERMINATED.name(),
                     "error", "用户拒绝了检查点确认，工作流已终止"));
             emitter.complete();
+            // CR-001 Task-20：checkpoint 拒绝在同步线程（HTTP 请求线程），临时注入执行 ID 保持聚合
+            TraceContextHolder.set(new TraceContextHolder.TraceContext(TraceContextHolder.currentTraceId(), executionId));
+            try {
+                recordWorkflowTerminal(execution, "TERMINATED");
+            } finally {
+                TraceContextHolder.clear();
+            }
             return;
         }
 
@@ -516,11 +548,12 @@ public class WorkflowExecutionService {
         log.info("恢复工作流 HITL 执行: executionId={}, hitlMode={}, agent={}",
                 executionId, hitlState.getHitlMode(), pendingStep.getAgentName());
 
-        CompletableFuture.runAsync(() -> {
+        runAsyncWithTrace(executionId, () -> {
             try {
                 String result = strategy.execute(template, snapshotParams, emitter,
                         execution, snapshotModelId, cancelFlag);
                 execution.complete(result);
+                recordWorkflowTerminal(execution, "COMPLETED");
                 // 恢复成功：清理快照（防止对 COMPLETED 执行再次 hitlReply）
                 resumableStates.remove(executionId);
                 emitter.complete();
@@ -625,5 +658,66 @@ public class WorkflowExecutionService {
      */
     private String generateExecutionId() {
         return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /**
+     * 带追踪上下文的异步执行（CR-001 Task-19，决策 8：executionId 作 thread 聚合键，AC-M03）
+     * <p>
+     * 业务含义：仿 AgentController.runTracedAsync 模式--提交线程捕获 MDC traceId（本地日志互查键），
+     * 异步线程内设置 TraceContextHolder（traceId + executionId）+ 开启请求级根 span，
+     * 执行结束 finally endRequest + 清理（AC-E05 无线程上下文泄漏）。
+     * </p>
+     * <p>
+     * BUG 修复（原 §11 风险 4 已知边界）：HITL 暂停（WAITING_USER）经 recordWorkflowTerminal
+     * 中 markHITLPause 保存根 span 上下文，hitlReply 恢复轮经 resumeRequest 以其为父续接
+     * 同一 trace--单次工作流执行（含多轮人机交互）在 LangSmith 呈现一条完整链路；
+     * 新执行/无续接记录（如失败恢复 resume）时回退独立新 trace。
+     * </p>
+     *
+     * @param executionId 执行 ID（thread 聚合键 + trace 续接键）
+     * @param task        异步任务
+     */
+    private void runAsyncWithTrace(String executionId, Runnable task) {
+        // 业务含义：在提交线程（HTTP 请求线程）捕获 MDC traceId--MDC 为 ThreadLocal 不跨线程传播
+        String traceId = TraceContextHolder.currentTraceId();
+        CompletableFuture.runAsync(() -> {
+            TraceContextHolder.set(new TraceContextHolder.TraceContext(traceId, executionId));
+            // BUG 修复：续接键=executionId（WAITING_USER 暂停时已标记；新执行无记录回退独立新 trace）
+            traceCollector.resumeRequest(executionId);
+            try {
+                task.run();
+            } finally {
+                traceCollector.endRequest();
+                TraceContextHolder.clear();
+            }
+        });
+    }
+
+    /**
+     * 工作流级 span 上报（CR-001 Task-20，AC-N07）
+     * <p>
+     * 业务含义：各终态（完成/失败/终止/超时/暂停等待用户）统一上报 WorkflowExecutionEvent；
+     * 埋点自身异常静默降级（AC-E05）。durationMs 取 startTime 到当前的历史总耗时（恢复语义保留）。
+     * </p>
+     */
+    private void recordWorkflowTerminal(WorkflowExecution execution, String status) {
+        try {
+            // BUG 修复：WAITING_USER（HITL 等待用户）暂停时标记 trace 续接点，
+            // hitlReply 恢复轮共享同一 trace（此时根 span 仍为当前线程父上下文，可安全捕获）
+            if ("WAITING_USER".equals(status)) {
+                traceCollector.markHITLPause(execution.getExecutionId());
+            }
+            long durationMs = 0;
+            LocalDateTime start = execution.getStartTime();
+            if (start != null) {
+                durationMs = java.time.Duration.between(start, LocalDateTime.now()).toMillis();
+            }
+            traceCollector.recordWorkflow(new TraceCollector.WorkflowExecutionEvent(
+                    execution.getExecutionId(), execution.getTemplateId(), execution.getTemplateName(),
+                    execution.getMode() != null ? execution.getMode().name() : "",
+                    status, durationMs, execution.getFinalResult()));
+        } catch (Exception e) {
+            log.warn("LangSmith 工作流采集失败（降级跳过）: {}", e.getMessage());
+        }
     }
 }

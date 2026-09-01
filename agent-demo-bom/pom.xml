@@ -190,6 +190,13 @@
                 <version>${project.version}</version>
             </dependency>
 
+            <!-- 新增内部模块：评估能力域（本地评估 harness，CR-002 2026-08-31） -->
+            <dependency>
+                <groupId>com.agentdemo</groupId>
+                <artifactId>agent-demo-evaluation</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
             <!-- OpenTelemetry（LangSmith OTLP 上报，技术方案 §1.6，BOM 统一版本） -->
             <dependency>
                 <groupId>io.opentelemetry</groupId>

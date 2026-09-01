@@ -355,6 +355,7 @@ erDiagram
 ### 5.3 提示词模板
 
 > 提示词模板采用"角色×场景"二维矩阵架构，由 PromptTemplateLoader 运行时组合为最终系统提示词。
+> 2026-08-31 CR-001 更新：场景模板现状（thinking/react 已随 unified-chat-mode 删除），并引入 `prompts/fragments/` 公共片段目录。
 
 | 目录 | 文件 | 用途 |
 |------|------|------|
@@ -362,15 +363,16 @@ erDiagram
 | `prompts/roles/` | `code.txt` | 代码助手角色模板 |
 | `prompts/roles/` | `data-analyst.txt` | 数据分析助手角色模板 |
 | `prompts/roles/` | `doc-writer.txt` | 文档助手角色模板 |
-| `prompts/scenarios/` | `chat.txt` | 普通对话场景（含工具引导） |
-| `prompts/scenarios/` | `thinking.txt` | 深度思考场景（无工具） |
-| `prompts/scenarios/` | `react.txt` | ReAct 场景（含 {{tools}} 占位符） |
+| `prompts/scenarios/` | `chat.txt` | 普通对话场景（含工具引导，XML 标签化） |
+| `prompts/scenarios/` | `hitl.txt` | HITL 交互场景（含 askUser 规则 + few-shot 示例 + {{tools}}） |
 | `prompts/scenarios/` | `task-plan.txt` | 任务规划场景（JSON 输出约束） |
 | `prompts/scenarios/` | `task-execute.txt` | 任务执行场景（含 {{tools}} 占位符） |
 | `prompts/scenarios/` | `task-summary.txt` | 任务总结场景 |
+| `prompts/fragments/` | `hitl-shared-rules.txt` | hitl 公共规则共享片段（工具协议/askUser 5 规则/追问策略/错误处理，单源维护） |
 
-> **组合规则**：`最终提示词 = 角色模板 + "\n\n" + 场景模板`。模板缺失时回退到 AgentConfig 默认值。
-> **占位符**：`{{tools}}` 由调用方通过 `ToolSchemaConverter.convertToDescriptionText()` 在运行时替换。
+> **组合规则**：`最终提示词 = 角色模板 + "\n\n" + 场景模板`。模板缺失时回退到 AgentConfig 默认值（默认值与模板语义一致，由守护测试防漂移）。
+> **占位符**：`{{tools}}` 由调用方通过 `ToolSchemaConverter.convertToDescriptionText()` 在运行时替换（工具描述仅输出清单本体）。
+> **片段展开（CR-001）**：`{{include:fragment-name}}` 单层展开 `prompts/fragments/` 片段内容，片段缺失时 WARN 并保留占位符（降级不中断）。
 
 ---
 

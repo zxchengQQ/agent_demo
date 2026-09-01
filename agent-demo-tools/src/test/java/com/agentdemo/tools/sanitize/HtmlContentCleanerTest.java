@@ -16,10 +16,18 @@ class HtmlContentCleanerTest {
 
     private final HtmlContentCleaner cleaner = new HtmlContentCleaner();
 
+    private SanitizeContext ctx(String toolName) {
+        return SanitizeContext.builder().toolName(toolName).sourceDesc("测试来源").htmlContent(false).build();
+    }
+
+    private SanitizeContext htmlCtx(String toolName) {
+        return SanitizeContext.builder().toolName(toolName).sourceDesc("网页内容").htmlContent(true).build();
+    }
+
     @Test
     void script标签被剥离且正文保留() {
         String html = "<html><body><script>alert(1)</script>你好世界</body></html>";
-        String result = cleaner.clean(html, "httpGet");
+        String result = cleaner.process(html, ctx("httpGet"));
         assertFalse(result.toLowerCase().contains("<script"), "script 标签应被移除");
         assertTrue(result.contains("你好世界"), "正文文本应保留");
     }
@@ -28,7 +36,7 @@ class HtmlContentCleanerTest {
     void iframe_object_embed标签被剥离() {
         String html = "<iframe src=\"https://evil.example.com\"></iframe>" +
                 "<object data=\"x.swf\"></object><embed src=\"y.swf\">正文内容";
-        String result = cleaner.clean(html, "httpGet");
+        String result = cleaner.process(html, ctx("httpGet"));
         assertFalse(result.contains("<iframe"), "iframe 应被移除");
         assertFalse(result.contains("<object"), "object 应被移除");
         assertFalse(result.contains("<embed"), "embed 应被移除");
@@ -38,7 +46,7 @@ class HtmlContentCleanerTest {
     @Test
     void 事件属性被移除() {
         String html = "<div onclick=\"alert(1)\" onmouseover=\"steal()\">内容</div>";
-        String result = cleaner.clean(html, "httpGet");
+        String result = cleaner.process(html, ctx("httpGet"));
         assertFalse(result.contains("onclick"), "onclick 事件属性应被移除");
         assertFalse(result.contains("onmouseover"), "onmouseover 事件属性应被移除");
         assertTrue(result.contains("内容"), "div 文本内容应保留");
@@ -51,7 +59,7 @@ class HtmlContentCleanerTest {
                 "<a href=\"vbscript:msgbox(1)\">链接3</a>" +
                 "<a href=\"https://safe.example.com\">安全链接</a>" +
                 "<a href=\"/relative/path\">相对路径</a>";
-        String result = cleaner.clean(html, "httpGet");
+        String result = cleaner.process(html, ctx("httpGet"));
         assertFalse(result.toLowerCase().contains("javascript:"), "javascript: 协议应被移除");
         assertFalse(result.toLowerCase().contains("data:text"), "data: 协议应被移除");
         assertFalse(result.toLowerCase().contains("vbscript:"), "vbscript: 协议应被移除");
@@ -63,17 +71,27 @@ class HtmlContentCleanerTest {
     @Test
     void 纯文本不受影响() {
         String text = "这是一段纯文本内容，没有 HTML 标签";
-        assertEquals(text, cleaner.clean(text, "httpGet"), "纯文本应原样返回");
+        assertEquals(text, cleaner.process(text, ctx("httpGet")), "纯文本应原样返回");
     }
 
     @Test
     void 畸形HTML不抛异常() {
         String html = "<script>alert(1)<div>未闭合标签<p>嵌套异常</script></body>";
-        assertDoesNotThrow(() -> cleaner.clean(html, "httpGet"), "畸形 HTML 不应抛异常");
+        assertDoesNotThrow(() -> cleaner.process(html, ctx("httpGet")), "畸形 HTML 不应抛异常");
+    }
+
+    // ==================== CR-004 Task-24：Stage 语义 ====================
+
+    @Test
+    void stage元信息与门控() {
+        assertEquals(200, cleaner.order(), "① 段 order 应为 200（段序契约）");
+        assertEquals("HTML_CLEANER", cleaner.name(), "段名用于降级日志规则位");
+        assertFalse(cleaner.appliesTo(ctx("httpGet")), "htmlContent=false 时门控应关闭（AC-S03 仅 HTML 触发）");
+        assertTrue(cleaner.appliesTo(htmlCtx("httpGet")), "htmlContent=true 时应执行");
     }
 
     @Test
     void null输入安全返回null() {
-        assertNull(cleaner.clean(null, "httpGet"), "null 输入应安全返回 null");
+        assertNull(cleaner.process(null, ctx("httpGet")), "null 输入应安全返回 null");
     }
 }

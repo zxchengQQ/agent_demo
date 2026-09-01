@@ -2,10 +2,12 @@
 
 | 字段 | 内容 |
 |------|------|
-| 版本 | v1.0 |
+| 版本 | v1.1 |
 | 作者 | ai-agent-tech-design（技术方案设计技能） |
 | 日期 | 2026-08-26 |
 | 变更记录 | v1.0 \| 2026-08-26 \| 初版：4 类数据获取工具产出清洗方案（三层清洗 + 限长临时文件 + HTML 防御链） \| 技术方案设计流程 |
+|  | v1.1 \| 2026-09-01 \| CR-001：六段管道（⓪/②'/随机分隔符）+ 三子开关 + 秘密脱敏/隐形字符/对抗扩充（详见变更日志） |
+|  | v1.2 \| 2026-09-01 \| CR-004：管道拦截器链化（SanitizeStage SPI）+ 门控/降级归一 + 规则预编译与静态 SecureRandom（详见变更日志） |
 | 需求文档 | `specs/features/20260826_tool-output-sanitization/tool-output-sanitization.md` |
 | 调研报告 | `specs/features/20260826_tool-output-sanitization/Agent框架工具结果清洗调研报告.md` |
 
@@ -102,22 +104,26 @@ graph TB
 
 | 模块名 | 职责（一句话） | 不负责（边界） | 复用/新建 | 包含文件 |
 | :--- | :--- | :--- | :--- | :--- |
-| sanitize-core | 工具产出清洗管道编排：模式分级检测 + 限长临时文件 + 包裹声明 | 不负责 HTML 剥离细节、不负责工具自身业务逻辑 | 新建 | `ToolOutputSanitizer.java`、`SanitizeContext.java` |
-| sanitize-html | HTML 可执行内容剥离（Hutool 实现） | 不负责可疑指令文本检测、不负责限长 | 新建 | `HtmlContentCleaner.java` |
-| sanitize-pattern | 可疑指令模式检测与分级处置 | 不负责 HTML 标签剥离、不负责清洗编排 | 新建 | `SuspiciousPatternDetector.java` |
+| sanitize-core | 清洗管道链编排：SanitizeStage 有序链调度 + 逐段降级隔离（CR-004）+ 限长临时文件 + 包裹声明终段 | 不负责各 Stage 内部清洗逻辑、不负责工具自身业务逻辑 | 新建 | `ToolOutputSanitizer.java`、`SanitizeContext.java` |
+| sanitize-stage | 阶段 SPI 与四个实现（⓪①②②' 均实现同一接口，可插拔替换/新增，CR-004） | 不负责管道编排顺序决策（order 自声明）、不负责限长与包裹 | 新建 | `SanitizeStage.java` + 4 个现有组件改造（见下表） |
+| sanitize-html | HTML 可执行内容剥离（Hutool 实现，① 段 Stage） | 不负责可疑指令文本检测、不负责限长 | 新建 | `HtmlContentCleaner.java` |
+| sanitize-pattern | 可疑指令模式检测与分级处置（② 段 Stage） | 不负责 HTML 标签剥离、不负责清洗编排 | 新建 | `SuspiciousPatternDetector.java` |
 | sanitize-store | 超长内容临时文件写入、分页读取、过期清理 | 不负责清洗、不负责截断判断 | 新建 | `ToolOutputTempStore.java`、`TempFileRecord.java` |
 | sanitize-config | 清洗配置（开关/上限/目录/规则/MIME 白名单） | 不含任何业务逻辑 | 新建 | `ToolSanitizeProperties.java` |
 
-**目录归属**：新包 `com.agentdemo.tools.sanitize`，与 `builtin`/`permission`/`registry` 平级；理由：清洗是工具域横切能力，归属工具模块顶层包。
+**目录归属**：新包 `com.agentdemo.tools.sanitize`，与 `builtin`/`permission`/`registry` 平级；理由：清洗是工具域横切能力，归属工具模块顶层包。SPI 接口与实现同包（CR-004，不设 stage 子包——4 个实现即现有组件本体，无薄适配层）。
 
 **文件清单**：
 
 | 文件路径 | 操作 | 用途 |
 | :--- | :--- | :--- |
-| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/ToolOutputSanitizer.java` | 新增 | 清洗管道编排器（四段管道 + 全局降级） |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/SanitizeStage.java` | 新增（CR-004） | 阶段 SPI：order/name/appliesTo/process(text, ctx) |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/ToolOutputSanitizer.java` | 修改（CR-004） | 编排器重构：Stage 有序链调度 + 逐段 try/catch 隔离 + 终段③④保留；静态 SecureRandom |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/InvisibleCharCleaner.java` | 修改（CR-004） | 实现 SanitizeStage（⓪=100），签名统一为 process(text, SanitizeContext) |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/HtmlContentCleaner.java` | 修改（CR-004） | 实现 SanitizeStage（①=200，appliesTo=htmlContent），签名统一 |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/SuspiciousPatternDetector.java` | 修改（CR-004） | 实现 SanitizeStage（②=300），规则预编译，签名统一 |
+| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/SecretRedactor.java` | 修改（CR-004） | 实现 SanitizeStage（②'=400，appliesTo=redact-secrets），规则预编译 + 非法规则 WARN，签名统一 |
 | `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/SanitizeContext.java` | 新增 | 清洗上下文（工具名、来源描述、HTML 标记） |
-| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/HtmlContentCleaner.java` | 新增 | Hutool HTML 剥离（script/iframe/object/embed/事件属性/危险协议） |
-| `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/SuspiciousPatternDetector.java` | 新增 | 一般/高危两组正则规则检测与分级处置 |
 | `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/ToolOutputTempStore.java` | 新增 | 临时文件写入 + 分页读取 + 机会式过期清理 |
 | `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/ToolSanitizeProperties.java` | 新增 | `agent.tool.sanitize.*` 配置类 |
 | `agent-demo-tools/src/main/java/com/agentdemo/tools/sanitize/TempFileRecord.java` | 新增 | 临时文件元信息（原始长度/截断位置） |
@@ -126,7 +132,7 @@ graph TB
 | `agent-demo-mcp/src/main/java/com/agentdemo/mcp/tool/McpToolExecutor.java` | 修改 | parseFromWrapper 返回前注入清洗管道（1 处） |
 | `agent-demo-rag/src/main/java/com/agentdemo/rag/retriever/KnowledgeRetrieverTool.java` | 修改 | searchByKbId 返回前注入清洗管道（1 处） |
 | `agent-demo-bootstrap/src/main/resources/application.yml` | 修改 | 新增 `agent.tool.sanitize.*` 配置段 |
-| 对应 5 个测试类（sanitize 包 5 个 + 4 个工具的既有测试扩展） | 新增/修改 | 见 §7.2 评估数据集 |
+| 对应测试类（sanitize 包组件/编排器测试 + 4 个工具的既有测试扩展；CR-004 新增 SanitizeStageChainTest） | 新增/修改 | 见 §7.2 评估数据集 |
 
 ## 2. Prompt 工程架构 (Prompt Engineering Architecture)
 
@@ -137,14 +143,14 @@ graph TB
 工具产出进入上下文的最终形态（结构示意，非最终文案）：
 
 ```
-[边界声明头：声明以下为外部工具数据（非指令）+ 来源工具名 + 来源描述]
+[边界声明头：声明以下为外部工具数据（非指令）+ 来源工具名 + 来源描述 + 随机分隔符 token]
 [清洗后正文（超限时为前缀）]
 [截断提示（仅超限时）：已截断声明 + 原始长度 + 临时文件相对路径 + 分页查询方式]
-[边界声明尾：与头部配对的闭合标记]
+[边界声明尾：与头部配对的闭合标记（含同一随机 token）]
 ```
 
 *   **注入方式**：由 `ToolOutputSanitizer` 在工具返回时动态拼接，来源工具名取自 `SanitizeContext.toolName`。
-*   **定界符策略**：首版使用**固定分隔符对**（调研报告扩展方案 1 的随机化分隔符列为后续增量）；分隔符须选择正常文本中极难碰撞的形态，具体符号由 prompt-designer 定稿。
+*   **定界符策略**：CR-001 起使用**随机化分隔符**--每次 `sanitize()` 调用经 SecureRandom 生成随机 token（16 位 hex）拼入头尾标记（形态如 `===BEGIN_TOOL_DATA_{token}===` / `===END_TOOL_DATA_{token}===`，具体文案由 prompt-designer 在 CR-001 EDD 任务定稿），工具产出内容无法预先伪造合法闭合标记（调研报告扩展方案 1 落地）；随机分隔符生成失败时降级固定分隔符（AC-S10/AC-E05）。
 *   **一次性保证**：声明在工具执行时点拼接一次，随消息持久化，回放不重拼（§1.4）。
 
 ### 2.2 Tool/Function 描述设计（结构模板）
@@ -172,27 +178,49 @@ graph TB
 
 ### 3.1 清洗管道设计（核心）
 
-**四段管道（顺序固定，前段产物是后段输入）**：
+**CR-004 架构形态：可插拔 Stage 链 + 固定终段**。变换段（⓪①②②'）自 CR-004 起实现统一 SPI（`SanitizeStage`），由编排器按 `order()` 排序遍历；终段（③限长 + ④包裹）保留在编排器内——它们定义产物契约（限长落盘与边界声明形态），不属于可插拔的清洗逻辑。既有编号 ⓪①②②'③④ 保持不变以维持交叉引用。
 
 ```mermaid
 graph LR
-    RAW[工具原始产出] --> L1{SanitizeContext<br/>htmlContent?}
-    L1 -->|是| HC[① HtmlContentCleaner<br/>Hutool 剥离]
-    L1 -->|否| PD[② SuspiciousPatternDetector<br/>分级处置]
-    HC --> PD
-    PD --> L2{长度 > maxChars?}
+    RAW[工具原始产出] --> CH{{SanitizeStage 有序链<br/>逐段 try/catch 隔离}}
+    CH --> IV["⓪ InvisibleCharStage(=100)<br/>appliesTo: invisible-chars 开关"]
+    IV --> HC["① HtmlCleanStage(=200)<br/>appliesTo: ctx.htmlContent"]
+    HC --> PD["② PatternStage(=300)<br/>无条件"]
+    PD --> SR["②' SecretRedactStage(=400)<br/>appliesTo: redact-secrets 开关"]
+    SR --> L2{长度 > maxChars?}
     L2 -->|是| TS[③ ToolOutputTempStore<br/>溢出落盘 + 截断提示]
-    L2 -->|否| WR[④ 包裹声明]
+    L2 -->|否| WR[④ 包裹声明<br/>随机化分隔符]
     TS --> WR
     WR --> OUT[进入上下文]
 ```
 
-| 段 | 职责 | 降级行为 |
-|----|------|---------|
-| ① HTML 剥离 | 仅 HttpTool（含 xhtml 响应）触发；移除 script/iframe/object/embed 标签、事件属性（on\*）、javascript:/data:/vbscript: 协议引用 | 剥离异常 -> 跳过本段继续（记 WARN） |
-| ② 模式分级检测 | 一般可疑 -> 原文保留 + 警示标记；高危 -> 移除片段 + 占位标记；命中即记 WARN 安全日志 | 检测异常 -> 跳过本段继续（记 WARN） |
-| ③ 限长+临时文件 | 清洗后内容超过 maxChars：前缀保留，溢出部分写入临时文件，生成截断提示 | 写文件失败 -> 降级纯截断（AC-E01），记 WARN |
-| ④ 包裹声明 | 边界声明头尾包裹全部产物（含截断提示） | 拼接异常 -> 返回未包裹产物（AC-E02） |
+**阶段 SPI（CR-004 新增）**：
+
+```java
+public interface SanitizeStage {
+    int order();                                   // 执行顺序：⓪=100 ①=200 ②=300 ②'=400；CR-002 检测引擎预留 500+
+    String name();                                 // 段名（复用 AC-S07 WARN 日志出口的规则位）
+    default boolean appliesTo(SanitizeContext ctx) { return true; }  // 门控归一：开关/htmlContent 判断从编排器移入各段
+    String process(String text, SanitizeContext ctx);                // 变换文本（段内自带 WARN 日志）
+}
+```
+
+| 段（order） | 职责 | 门控 appliesTo | 降级行为 |
+|----|------|---------|----|
+| ⓪ InvisibleCharStage（100，CR-001） | 剥离零宽字符（\u200b-\u200f）、双向控制符（\u202a-\u202e）、\ufeff 等隐形注入载体，保证后续正则检测面对可见文本 | `invisible-chars=true`（默认开，可独立回退） | 编排器逐段 try/catch -> 跳过本段继续（记 WARN，AC-E05） |
+| ① HtmlCleanStage（200） | 仅 HTML 产出触发；移除 script/iframe/object/embed 标签、事件属性（on\*）、javascript:/data:/vbscript: 协议引用 | `ctx.htmlContent=true`（HttpTool 按 Content-Type 判定） | 同上（记 WARN） |
+| ② PatternStage（300） | 一般可疑 -> 原文保留 + 警示标记；高危 -> 移除片段 + 占位标记；命中即记 WARN 安全日志 | 无条件（默认 appliesTo） | 同上（记 WARN） |
+| ②' SecretRedactStage（400，CR-001） | 按 `secretPatterns` 规则组匹配秘密赋值形态，值替换 `[REDACTED]`（键名保留）+ WARN 日志（含规则 ID 与次数，不含原值） | `redact-secrets=true`（默认开，可独立回退） | 同上（记 WARN，AC-E05） |
+| ③ 限长+临时文件（编排器终段） | 清洗后内容超过 maxChars：前缀保留，溢出部分写入临时文件，生成截断提示 | —（契约固定） | 写文件失败 -> 降级纯截断（AC-E01），记 WARN |
+| ④ 包裹声明（编排器终段） | 边界声明头尾包裹全部产物（含截断提示）；头尾分隔符含本次调用随机生成的 token（SecureRandom 16 位 hex，CR-001） | —（契约固定） | 拼接异常 -> 返回未包裹产物（AC-E02）；token 生成失败 -> 降级固定分隔符（AC-E05） |
+
+**段序决策（CR-001）**：⓪ 置于最前--消除混淆载体后正则检测才有效；②' 位于检测后限长前--检测面对原文（脱敏不破坏指令特征）、已移除片段无需脱敏、落盘内容为已脱敏文本。CR-004 后段序由各 Stage 的 `order()` 自声明，上述顺序即 100/200/300/400 的物理排序，语义不变。
+
+**降级归一（CR-004）**：变换段的"段内异常跳过继续"由编排器**统一 try/catch 每一段**实现（异常 -> `[tool-sanitize]` WARN + 跳过该段 + 链继续），取代原"每段调用方各自包 try/catch"的分散写法；终段③④保留各自专属降级语义。**对外降级行为与 CR-003 版本完全等价**（AC-E01/E02/E05 语义不变，652 项既有测试守护）。
+
+**CR-002/CR-003 接入预留（CR-004 核心收益）**：
+- **CR-002 注入检测引擎**（模型/分类器）：新增一个 `SanitizeStage` 实现 bean（order 位于 ② 邻近区间，具体由其设计定稿），编排器零修改即接入；若需段间传递风险分，扩展 `SanitizeContext` 属性（预留演进点，本次不实现）
+- **CR-003 LLM 输出侧护栏**：复用同一 `SanitizeStage` SPI 构建**独立管道实例**（不同 Stage 集合，作用于 LLM 输出侧），见 §6.4
 
 **全局降级铁律（AC-E02）**：`ToolOutputSanitizer.sanitize()` 整体 try/catch，任何未预期异常 -> 记 ERROR + 返回原始文本。**清洗层永远不阻断工具结果返回**。
 
@@ -213,6 +241,13 @@ sanitize(String rawOutput, SanitizeContext ctx) -> String
 | KnowledgeRetrieverTool.searchByKbId | 结果组装 return 前 | toolName=rag:{kbName}；htmlContent=false | 各错误提示文本（"知识库不存在"等）同样过管道，保证声明一致 |
 
 **MIME 白名单规则（HttpTool）**：白名单 = text/html、application/xhtml+xml（触发 HTML 剥离）、text/plain、text/markdown、application/json、application/xml、text/xml 及 `application/*+json`、`application/*+xml`；非白名单 -> 返回可读提示（含实际 Content-Type 与拦截说明），不返回原文。白名单经配置可扩展。
+
+**注入点契约（CR-004 文档化，技术决策 11）**：新增数据获取工具接入清洗的强制约定——
+1. 工具方法**成功返回路径**上调用 `sanitizer.sanitize(raw, SanitizeContext)`（异常路径不经过管道，AC-E03 语义）；
+2. `SanitizeContext` 必填 `toolName`（声明来源与日志）与 `sourceDesc`；`htmlContent` 按运行时判定（如 HttpTool 按 Content-Type）；
+3. 无需清洗的本地可信工具（Calculator/Time/AskUser）不调用；
+4. 清洗总开关 `enabled=false` 时 sanitize 直通，注入点无需感知开关状态；
+5. 新增清洗能力一律以新 `SanitizeStage` 实现（order 落位），**禁止**在注入点或编排器内追加分支逻辑。
 
 ### 3.3 工具执行编排
 
@@ -235,7 +270,7 @@ sanitize(String rawOutput, SanitizeContext ctx) -> String
 
 *   **落盘位置**：`{temp-dir}` 默认 `./data/tool-output/`（**必须位于 FileReadTool 白名单目录 `agent.file-allowed-dir=./data` 内**，配置注释中声明该约束，否则模型无法回读）。
 *   **文件命名**：`{toolName}_{时间戳}_{短随机串}.txt`（toolName 中的非法路径字符替换为下划线）。
-*   **写入内容**：管道②清洗后的完整内容（前缀+溢出），文件头部写 2 行元信息（来源工具、原始总长、本次截断位置）。
+*   **写入内容**：管道②'（含 ⓪ 隐形字符剥离与 ②' 秘密脱敏，CR-001）清洗后的完整内容（前缀+溢出），文件头部写 2 行元信息（来源工具、原始总长、本次截断位置）。
 *   **分页读取**：模型调 `readFile(path, offset, maxChars)`；FileReadTool 识别临时目录路径 -> 豁免二次清洗（AC-T02），按窗口返回 + 尾部剩余量提示；**硬截断不再生成新临时文件**（防递归）。
 *   **过期清理（机会式，无调度器）**：每次写入时扫描 temp-dir，删除修改时间早于 `temp-retention-hours`（默认 24h）的文件；清理失败仅记 WARN 不影响主流程。
 *   **并发安全**：文件名含随机串避免并发冲突；写入用原子写（临时文件 + move）。
@@ -299,12 +334,15 @@ graph TB
 
 ### 6.4 输出过滤层
 
-*   不涉及（LLM 输出侧护栏不在本次范围，见需求 8.2）。
+*   不涉及（LLM 输出侧护栏不在本次范围，见需求 8.2；已列入 CR 路线图 CR-003）。注：CR-001 的秘密脱敏作用于**工具产出侧**（进入上下文前），属输入过滤范畴，非 LLM 输出侧护栏。
+*   **CR-004 预留**：CR-003 落地时复用 `SanitizeStage` SPI 构建**输出侧独立管道实例**（不同 Stage 集合、独立编排器实例，作用于 LLM 输出返回路径），与工具产出管道共享接口契约与降级语义，不共享 Stage 实例。
 
 ### 6.5 工具执行层护栏
 
 *   权限体系不变（AC-S08/AC-H01 的兜底由现有 ASK/DENY 承担）。
 *   新增安全日志（AC-S07）：`log.warn` 统一前缀 + 结构化字段（工具名 / 命中规则 ID / 处置动作 / 原始长度 / 截断长度 / 临时文件路径），不打断对话、不外发前端。
+*   CR-001 新增三道清洗规则：隐形字符剥离（AC-S11）、秘密模式脱敏（AC-S09）、分隔符随机化（AC-S10），复用统一 WARN 日志出口（新增 action：`INVISIBLE_STRIPPED` / `SECRET_REDACTED`）；秘密脱敏日志仅记规则 ID 与命中次数，**不落原始秘密值**。
+*   **CR-004**：变换段降级日志归一为编排器统一出口（`[tool-sanitize]` WARN + 段名 + 跳过语义）；新增**启动期规则校验 WARN**——`suspiciousPatterns`/`highRiskPatterns`/`secretPatterns` 中非法正则或无值捕获组规则在启动时记录并跳过（替代运行期静默忽略，行为可观测增强，处置动作 `RULE_SKIPPED`）。
 
 ### 6.6 降级策略
 
@@ -323,7 +361,7 @@ graph TB
     |------|------|------|
     | toolName | 来源工具 | httpGet |
     | ruleId | 命中规则 | SUSPICIOUS_IGNORE_PREVIOUS / HIGH_RISK_FAKE_SYSTEM |
-    | action | 处置动作 | MARKED / REMOVED / HTML_STRIPPED / TRUNCATED / TEMP_FILE |
+    | action | 处置动作 | MARKED / REMOVED / HTML_STRIPPED / TRUNCATED / TEMP_FILE / INVISIBLE_STRIPPED / SECRET_REDACTED（后两者为 CR-001 新增） |
     | originalLength / keptLength | 长度统计 | 15823 / 4000 |
     | tempFile | 临时文件路径 | tool-output/httpGet_xxx.txt |
 
@@ -340,8 +378,12 @@ graph TB
     | FileReadToolTest（扩展） | AC-T02/T03/M01 | offset/maxChars 分页；大文件截断；临时目录豁免不二次清洗 |
     | McpToolExecutorTest（扩展） | AC-S05/S06/N01 | MCP 结果清洗包裹 |
     | KnowledgeRetrieverToolTest（扩展） | AC-N01/S06/E03 | RAG 结果清洗包裹；错误提示一致包裹 |
-*   **注入 payload 用例库**：每条安全 AC >= 1 正例（应拦截/标记）+ 1 反例（应原样保留）。
-*   **回归验证**：SSRF 防护、路径白名单、权限裁决既有测试全部通过（AC-S08）。
+    | InvisibleCharCleanerTest（CR-001 新增，CR-004 适配 ctx 签名） | AC-S11 | 零宽/双向控制符剥离；可见正文零丢失；无隐形字符内容零改动 |
+    | SecretRedactorTest（CR-001 新增，CR-004 适配 ctx 签名与预编译） | AC-S09/E04 | 秘密赋值形态多形态脱敏；密码学讨论/示例代码反例不误杀；非法规则启动 WARN 跳过 |
+    | ToolOutputSanitizerTest（CR-001 扩展） | AC-S10/E05 | 分隔符随机性与头尾配对；两次调用 token 不同；伪造闭合标记不逃逸；新组件异常隔离降级 |
+    | SanitizeStageChainTest（CR-004 新增） | CR-004 验收点 | SPI 链可插拔：注册测试桩 Stage 验证 order 排序与链式执行；逐段异常隔离（一段抛异常其余段继续）；门控 appliesTo 生效（开关关闭该段跳过）；终段③④不受链影响 |
+*   **注入 payload 用例库**：每条安全 AC >= 1 正例（应拦截/标记）+ 1 反例（应原样保留）。CR-001 扩充（InjectionPayloads）：秘密正例 >= 4（password=/api_key:/token=/Bearer 多形态）+ 秘密反例 >= 3（密码学讨论/示例代码/普通词汇）+ 隐形字符载体 >= 2 + 分隔符逃逸 >= 2（内容中伪造固定闭合标记）。
+*   **回归验证**：SSRF 防护、路径白名单、权限裁决既有测试全部通过（AC-S08）。CR-001 为安全边界变更，追加全量回归：对抗用例库全量断言 + AC-S01~S11 + AC-H01 重验 + 评估数据集（data/eval）Pass^3 重跑（指标不低于基线减噪声带宽：passRate 0.7 / toolSelectionRate 1.0 / maskInterceptRate 1.0）。
 *   **手动评估**：构造含注入网页/文档/MCP 返回，端到端验证 Agent 不执行工具结果中的指令。
 *   **评估指标**：拦截率（安全 AC 正例 100%）、误杀率（反例 0% 丢失）、回归通过率 100%。
 
@@ -387,16 +429,30 @@ graph TB
 | AC-S03 | 可执行内容剥离 | 安全护栏 | HtmlContentCleaner（Hutool HtmlUtil.filter + removeHtmlTag） |
 | AC-S04 | 内容级危险协议限制 | 安全护栏 | HtmlContentCleaner 协议引用清除（保留 http/https/相对路径） |
 | AC-S05 | 可疑指令分级处置 | 安全护栏 | SuspiciousPatternDetector 两组规则（标记/移除占位） |
-| AC-S06 | 统一包裹边界声明 | 安全护栏 | 管道④ + SanitizeContext.toolName 来源标识 |
+| AC-S06 | 统一包裹边界声明 | 安全护栏 | 管道④ + SanitizeContext.toolName 来源标识 + 随机化分隔符（CR-001，见 AC-S10） |
 | AC-S07 | 清洗动作安全日志 | 安全护栏 | 统一 WARN 前缀 + 结构化字段（§7.1） |
 | AC-S08 | 现有安全机制不变 | 安全护栏 | 权限/SSRF/路径白名单零改动 + 回归测试 |
+| AC-S09 | 秘密模式脱敏 | 安全护栏 | 管道②' SecretRedactor（secretPatterns 规则组 + [REDACTED] 替换 + WARN，CR-001） |
+| AC-S10 | 随机化分隔符 | 安全护栏 | 管道④ wrap() 每次 sanitize 调用 SecureRandom 生成 16 位 token 拼入头尾；生成失败降级固定分隔符（CR-001） |
+| AC-S11 | 隐形字符清洗 | 安全护栏 | 管道⓪ InvisibleCharCleaner（零宽 \u200b-\u200f / 双向 \u202a-\u202e / \ufeff 剥离，CR-001） |
 | AC-E01 | 临时文件写失败降级 | 边界降级 | 管道③ try/catch -> 纯截断 + WARN |
 | AC-E02 | 清洗层异常不阻断 | 边界降级 | sanitize() 全局 try/catch -> 返回原文 + ERROR |
 | AC-E03 | 工具失败提示保持 | 边界降级 | 注入点位于成功返回路径；错误路径（BusinessException）不经过管道 |
 | AC-E04 | 误命中容忍 | 边界降级 | 分级处置：一般可疑仅标记；反例测试集 |
+| AC-E05 | 新组件异常隔离 | 边界降级 | ⓪/②'/随机分隔符生成各段独立 try/catch 跳过继续；token 生成失败降级固定分隔符（CR-001） |
 | AC-M01 | 声明一次性写入 | 记忆上下文 | 清洗时点性（§1.4 回放语义） |
 | AC-M02 | 历史结果不重算 | 记忆上下文 | 清洗仅在工具执行时点发生，历史消息只读 |
 | AC-H01 | 高危注入权限兜底 | 人机协作 | 现有 ASK/DENY 体系不变（清洗层不中断对话） |
+
+**CR-004 新增验收点**（R-1/R-2/R-4 已落入需求文档正式 AC 编号；R-3/R-5 为回归验证标准，不单设 AC）：
+
+| 验收点 | 描述 | 类型 | 对应技术实现 |
+| :--- | :--- | :--- | :--- |
+| AC-T05 | 管道可插拔：新增 SanitizeStage 实现 bean 无需修改编排器即按 order 接入执行 | 工具调用 | SanitizeStage SPI + Spring 收集 List\<SanitizeStage\> + order 排序（SanitizeStageChainTest 守护） |
+| AC-E06 | 阶段异常隔离归一：任一 Stage.process 抛异常 -> 记 WARN 跳过该段、链继续、其余段正常执行 | 边界降级 | 编排器逐段 try/catch（语义等价既有 AC-E05，实现归一） |
+| AC-S12 | 规则可观测性：非法规则启动期 WARN（RULE_SKIPPED）替代运行期静默跳过 | 安全护栏 | 规则预编译 + 启动校验（SecretRedactor/SuspiciousPatternDetector） |
+| R-3（回归标准） | 行为等价回归：现有全部单元测试保持通过 + EDD 对抗数据集 Pass^3 重跑（指标不低于基线减噪声带宽） | 回归验证 | 652 项既有测试零修改通过（组件签名适配除外）+ data/eval 回归 |
+| R-5（回归标准） | 门控等价：三个子开关与 htmlContent 门控行为与 CR-003 版本完全一致 | 回归验证 | appliesTo() 归一（开关判断移入各 Stage，语义不变），既有开关测试守护 |
 
 ## 10. 技术决策说明 (Technical Decisions)
 
@@ -422,13 +478,33 @@ graph TB
     *   理由：需求范围为"简单过期清理"；不引入 @EnableScheduling 新基础设施；写入时顺带扫描清理，失败不影响主流程。
 *   **决策7：HttpTool 移除现有 truncateResponse**
     *   理由：管道③统一承担限长职责，保留旧截断会造成双重截断逻辑漂移；旧"截断即丢弃"行为被临时文件机制取代（本次优化核心点）。
+*   **决策8（CR-001）：秘密脱敏位于检测后、限长前（管道②'）**
+    *   理由：检测需面对原文（脱敏替换不破坏指令特征匹配的确定性）；高危已移除片段无需再脱敏；限长在脱敏后执行保证临时文件落盘内容为已脱敏文本（秘密不落盘扩散）。
+*   **决策9（CR-001）：隐形字符清洗置于管道最前（⓪）**
+    *   理由：零宽/双向控制符是注入混淆载体，剥离后 ②/②' 的正则匹配才对"可见文本"有效；置于 HTML 剥离前亦可清理 HTML 内嵌的隐形字符。
+*   **决策10（CR-001）：分隔符随机化采用 SecureRandom 16 位 hex、每次 sanitize 调用生成**
+    *   理由：16 位 hex = 64 bit 熵，工具内容无法预先穷举伪造闭合标记（调研报告扩展方案 1 / MSRC Delimiting 实践）；每次调用生成保证跨结果不可复用；生成异常降级固定分隔符保证可用性（AC-E05）。
+*   **决策11（CR-004）：清洗注入点保留在工具方法体内（4 处），不上移到统一出口包装**
+    *   选项：A) 注入点保留 + 管道链化（本项目采用）/ B) 清洗上移到 ToolRegistry 出口统一包装（与权限域 v3.3"全域统一管控、出口统一包装"同构）
+    *   选择：A
+    *   理由：① 工具执行存在双出口--AiServices 路径经 `wrapAll()` ByteBuddy 包装，而 ToolExecutor ReAct 路径走 `listTools()` 原始对象反射调用（权限兜底自行实现）；上移出口必须同时改造 ToolExecutor（59 处调用方）并处理权限快照与实时查询的语义差异，爆炸半径大；② 清洗所需的运行时上下文（HttpTool 的 Content-Type 判定 htmlContent、FileReadTool 的临时目录豁免路径判断）是工具私有信息，出口拦截层需引入 ThreadLocal 隐式通道或复制工具路径语义，产生新的耦合；③ 注入点即"工具自描述运行时上下文"的契约化（见 §3.2 注入点契约），配合管道链化已满足 CR-002/003 即插即用的核心诉求。已与用户确认（方案 A）。
+*   **决策12（CR-004）：SanitizeStage SPI 只覆盖变换段（⓪①②②'），终段③④固定在编排器内**
+    *   选项：六段全部 Stage 化 / 变换段 Stage 化 + 终段固定
+    *   选择：后者
+    *   理由：③④ 定义产物契约（限长落盘行为、边界声明形态、随机分隔符），是清洗层的对外承诺而非可替换的清洗逻辑；插拔价值在于"新增检测/清洗能力"（CR-002 检测引擎、CR-003 输出侧护栏），产物形态固定使 ④ 段的 truncationHint 传递无需跨 Stage 协商；避免为统一而统一引入 Stage 间的产物形态协商复杂度。
+*   **决策13（CR-004）：规则启动期预编译 + 静态 SecureRandom**
+    *   理由：正则规则在启动时编译一次并校验（非法规则 WARN + RULE_SKIPPED 跳过），替代每次调用 `Pattern.compile()` 与静默忽略，兼得性能与可观测性（审查 CR-001 报告 Minor-3/4/5 收敛）；配置热更新不在范围（需求 8.2 已排除），启动期编译无代价；SecureRandom 实例线程安全，静态单例替代每次 new。
 
 ## 11. 风险与注意事项 (Risks & Notes)
 
 *   **技术风险**：
     *   正则规则误杀（如知识库文档本身讨论提示注入）-> 分级处置（一般仅标记）+ 反例测试集守护（AC-E04）；
     *   Hutool XSS 过滤对极端畸形 HTML 的边界行为 -> HtmlContentCleanerTest 覆盖畸形样本 + 剥离异常降级跳过；
-    *   临时文件目录配置脱离 FileReadTool 白名单 -> 配置注释声明约束 + FileReadToolTest 校验越界提示。
+    *   临时文件目录配置脱离 FileReadTool 白名单 -> 配置注释声明约束 + FileReadToolTest 校验越界提示；
+    *   秘密脱敏误杀（正常文档含 password= 示例代码，CR-001）-> 赋值形态限定 + 反例集守护；误命中后果为值替换 [REDACTED]（正文键名保留，与 AC-E04 同级容忍）；
+    *   随机分隔符迁移破坏既有测试（CR-001）-> 6 个测试文件的固定分隔符字面量断言改为模式断言（regex 匹配随机 token 段），在 Task-19 内一次性完成；
+    *   随机 token 与正常文本碰撞 -> 16 位 hex 熵足够 + 头尾配对校验（碰撞概率可忽略）；
+    *   链化重构行为漂移（CR-004）-> 重构属"行为不变"改造：652 项既有测试全量守护（组件签名适配除外）+ SanitizeStageChainTest 固化 SPI 语义（排序/隔离/门控）+ EDD 对抗数据集 Pass^3 重跑；逐段 try/catch 归一与原"每段各自包"的差异用等价性测试覆盖（一段异常不影响其余段）。
 *   **兼容性**：
     *   readFile 签名扩展 -> ToolPermissionGuard 按反射生成包装自动适配（回归验证）；
     *   RAG 前端"来源:"行解析 -> 包裹声明头尾不改写行内格式（回归验证项）；
@@ -437,13 +513,40 @@ graph TB
 *   **安全风险**：清洗为概率性防御，高危残留依赖现有 ASK/DENY 兜底（AC-H01，纵深防御不变）。
 *   **回滚方案**：
     *   总开关：`agent.tool.sanitize.enabled=false` -> 全部工具直通原始行为（秒级回退）；
+    *   CR-001 子开关独立回退：`redact-secrets=false` / `invisible-chars=false` / `random-delimiter=false` -> 分别关闭单条增强（秒级、互不影响）；
     *   分项回退：html-clean=false / 临时文件降级纯截断（temp-dir 不可写自动触发）；
     *   readFile 签名回退：offset/maxChars 为可选参数，删除清洗调用后签名可保持兼容；
-    *   无数据迁移：临时文件为可再生缓存，回滚直接删除 temp-dir 即可。
+    *   无数据迁移：临时文件为可再生缓存，回滚直接删除 temp-dir 即可；
+    *   CR-004：链化重构不新增开关（行为等价改造）；回退 = 版本回滚（SPI 为纯内部重构，注入点契约与配置语义不变）。
 
 ## 12. 数据隐私与合规 (Data Privacy & Compliance)
 
 *   **数据存储**：临时文件为工具结果明文缓存，位于应用本地 `./data/`（与现有 RAG 临时目录同级治理），24h 过期自动清理；不涉及加密新增需求（演示项目本地磁盘）。
 *   **数据传输**：不改变现有 TLS 通道。
-*   **PII**：秘密类模式脱敏列为扩展方案（调研报告扩展 8），本次不实现。
+*   **PII**：工具产出中的秘密类模式脱敏已由 CR-001 实现（AC-S09，调研报告扩展 8-工具侧：进入上下文前脱敏，秘密值不进入模型上下文与临时文件）；LLM 输出侧脱敏/外发治理仍不在范围（CR-003 规划）。
 *   **日志**：清洗安全日志不含工具结果正文（仅元信息：工具名/规则/长度/文件路径），避免敏感内容二次落盘。
+
+---
+## 变更日志 (Change Log)
+### CR-004: 工具模块架构改造--清洗管道拦截器链化 (2026-09-01)
+**影响范围**: 清洗管道架构（硬编码编排 -> SanitizeStage SPI 链）/ 清洗组件签名与规则预编译 / 测试结构（SanitizeStageChainTest）；**对外行为零变化**（管道语义、降级行为、配置、包裹声明产物形态全部不变）
+**变更内容摘要**:
+- [新增] `SanitizeStage` SPI（order/name/appliesTo/process(text, ctx)）：变换段 ⓪①②②' 统一接口化（order 100/200/300/400，CR-002 检测引擎预留 500+），编排器 Spring 收集排序遍历；CR-003 输出侧护栏预留独立管道实例复用（§6.4）
+- [新增] 降级归一：编排器逐段 try/catch（异常 WARN 跳过继续）替代每段分散包裹，AC-E05 语义不变；门控归一：invisible-chars/redact-secrets/htmlContent 判断移入各 Stage 的 appliesTo()
+- [新增] 注入点契约文档化（§3.2 + 技术决策 11）：4 处注入点保留（工具自描述运行时上下文），新增清洗能力一律以新 Stage 接入
+- [修改] 4 个清洗组件实现 SanitizeStage（签名 (text, toolName) -> (text, SanitizeContext)）；SuspiciousPatternDetector 富结果 Detection 保留为内部 detect 入口
+- [修改] 规则启动期预编译 + 非法规则 WARN（RULE_SKIPPED）替代运行期静默跳过（审查 Minor-4/5 收敛）；SecureRandom 静态化（审查 Minor-3 收敛）
+- [修改] §1.6 模块表（sanitize-stage）/§3.1（链化架构图与 SPI 定义）/§6.4/§6.5/§7.2（SanitizeStageChainTest）/§9（CR-004 验收点 R-1~R-5）/§10（决策 11/12/13）/§11（链化行为漂移风险与回滚）
+- [决策] 路线图顺序调整为 CR-004 先行（架构先行，CR-002/003 在可插拔管道上以新 Stage 接入，无需再改编排器），已与用户确认
+
+### CR-001: 清洗层安全增强包--秘密模式脱敏 + 随机化分隔符 + 隐形字符清洗 (2026-08-31)
+**影响范围**: 清洗管道架构（四段 -> 六段）/ Prompt 制品（包裹声明模板、系统提示词规则行）/ 配置（3 子开关 + secretPatterns 规则组）/ 评估框架（对抗用例库扩充 + 全量回归）
+**变更内容摘要**:
+- [新增] 管道⓪ InvisibleCharCleaner（隐形字符剥离，AC-S11）、管道②' SecretRedactor（秘密模式脱敏，AC-S09）；既有 ①②③④ 编号与交叉引用保持不变
+- [新增] 管道④随机化分隔符（SecureRandom 16 位 hex token，AC-S10）；新组件异常隔离降级（AC-E05）
+- [新增] ToolSanitizeProperties 三个子开关（redact-secrets / invisible-chars / random-delimiter，默认开，可独立回滚）+ secretPatterns 默认规则组
+- [新增] 技术决策 8/9/10（②' 段序 / ⓪ 段序 / 分隔符熵与降级）；§7.2 测试表与日志 action 扩充
+- [修改] §2.1 定界符策略：固定分隔符 -> 随机化分隔符（调研报告扩展方案 1 落地，制品文案由 prompt-designer EDD 定稿）
+- [修改] §9 AC 映射表：AC-S06 增加"随机化分隔符"实现点；新增 AC-S09/S10/S11/E05 四行
+- [修改] §6.4/§12：LLM 输出侧护栏标注 CR-003 路线图；秘密脱敏由"扩展方案"改为"已实现（工具产出侧）"
+- [修改] §11 风险与回滚：新增秘密误杀/断言迁移/token 碰撞三项风险；回滚方案增加三个 CR-001 子开关独立回退

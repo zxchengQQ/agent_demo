@@ -315,7 +315,10 @@ public class AgentController {
                 unifiedStream = planAgent.resumeUnifiedStream(effectiveSessionId, request.getMessage());
             }
             registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, request.getMessage(), start);
-            runTracedAsync(unifiedStream, effectiveSessionId);
+            // 业务含义（BUG 修复：HITL 恢复轮续接原任务 trace）：暂停轮已在 onAskUser/onToolConfirm
+            // 回调中 markHITLPause 保存根 span 上下文，恢复轮以远程父上下文续接同一 trace，
+            // 单任务多轮人机交互在 LangSmith 呈现一条完整链路（不再碎片化为多条独立短链路）
+            runTracedAsync(unifiedStream, effectiveSessionId, true);
             return emitter;
         }
 
@@ -360,7 +363,7 @@ public class AgentController {
         UnifiedChatStream unifiedStream = planAgent.chatUnifiedStream(
                 effectiveSessionId, effectiveMessage, modelId, toolIds, planCommand.forced());
         registerUnifiedCallbacks(unifiedStream, emitter, effectiveSessionId, effectiveMessage, start);
-        runTracedAsync(unifiedStream, effectiveSessionId);
+        runTracedAsync(unifiedStream, effectiveSessionId, false);
 
         return emitter;
     }
@@ -373,15 +376,24 @@ public class AgentController {
      * 已写入 MDC）捕获 traceId/sessionId，经 {@link TraceContextHolder} 显式注入异步线程；
      * 同时包裹请求级根 span 生命周期（startRequest/endRequest，AC-T01 共享 trace）。
      * </p>
+     *
+     * @param hitlResume true=HITL 恢复轮（hasPending 分支）：以暂停轮根 span 为远程父上下文
+     *                   续接原任务 trace（BUG 修复：单任务多轮人机交互共享同一 trace）；
+     *                   false=首次请求：独立新 trace
      */
-    private void runTracedAsync(UnifiedChatStream unifiedStream, String sessionId) {
+    private void runTracedAsync(UnifiedChatStream unifiedStream, String sessionId, boolean hitlResume) {
         // 业务含义：Controller 线程捕获 MDC traceId（同步路径回退逻辑见 TraceContextHolder）
         String traceId = TraceContextHolder.currentTraceId();
         TraceContextHolder.TraceContext ctx = new TraceContextHolder.TraceContext(traceId, sessionId);
         CompletableFuture.runAsync(() -> {
             try {
                 TraceContextHolder.set(ctx);
-                traceCollector.startRequest();
+                if (hitlResume) {
+                    // BUG 修复：HITL 恢复续接原任务 trace（无暂停记录时回退独立新 trace）
+                    traceCollector.resumeRequest(sessionId);
+                } else {
+                    traceCollector.startRequest();
+                }
                 unifiedStream.start();
             } finally {
                 // 业务含义：根 span 与 ThreadLocal 必须清理，防线程池复用泄漏
@@ -452,6 +464,9 @@ public class AgentController {
                 .onSummaryReasoning(reasoning -> sendEvent(emitter, "reasoning", reasoning))
                 // HITL 暂停：ask_user + done（流结束）
                 .onAskUser((type, question, options, retryCount) -> {
+                    // BUG 修复：标记 HITL 暂停，保存当前根 span 上下文供恢复轮续接同一 trace
+                    // （回调触发时仍在异步线程内、根 span 未结束，可安全捕获）
+                    traceCollector.markHITLPause(sessionId);
                     sendEvent(emitter, "ask_user", Map.of("type", type, "question", question,
                             "options", options != null ? options : List.of(), "retryCount", retryCount));
                     sendEvent(emitter, "done", System.currentTimeMillis() - start);
@@ -460,10 +475,14 @@ public class AgentController {
                 // 工具权限确认：tool_confirm（AC-H01）
                 // 业务含义：ask 级工具被拦截时推送确认卡片数据。与 ask_user 不同——事件后不 complete，
                 // emitter 保持打开（pending 挂起），前端渲染卡片等用户操作，随后经 resumeUnifiedStream 回传 toolApproved。
-                .onToolConfirm((toolCallId, toolName, toolDescription, arguments) -> sendEvent(emitter, "tool_confirm",
-                        Map.of("toolName", toolName, "toolDescription",
-                                toolDescription != null ? toolDescription : "", "arguments",
-                                arguments != null ? arguments : "")))
+                .onToolConfirm((toolCallId, toolName, toolDescription, arguments) -> {
+                    // BUG 修复：tool_confirm 暂停同样标记 trace 续接点（恢复轮续接同一 trace）
+                    traceCollector.markHITLPause(sessionId);
+                    sendEvent(emitter, "tool_confirm",
+                            Map.of("toolName", toolName, "toolDescription",
+                                    toolDescription != null ? toolDescription : "", "arguments",
+                                    arguments != null ? arguments : ""));
+                })
                 // 技能激活：skill_activated（agent-skill，AC-S04）
                 // 业务含义：loadSkill 拦截激活成功时推送激活事件（技能 id/名称/来源/绑定工具），
                 // 前端据此渲染激活徽标；手动指定激活由 chatStream 前置下发（source=manual）。

@@ -31,6 +31,12 @@ public class SequentialExecutionStrategy extends AbstractExecutionStrategy {
         super(agentExecutor);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public SequentialExecutionStrategy(AgentExecutor agentExecutor,
+                                       com.agentdemo.observability.TraceCollector traceCollector) {
+        super(agentExecutor, traceCollector);
+    }
+
     @Override
     public OrchestrationMode supportedMode() {
         return OrchestrationMode.SEQUENTIAL;

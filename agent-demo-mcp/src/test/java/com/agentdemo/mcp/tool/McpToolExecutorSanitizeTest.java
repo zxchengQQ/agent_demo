@@ -6,6 +6,8 @@ import com.agentdemo.mcp.client.McpTransportWrapper;
 import com.agentdemo.mcp.entity.McpServer;
 import com.agentdemo.mcp.entity.McpServerStatus;
 import com.agentdemo.tools.sanitize.HtmlContentCleaner;
+import com.agentdemo.tools.sanitize.SecretRedactor;
+import com.agentdemo.tools.sanitize.InvisibleCharCleaner;
 import com.agentdemo.tools.sanitize.SuspiciousPatternDetector;
 import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.agentdemo.tools.sanitize.ToolOutputTempStore;
@@ -56,7 +58,8 @@ class McpToolExecutorSanitizeTest {
         p.setMaxChars(maxChars);
         p.setTempDir(tempDir.resolve("data").resolve("tool-output").toString());
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(p,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(p),
+                new InvisibleCharCleaner(p), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(p), new SecretRedactor(p),
                 new ToolOutputTempStore(p, tempDir.resolve("data").toString()));
         return new McpToolExecutor(clientRegistry, contentParser, sanitizer);
     }
@@ -82,7 +85,7 @@ class McpToolExecutorSanitizeTest {
         String result = realExecutor(4000).execute("weather", "getForecast", "{}");
 
         assertTrue(result.contains("晴天 25度"), "正文应保留（AC-N01）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "应包裹声明（AC-S06）");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "应包裹声明（AC-S06）");
         assertTrue(result.contains("mcp:weather/getForecast"), "声明应含 mcp 来源标识");
     }
 
@@ -110,7 +113,7 @@ class McpToolExecutorSanitizeTest {
         String result = realExecutor(4000).execute("mermaid-mcp", "render", "{}");
 
         assertTrue(result.contains("工具调用已成功"), "降级提示应保留（AC-E03）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "降级提示应一致包裹");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "降级提示应一致包裹");
     }
 
     @Test

@@ -6,6 +6,8 @@ import com.agentdemo.mcp.client.McpClientEntry;
 import com.agentdemo.mcp.client.McpClientRegistry;
 import com.agentdemo.mcp.client.McpTransportWrapper;
 import com.agentdemo.mcp.entity.McpServerStatus;
+import com.agentdemo.observability.NoopTraceCollector;
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.tools.sanitize.SanitizeContext;
 import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.fasterxml.jackson.core.JsonProcessingException;
@@ -17,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * MCP 工具执行器
@@ -33,6 +36,11 @@ import java.io.IOException;
  * 4. 统一解析（CR-002）：所有内容类型从 McpTransportWrapper 缓存的原始 JSON-RPC 响应
  *    通过 McpContentParser 统一解析，不依赖 ToolExecutionResult 的内容提取路径
  * </p>
+ * <p>
+ * CR-001：MCP 协议层埋点（AC-N08）——execute 统一收口上报 McpCallEvent（原始 serverName/
+ * toolName/argsJson/协议耗时/状态/断线标记），与 ToolExecutor 工具 span 双层平级（决策 9）；
+ * 埋点异常静默降级（AC-E05）。
+ * </p>
  */
 @Slf4j
 @Component
@@ -41,6 +49,7 @@ public class McpToolExecutor {
     private final McpClientRegistry clientRegistry;
     private final McpContentParser contentParser;
     private final ToolOutputSanitizer sanitizer;
+    private final TraceCollector traceCollector;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -52,19 +61,28 @@ public class McpToolExecutor {
             "3. 建议重新描述需求或使用其他工具获取文本信息。";
 
     public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser) {
-        this(clientRegistry, contentParser, ToolOutputSanitizer.disabled());
+        this(clientRegistry, contentParser, ToolOutputSanitizer.disabled(), new NoopTraceCollector());
     }
 
     /**
-     * 真实构造（Spring 注入）：清洗链路生效。@Autowired 明确指定 Spring 在多构造器下
-     * 使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
+     * 兼容构造（测试场景：指定清洗器，埋点 Noop）
+     */
+    public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser,
+                           ToolOutputSanitizer sanitizer) {
+        this(clientRegistry, contentParser, sanitizer, new NoopTraceCollector());
+    }
+
+    /**
+     * 真实构造（Spring 注入）：清洗链路生效 + 追踪埋点挂载。@Autowired 明确指定 Spring
+     * 在多构造器下使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
      */
     @Autowired
     public McpToolExecutor(McpClientRegistry clientRegistry, McpContentParser contentParser,
-                           ToolOutputSanitizer sanitizer) {
+                           ToolOutputSanitizer sanitizer, TraceCollector traceCollector) {
         this.clientRegistry = clientRegistry;
         this.contentParser = contentParser;
         this.sanitizer = sanitizer;
+        this.traceCollector = traceCollector != null ? traceCollector : new NoopTraceCollector();
     }
 
     /**
@@ -80,6 +98,23 @@ public class McpToolExecutor {
      * @throws BusinessException Server 不存在/状态异常/参数格式错误/调用失败时抛出
      */
     public String execute(String serverName, String toolName, String argsJson) {
+        long startNanos = System.nanoTime();
+        boolean[] disconnected = {false};
+        try {
+            String result = doExecute(serverName, toolName, argsJson, disconnected);
+            recordMcp(serverName, toolName, argsJson, startNanos, true, disconnected[0], null);
+            return result;
+        } catch (BusinessException e) {
+            // 业务含义：失败路径也上报（AC-N08 失败不丢记录），随后原样上抛给调用方（AC-E05）
+            recordMcp(serverName, toolName, argsJson, startNanos, false, disconnected[0], e.getMessage());
+            throw e;
+        }
+    }
+
+    /**
+     * MCP 工具调用核心逻辑（原 execute 主体，CR-001 抽取以统一埋点收口）
+     */
+    private String doExecute(String serverName, String toolName, String argsJson, boolean[] disconnected) {
         // 1. 查找 entry
         McpClientEntry entry = clientRegistry.get(serverName);
         if (entry == null) {
@@ -112,6 +147,7 @@ public class McpToolExecutor {
             // 检测 IOException 包装：McpClient 内部 IO 异常会以 RuntimeException 形式抛出
             if (isIOExceptionCause(e)) {
                 markDisconnected(entry, serverName, e.getMessage());
+                disconnected[0] = true;
                 throw new BusinessException(ErrorCode.MCP_TOOL_CALL_FAILED,
                         "MCP Server " + serverName + " 已断开: " + e.getMessage(), e);
             }
@@ -125,6 +161,25 @@ public class McpToolExecutor {
 
         // 6. 统一从 Wrapper 缓存解析原始响应（CR-002）
         return parseFromWrapper(entry, serverName, toolName);
+    }
+
+    /**
+     * MCP 协议层埋点（CR-001，AC-N08）
+     * <p>
+     * 业务含义：统一上报 McpCallEvent（原始 serverName/toolName/argsJson 与协议耗时）；
+     * 埋点自身异常静默降级（AC-E05），不影响调用主流程。
+     * </p>
+     */
+    private void recordMcp(String serverName, String toolName, String argsJson, long startNanos,
+                           boolean success, boolean disconnected, String errorMessage) {
+        try {
+            traceCollector.recordMcp(new TraceCollector.McpCallEvent(
+                    serverName, toolName, argsJson,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos),
+                    success, disconnected, errorMessage));
+        } catch (Exception e) {
+            log.warn("LangSmith MCP 采集失败（降级跳过）: {}", e.getMessage());
+        }
     }
 
     /**

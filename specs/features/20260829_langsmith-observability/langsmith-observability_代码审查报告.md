@@ -146,3 +146,113 @@
 **附注**：agent-demo-app 3 个工作流测试失败（WorkflowIntegrationTest ×1、WorkflowP3IntegrationTest ×2）经 git stash 隔离验证为**工作区基线既有问题**（先前 agent-context-engineering/HITLReActStream 未提交改动所致），非本次审查范围，不计入本报告问题；建议单独排查。
 
 *审查链路：需求澄清 → 技术设计（1.6 文件清单）→ 任务规划（涉及文件同源）→ 实现（TDD+EDD）→ **代码审查（本报告）** → 后续流程*
+
+---
+
+# CR-001 代码审查：观察空间扩展（五域事件采集）
+
+| 字段 | 内容 |
+|------|------|
+| 审查人 | ai-agent-code-review（独立审查，非实现者自评） |
+| 日期 | 2026-08-31 |
+| 审查范围基准 | 完成报告文件变更清单 + `langsmith-observability_变更任务_CR001.md`（Task-15~25 涉及文件）；工作区其余历史改动不在本次范围 |
+| 关联文档 | `langsmith-observability.md`（v1.1，新增 8 AC）、`langsmith-observability_技术方案.md`（CR-001 章节）、`langsmith-observability_变更任务_CR001.md`、`docs/dev-records/20260831_langsmith-observability_CR001_report.md` |
+
+## 0. 审查结论
+
+**[修复后通过]**
+
+CR-001 交付物整体可靠：TraceCollector 六类事件接口 + OtlpTraceCollector 六类 span 构建（脱敏单一出口无绕行）、五域埋点挂钩（RAG/记忆压缩/工作流/MCP/Skill）静默降级全覆盖、工作流 executionId 聚合与并行线程上下文传播正确。审查发现 **0 Critical、1 Important、3 Minor**；Important 已按用户决策修复并回归验证（§5），2 项 Minor 已 AUTO-FIX（§4）。
+
+## 1. 做得好的部分 (Strengths)
+
+- **脱敏单一出口完整**（`OtlpTraceCollector.java`）：六类新 span 全部文本属性经 `masker.maskSafe`（`buildRagAttributes:300-315` / `buildMcpAttributes:372-383` / `buildMemoryCompressionAttributes:320-332` / `buildWorkflowAttributes:337-350` / `buildWorkflowStepAttributes:355-367` / `buildSkillActivationAttributes:388-405`），数值/布尔属性不入 masker，无绕行路径（AC-S06）。
+- **静默降级全覆盖（AC-E05）**：五域埋点 `recordRag`（KnowledgeRetrieverTool）/ `recordMcp`（McpToolExecutor）/ `recordStepSpan`+`recordFailedStepSpan`（AbstractExecutionStrategy）/ `recordWorkflowTerminal`（WorkflowExecutionService）/ `fireListener`（CompressingChatMemory）/ `recordActivation`（SkillSessionManager）均内部 try-catch + WARN，异常不传导主流程。
+- **工作流终态 9 处记录全覆盖**（`WorkflowExecutionService.java:136/241/255/269/306/363/413/497/556`）：execute/resume/hitlReply 成功 + handleTerminated/Timeout/Failure/Paused/HITLPaused + checkpoint 拒绝，无终态遗漏（AC-N07）。
+- **并行线程上下文传播正确**（`ParallelExecutionStrategy.java`）：捕获主线程 TraceContext 包装进 workflow-parallel-N 任务 + finally 清理，工作线程步骤 span 聚合到 executionId（AC-M03）。
+- **记忆压缩成功/降级双路径触发监听**（`CompressingChatMemory.java:275/281`）：摘要成功与 FIFO 降级均上报 stats，降级标记正确（AC-N06）。
+- **测试免 sleep 竞态**：`WorkflowExecutionTraceTest` 用 CountDownLatch + 5s 超时，非 Thread.sleep，稳定性好。
+- **修复后的失败步骤 span 谨慎**（`AbstractExecutionStrategy.recordFailedStepSpan`）：仅采集留痕，不调 `step.fail()`，避免步骤状态被标记 FAILED 导致前端执行历史回归。
+
+## 2. 范围与意图比对
+
+> [CLEAN]
+
+| 比对项 | 结果 | 说明 |
+| :--- | :--- | :--- |
+| 越权改动 | 无 | CR-001 变更严格限定在 observability + 五域挂钩 + 五模块 pom + 对应测试；web 测试辅助类（AgentControllerUnifiedTest CapturingTraceCollector 补 6 方法）为接口扩展的合法兼容工作，非范围蔓延 |
+| 遗漏任务 | 无 | Task-15~25 涉及文件全部落地；审查中发现 Task-20 验证标准缺口（失败步骤 span，见 §5），已修复 |
+
+## 3. 链路一致性（实际变更 vs 技术方案文件清单）
+
+> [一致]
+
+| 类型 | 文件路径 | 说明 |
+| :--- | :--- | :--- |
+| 多出（方案未定义） | 5 个策略类（Sequential/Conditional/Loop/Parallel/Supervisor）构造器 | 实现 AbstractExecutionStrategy 注入 TraceCollector 的必然结果（方案文件清单按策略层级粒度），合理，非链路断点 |
+| 缺失（方案未兑现） | 无 | 方案 CR-001 清单（TraceCollector/Noop/Otlp + 五域挂钩 + 五 pom）全部落地 |
+
+## 4. 已自动修复项 (AUTO-FIXED)
+
+- [AUTO-FIXED] `SkillSessionManager.recordActivation` 重复 `skillStore.get(skillId)` 两次（skillName/boundTools 各查一次）→ 合并为单次 `var skill = skillStore.get(skillId)` 复用 (`SkillSessionManager.java:398-412`，行为无变更)
+- [AUTO-FIXED] `OtlpTraceCollector.recordSkillActivation` 无耗时语义却用 `endInstant.minusMillis(0)` → 直接 `setStartTimestamp(endInstant)` + 注释说明瞬时内存操作语义 (`OtlpTraceCollector.java:232-241`，行为无变更)
+
+## 5. 需决策的关键问题 (Action Required)
+
+### Critical（阻断——未解决则审查不通过）
+
+无。
+
+### Important（修复后通过）
+
+1. **Task-20 验证标准"步骤失败/重试路径不丢事件"未兑现：失败步骤无步骤级 span**
+   - 位置：`agent-demo-app/.../strategy/AbstractExecutionStrategy.java` executeOrSkip（原仅成功路径调用 recordStepSpan）
+   - 问题：`executeWithRetry` 抛异常时（步骤失败/重试耗尽）该步骤无步骤级 span——仅工作流级 FAILED/PAUSED span 与 LLM 错误 span 存在，步骤粒度失败点不可定位；CR-001 任务文档 Task-20 验证标准明确要求"步骤失败/重试路径不丢事件"。
+   - 为什么重要：链路一致性（验证标准未兑现）+ 可观测性完整性（LangSmith 无法按步骤粒度定位失败）。
+   - 修复方案：executeOrSkip 与 resumePausedStep 用 try/catch 包裹执行，`WorkflowHITLException`（等待用户输入，非失败）直接上抛不记 FAILED；其余异常记录 `recordFailedStepSpan`（status=FAILED，耗时取 startTimeStamp→now，不调 `step.fail()` 避免前端执行历史回归），再原样上抛（AC-E05 不吞异常）。新增测试 `WorkflowStepTraceTest.failedStep_reportsFailedStepSpan_andStillThrows` 断言 FAILED span + 步骤状态仍为 RUNNING（前端零回归）。
+   - 处理：[x] A) 同意并修复（用户确认 2026-08-31）→ 已实现并验证：app 45 用例含新测试全绿，全模块 282 用例仅剩 3 个基线失败，无新回归
+
+## 6. 次要问题与建议 (Minor)
+
+1. `KnowledgeRetrieverTool.java:199-201` —— catch 块内 `ragProperties.getRetrieval().getMaxResults()` 作为 recordRag 参数求值，若配置访问异常会覆盖"知识库服务暂时不可用"降级路径；风险极低（Spring 注入 Retrieval 非空），建议保持现状或后续防御性处理。
+2. `AbstractExecutionStrategy.recordStepSpan/recordFailedStepSpan` —— `retry_count` 恒 0（`StepExecution.retryCount` 从未被设置，AgentExecutor 内部重试计数未回写步骤对象），为已文档化的已知简化；如需真实重试数，需 AgentExecutor 回传 attempt 次数（可后续 CR 增强）。
+3. `docs/dev-records/20260831_langsmith-observability_CR001_report.md` —— 文件变更清单"修改 19"与实际 21 处小误差（漏计 web 测试兼容 + 部分策略类），不影响审查结论。
+
+## 7. 测试质量评估（双轨核查）
+
+### 确定性组件（TDD 轨）
+
+| 检查项 | 结果 | 说明 |
+| :--- | :--- | :--- |
+| 测试真实测逻辑 | 是 | 新测试均用 ArgumentCaptor 捕获事件断言字段 + 状态断言 + 上下文断言，无 mock 自嗨/空洞断言（如 `WorkflowStepTraceTest` 断言 executionId/agentName/status/duration；`McpToolExecutorTraceTest` 断言断线标记；`ChatMemoryManagerTraceTest` 经 mock 采集器捕获 holder sessionId） |
+| 正常/边界/异常覆盖 | 完整 | 各域均覆盖成功 + 失败/降级 + collector 异常（AC-E05）：RAG（成功/异常/hint 路径/collector 抛错）、记忆（成功/降级/无监听器）、工作流（上下文传播/并行传播/步骤成功/步骤失败）、MCP（成功/失败/断线/collector 抛错）、Skill（成功/被拒/手动批量/未知技能） |
+| TDD 合规（RED→GREEN） | 合规 | 完成报告 §2 记录各任务 RED（编译失败/功能缺失）→ GREEN → REFACTOR；失败步骤 span 修复同样 RED（Wanted but not invoked）→ GREEN |
+
+### 概率性组件（EDD 轨）
+
+> 不适用：CR-001 零 Prompt 制品变更（纯代码确定性扩展），无 EDD 迭代、无评估数据集调优。
+
+## 8. 需求符合性核查（六类 AC）
+
+| AC | 状态 | 验证证据 |
+|----|------|---------|
+| AC-N05 RAG 检索上报 | ✅ | KnowledgeRetrieverToolTraceTest + 检索 span 属性断言 |
+| AC-N06 记忆压缩上报 | ✅ | CompressingChatMemoryListenerTest + ChatMemoryManagerTraceTest（含降级） |
+| AC-N07 工作流编排上报 | ✅ | WorkflowStepTraceTest（成功 + 失败） + WorkflowExecutionTraceTest + 9 终态记录 |
+| AC-N08 MCP 协议层上报 | ✅ | McpToolExecutorTraceTest（成功/失败/断线） |
+| AC-N09 Skill 激活上报 | ✅ | SkillSessionManagerTraceTest（成功/被拒/手动批量/未知） |
+| AC-S06 新采集域脱敏前置 | ✅ | ObservabilityGuardrailBehaviorTest 新内容类型正反例 + 陷阱任务 |
+| AC-E05 新埋点零回归 | ✅ | 各域 collector 异常测试 + 上下文清理断言 |
+| AC-M03 工作流会话关联 | ✅ | 并行传播测试 + workflow.execution_id 断言 |
+| AC-S01~S05（既有全量重验） | ✅ | ObservabilityGuardrailBehaviorTest 10 用例全过（脱敏正反例/零外联/静默降级/截断/启停） |
+| AC-H01~H02 | ⏸ 待联调 | 依赖 Task-14 真实 Key（并行推进），自动化部分无回归 |
+
+**Scope Creep 检查**：无（未实现 AC 之外的功能）。
+
+## 9. 附注
+
+- app 模块 3 个工作流集成测试失败（toolRegistry null）为**工作区基线既有问题**（集成测试用轻量构造器未装配 HITL 依赖），非 CR-001 引入，不计入本报告。
+- 回归证据：observability 67 / skill 97 / app 282（仅 3 基线）/ rag / memory / mcp 全绿；Pass^3（observability 67 × 3 次）通过；实际启动验证 Noop 零外联。
+- 评估可信度：行为测试为确定性 JUnit（无 LLM），单次运行即有效；Pass^3 用于排除偶发稳定性。
+
+*审查链路：CR-001 变更任务 → 完成报告 → 代码审查（本报告）→ 后续 ai-agent-code-review 专项（如需要）*

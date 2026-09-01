@@ -25,6 +25,11 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-llm</artifactId>
         </dependency>
+        <!-- CR-001：记忆压缩埋点（压缩回调上报 TraceCollector） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
 
         <!-- LangChain4j（提供 ChatMemory 抽象） -->
         <dependency>

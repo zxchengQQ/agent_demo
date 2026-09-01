@@ -2,6 +2,8 @@ package com.agentdemo.tools.builtin;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.tools.sanitize.HtmlContentCleaner;
+import com.agentdemo.tools.sanitize.InvisibleCharCleaner;
+import com.agentdemo.tools.sanitize.SecretRedactor;
 import com.agentdemo.tools.sanitize.SuspiciousPatternDetector;
 import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.agentdemo.tools.sanitize.ToolOutputTempStore;
@@ -45,7 +47,8 @@ class FileReadToolTest {
         Files.createDirectories(storeDir);
         props.setTempDir(storeDir.toString());
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(props,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(props),
+                new InvisibleCharCleaner(props), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(props), new SecretRedactor(props),
                 new ToolOutputTempStore(props, dataDir.toString()));
         tool = new FileReadTool(sanitizer, props, dataDir.toString());
     }
@@ -58,7 +61,7 @@ class FileReadToolTest {
         String result = tool.readFile("notes.txt", null, null);
 
         assertTrue(result.contains("这是一段普通文件内容"), "缺省参数应读取全文（AC-N01）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "普通文件应包裹声明（AC-S06）");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "普通文件应包裹声明（AC-S06）");
         assertTrue(result.contains("readFile"), "声明应含来源工具标识");
     }
 
@@ -87,7 +90,7 @@ class FileReadToolTest {
 
         String result = tool.readFile("tool-output/httpGet_1_abc.txt", 0, 100);
 
-        assertFalse(result.contains("===BEGIN_TOOL_DATA==="),
+        assertFalse(result.contains("===BEGIN_TOOL_DATA"),
                 "临时文件回读不应二次包裹声明（AC-M01 声明只一次）");
         assertEquals(body.substring(0, 100), result.split("\\R", 2)[0],
                 "应返回正文前 100 字符窗口");

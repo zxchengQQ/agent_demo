@@ -33,6 +33,7 @@
         <module>agent-demo-mcp</module>
         <module>agent-demo-skill</module>
         <module>agent-demo-agent</module>
+        <module>agent-demo-evaluation</module>
         <module>agent-demo-app</module>
         <module>agent-demo-web</module>
         <module>agent-demo-bootstrap</module>

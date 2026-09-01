@@ -64,7 +64,7 @@ MCP 协议模块（agent-demo-mcp）是 AI Agent 示例项目的 MCP（Model Con
   - 方法名：`mcp_{serverName}_{toolName}`（与注册名一致）
   - 方法签名：`String {methodName}(String argsJson)`（统一单参数方案）
   - `@Tool` 注解描述包含：Server 名 + 工具描述 + **结构化参数列表 + 调用示例**（通过 `parseParametersSchema` 解析 JSON Schema 生成，帮助 LLM 正确理解参数名和格式）
-- **工具执行**：`McpToolInterceptor` 拦截方法调用 -> 委托 `McpToolExecutor.execute(serverName, toolName, argsJson)` -> 解析 argsJson 为 Map -> 调用 `mcpClient.executeTool()` -> 返回结果字符串。
+- **工具执行**：`McpToolInterceptor` 拦截方法调用 -> 委托 `McpToolExecutor.execute(serverName, toolName, argsJson)` -> 解析 argsJson 为 Map -> 调用 `mcpClient.executeTool()` -> Wrapper 缓存解析（parseFromWrapper）-> **工具产出安全清洗**（工具调用模块 sanitize 管道：边界声明包裹 + 分级处置 + 秘密脱敏 + 限长，20260826 迭代起）-> 返回结果字符串。
 - **参数 Schema 序列化**：`McpServerManager.serializeParameters()` 手动提取 `JsonObjectSchema` 的 properties/required 字段（Jackson 无法自动序列化 `JsonSchemaElement` 多态接口），通过 `convertSchemaElement()` 按类型（string/integer/number/boolean/object）递归转换。
 - **内容类型处理**：CR-002 重构后，McpToolExecutor 不再使用 extractResultText/extractFromRawResponse 双重解析路径，而是统一从 McpTransportWrapper 缓存的原始 JSON-RPC 响应通过 McpContentParser 解析。McpContentParser 按 MCP 协议内容类型策略分发：text->提取文本、image URL->Markdown 图片语法、image/audio base64->文本描述、resource text->提取文本、resource blob->文本描述、structuredContent->JSON 序列化、unknown->WARNING 日志+静默跳过。executeTool 返回值被有意丢弃，Unsupported content type 异常视为预期行为（非文本内容正常返回）。
 - **业务规则**：BR-MCP-007（工具名前缀）、BR-MCP-008（超时默认 60s）。

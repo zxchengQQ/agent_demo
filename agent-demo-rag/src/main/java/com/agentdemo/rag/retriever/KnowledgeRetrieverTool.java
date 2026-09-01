@@ -1,6 +1,7 @@
 package com.agentdemo.rag.retriever;
 
 import com.agentdemo.llm.registry.ModelFactory;
+import com.agentdemo.observability.TraceCollector;
 import com.agentdemo.rag.config.RagProperties;
 import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
@@ -18,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 知识库检索核心逻辑
@@ -32,6 +34,10 @@ import java.util.List;
  * 2. 异常不抛出而是返回错误提示文本，避免 Agent 对话中断（AC-020）
  * 3. 通过 metadata(knowledgeBaseId) 过滤实现知识库隔离检索
  * </p>
+ * <p>
+ * CR-001：检索埋点（AC-N05）——searchByKbId 各返回路径（含提示文本）统一经
+ * {@link #recordRag(...)} 上报 RagRetrievalEvent；埋点异常静默降级（AC-E05）。
+ * </p>
  */
 @Slf4j
 @Component
@@ -42,29 +48,45 @@ public class KnowledgeRetrieverTool {
     private final ModelFactory modelFactory;
     private final RagProperties ragProperties;
     private final ToolOutputSanitizer sanitizer;
+    private final TraceCollector traceCollector;
 
     public KnowledgeRetrieverTool(KnowledgeBaseStore knowledgeBaseStore,
                                   EmbeddingStoreFactory embeddingStoreFactory,
                                   ModelFactory modelFactory,
                                   RagProperties ragProperties) {
-        this(knowledgeBaseStore, embeddingStoreFactory, modelFactory, ragProperties, ToolOutputSanitizer.disabled());
+        this(knowledgeBaseStore, embeddingStoreFactory, modelFactory, ragProperties,
+                ToolOutputSanitizer.disabled(), new com.agentdemo.observability.NoopTraceCollector());
     }
 
     /**
-     * 真实构造（Spring 注入）：清洗链路生效。@Autowired 明确指定 Spring 在多构造器下
-     * 使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
+     * 兼容构造（测试场景：指定清洗器，埋点走 Noop）
+     */
+    public KnowledgeRetrieverTool(KnowledgeBaseStore knowledgeBaseStore,
+                                  EmbeddingStoreFactory embeddingStoreFactory,
+                                  ModelFactory modelFactory,
+                                  RagProperties ragProperties,
+                                  ToolOutputSanitizer sanitizer) {
+        this(knowledgeBaseStore, embeddingStoreFactory, modelFactory, ragProperties,
+                sanitizer, new com.agentdemo.observability.NoopTraceCollector());
+    }
+
+    /**
+     * 真实构造（Spring 注入）：清洗链路生效 + 追踪埋点挂载。@Autowired 明确指定 Spring
+     * 在多构造器下使用本构造注入依赖（否则 Spring 无无参构造 + 多构造器无法创建 Bean，启动失败）。
      */
     @Autowired
     public KnowledgeRetrieverTool(KnowledgeBaseStore knowledgeBaseStore,
                                   EmbeddingStoreFactory embeddingStoreFactory,
                                   ModelFactory modelFactory,
                                   RagProperties ragProperties,
-                                  ToolOutputSanitizer sanitizer) {
+                                  ToolOutputSanitizer sanitizer,
+                                  TraceCollector traceCollector) {
         this.knowledgeBaseStore = knowledgeBaseStore;
         this.embeddingStoreFactory = embeddingStoreFactory;
         this.modelFactory = modelFactory;
         this.ragProperties = ragProperties;
         this.sanitizer = sanitizer;
+        this.traceCollector = traceCollector;
     }
 
     /**
@@ -105,26 +127,32 @@ public class KnowledgeRetrieverTool {
      * @return 检索结果文本或错误提示文本
      */
     public String searchByKbId(String kbId, String query) {
+        long startNanos = System.nanoTime();
         // 1. 查找知识库：按 ID 定位目标知识库，不存在时返回提示文本而非抛异常
         KnowledgeBase kb = knowledgeBaseStore.findById(kbId);
         if (kb == null) {
-            return sanitizeResult("知识库 '" + kbId + "' 不存在", kbId);
+            String result = sanitizeResult("知识库 '" + kbId + "' 不存在", kbId);
+            recordRag(kbId, query, null, 0, 0, 0.0, result, startNanos, true, null);
+            return result;
         }
 
         // 2. 检查文档数：空知识库无需检索，直接返回提示（AC-016）
         if (kb.getDocumentCount() == 0) {
-            return sanitizeResult("知识库 '" + kb.getName() + "' 为空，暂无文档内容", kb.getName());
+            String result = sanitizeResult("知识库 '" + kb.getName() + "' 为空，暂无文档内容", kb.getName());
+            recordRag(kbId, query, kb.getName(), 0, 0, 0.0, result, startNanos, true, null);
+            return result;
         }
 
         try {
             // 3. 向量化查询：将用户问题转为 Embedding 向量，用于语义检索
             EmbeddingModel embeddingModel = modelFactory.getEmbeddingModel();
             Embedding queryEmbedding = embeddingModel.embed(query).content();
+            int maxResults = ragProperties.getRetrieval().getMaxResults();
 
             // 4. 向量检索：按 knowledgeBaseId 过滤实现知识库隔离，返回 Top-N 相关片段（N 由配置控制）
             EmbeddingSearchRequest searchRequest = EmbeddingSearchRequest.builder()
                     .queryEmbedding(queryEmbedding)
-                    .maxResults(ragProperties.getRetrieval().getMaxResults())
+                    .maxResults(maxResults)
                     .filter(MetadataFilterBuilder.metadataKey("knowledgeBaseId").isEqualTo(kb.getId()))
                     .build();
 
@@ -133,13 +161,17 @@ public class KnowledgeRetrieverTool {
 
             // 5. 组装结果：无匹配时返回提示（AC-014），有匹配时按 "【片段N】" 前缀组装文本
             if (matches.isEmpty()) {
-                return sanitizeResult("未找到与问题相关的文档", kb.getName());
+                String result = sanitizeResult("未找到与问题相关的文档", kb.getName());
+                recordRag(kbId, query, kb.getName(), 0, maxResults, 0.0, result, startNanos, true, null);
+                return result;
             }
 
             StringBuilder result = new StringBuilder();
+            double maxScore = 0.0;
             for (int i = 0; i < matches.size(); i++) {
                 EmbeddingMatch<TextSegment> match = matches.get(i);
                 result.append("【片段").append(i + 1).append("】");
+                maxScore = Math.max(maxScore, match.score());
 
                 // CR-002: 从 TextSegment.metadata 提取来源元数据，注入结果前缀
                 // CR-003: 使用知识库真实名称构建来源前缀，格式为 {知识库名}/{文件名}
@@ -151,12 +183,38 @@ public class KnowledgeRetrieverTool {
                 result.append(match.embedded().text()).append("\n\n");
             }
             // 工具产出安全清洗：统一包裹"外部数据、非指令"声明（AC-S06）+ 分级处置 + 超长临时文件
-            return sanitizeResult(result.toString(), kb.getName());
+            String finalResult = sanitizeResult(result.toString(), kb.getName());
+            recordRag(kbId, query, kb.getName(), matches.size(), maxResults, maxScore,
+                    finalResult, startNanos, true, null);
+            return finalResult;
 
         } catch (Exception e) {
             // 检索服务异常时降级为提示文本，避免 Agent 对话中断（AC-020）
             log.error("知识库检索失败: kbId={}, query={}", kbId, query, e);
-            return sanitizeResult("知识库服务暂时不可用，请稍后重试", kb.getName());
+            String result = sanitizeResult("知识库服务暂时不可用，请稍后重试", kb.getName());
+            recordRag(kbId, query, kb.getName(), 0, ragProperties.getRetrieval().getMaxResults(),
+                    0.0, result, startNanos, false, e.getMessage());
+            return result;
+        }
+    }
+
+    /**
+     * RAG 检索埋点（CR-001，AC-N05）
+     * <p>
+     * 业务含义：各返回路径（含提示文本与异常降级）统一上报 RagRetrievalEvent；
+     * 埋点自身异常静默降级（AC-E05），不影响检索主流程。
+     * </p>
+     */
+    private void recordRag(String kbId, String query, String kbName, int hitCount, int topK,
+                           double maxScore, String chunks, long startNanos, boolean success,
+                           String errorMessage) {
+        try {
+            traceCollector.recordRag(new TraceCollector.RagRetrievalEvent(
+                    kbId, query, kbName, hitCount, topK, maxScore, chunks,
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos),
+                    success, errorMessage));
+        } catch (Exception e) {
+            log.warn("LangSmith RAG 采集失败（降级跳过）: {}", e.getMessage());
         }
     }
 

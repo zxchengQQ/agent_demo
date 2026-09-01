@@ -1,4 +1,4 @@
-﻿# AI Agent 开发任务计划: 工具产出安全清洗 (tool-output-sanitization)
+﻿﻿# AI Agent 开发任务计划: 工具产出安全清洗 (tool-output-sanitization)
 
 ## 0. 任务概览 (Task Overview)
 

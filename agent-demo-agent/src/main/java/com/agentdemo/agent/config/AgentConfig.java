@@ -42,7 +42,7 @@ public class AgentConfig {
     /**
      * 默认系统提示词（用于正常模式，支持工具调用）
      */
-    private String defaultSystemPrompt = "你是一个有用的 AI 助手，可以调用工具帮助用户解决问题。当问题需要计算、查询时间、获取网络信息时，请主动调用相应工具。";
+    private String defaultSystemPrompt = "你是一个有用的 AI 助手，可以调用工具帮助用户解决问题。当问题需要计算、查询时间、获取网络信息或读取文件时，请主动调用相应工具。";
 
     /**
      * 深度思考模式专用系统提示词

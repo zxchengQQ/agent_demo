@@ -9,11 +9,15 @@ import com.agentdemo.app.core.WorkflowExecution;
 import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
+import com.agentdemo.app.service.WorkflowHITLException;
 import com.agentdemo.app.service.WorkflowHITLState;
+import com.agentdemo.observability.NoopTraceCollector;
+import com.agentdemo.observability.TraceCollector;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -30,9 +34,19 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
     private static final Logger log = LoggerFactory.getLogger(AbstractExecutionStrategy.class);
 
     protected final AgentExecutor agentExecutor;
+    private final TraceCollector traceCollector;
 
     protected AbstractExecutionStrategy(AgentExecutor agentExecutor) {
+        this(agentExecutor, new NoopTraceCollector());
+    }
+
+    /**
+     * @param agentExecutor   Agent 执行器
+     * @param traceCollector  追踪采集器（CR-001 Task-20：步骤 span 上报）
+     */
+    protected AbstractExecutionStrategy(AgentExecutor agentExecutor, TraceCollector traceCollector) {
         this.agentExecutor = agentExecutor;
+        this.traceCollector = traceCollector != null ? traceCollector : new NoopTraceCollector();
     }
 
     /**
@@ -190,10 +204,22 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
                 "agentName", agentDef.getName(),
                 "iteration", iteration));
 
-        String output = agentExecutor.executeWithRetry(agentDef, input, emitter, agentIndex,
-                maxRetries, modelId, iteration, execution.getExecutionId());
-
-        step.complete(output);
+        String output;
+        try {
+            output = agentExecutor.executeWithRetry(agentDef, input, emitter, agentIndex,
+                    maxRetries, modelId, iteration, execution.getExecutionId());
+            step.complete(output);
+        } catch (WorkflowHITLException e) {
+            // 业务含义：HITL 暂停（askUser/检查点）为等待用户输入，非步骤失败，不记 FAILED 步骤 span
+            throw e;
+        } catch (Exception e) {
+            // CR-001 Task-20：失败/重试耗尽步骤记录 FAILED 步骤 span（AC-N07 失败不丢）；
+            // 不调用 step.fail()——避免步骤状态被标记 FAILED 导致前端执行历史回归（仅采集留痕）
+            recordFailedStepSpan(step, execution);
+            throw e;
+        }
+        // CR-001 Task-20：步骤 span 上报（AC-N07，成功路径）
+        recordStepSpan(step, execution);
         // 业务含义：写恢复 key（AC-021 空输出也写——空串非 null，恢复时同样跳过）
         ctx.write(key, output);
         ctx.recordOutput(agentDef.getName(), output);
@@ -227,11 +253,21 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
                 "agentName", agentDef.getName(),
                 "iteration", iteration));
 
-        String output = agentExecutor.executeHitlResume(agentDef, resume.getHitlState(),
-                resume.getMessage(), resume.getApproved(), emitter, agentIndex,
-                execution.getExecutionId());
-
-        step.complete(output);
+        String output;
+        try {
+            output = agentExecutor.executeHitlResume(agentDef, resume.getHitlState(),
+                    resume.getMessage(), resume.getApproved(), emitter, agentIndex,
+                    execution.getExecutionId());
+            step.complete(output);
+        } catch (WorkflowHITLException e) {
+            // 业务含义：恢复中再次触发 HITL（循环暂停-恢复），非步骤失败，不记 FAILED 步骤 span
+            throw e;
+        } catch (Exception e) {
+            recordFailedStepSpan(step, execution);
+            throw e;
+        }
+        // CR-001 Task-20：HITL 恢复步同样上报步骤 span（AC-N07）
+        recordStepSpan(step, execution);
         // 业务含义：清除 hitl 恢复 key（恢复已完成，避免后续重放再次命中）；
         // lastOutput 同步——循环模式退出谓词在轮末读取 lastOutput 判定
         ctx.getState().remove(hitlResumeKey(iteration, agentDef.getName()));
@@ -245,5 +281,47 @@ public abstract class AbstractExecutionStrategy implements WorkflowExecutionStra
                 "durationMs", step.getDurationMs(),
                 "outputLength", output.length()));
         return output;
+    }
+
+    /**
+     * 步骤 span 上报（CR-001 Task-20，AC-N07）
+     * <p>
+     * 业务含义：executeOrSkip 统一收口（六策略全部经此），上报 WorkflowStepEvent；
+     * 埋点自身异常静默降级（AC-E05）。retry_count 取自 StepExecution.retryCount
+     * （当前重试计数由 AgentExecutor 内部管理，步骤对象未持久化该值，取默认 0——已知简化）。
+     * </p>
+     */
+    private void recordStepSpan(StepExecution step, WorkflowExecution execution) {
+        try {
+            traceCollector.recordWorkflowStep(new TraceCollector.WorkflowStepEvent(
+                    execution.getExecutionId(), step.getAgentName(), step.getIndex(),
+                    step.getStatus() != null ? step.getStatus().name() : StepStatus.RUNNING.name(),
+                    step.getDurationMs(), step.getRetryCount(), step.getOutput()));
+        } catch (Exception e) {
+            log.warn("LangSmith 工作流步骤采集失败（降级跳过）: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 失败步骤 span 上报（CR-001 Task-20，AC-N07 失败不丢）
+     * <p>
+     * 业务含义：executeOrSkip/resumePausedStep 异常路径记录 FAILED 步骤 span——仅采集留痕，
+     * 不调用 step.fail()（避免步骤状态被标记 FAILED 导致前端执行历史回归）；耗时取
+     * startTimeStamp 到当前。异常信息经工作流级 FAILED span 与 LLM 错误 span 承载，此处不重复。
+     * 埋点自身异常静默降级（AC-E05）。
+     * </p>
+     */
+    private void recordFailedStepSpan(StepExecution step, WorkflowExecution execution) {
+        try {
+            long durationMs = 0;
+            if (step.getStartTimeStamp() != null) {
+                durationMs = java.time.Duration.between(step.getStartTimeStamp(), LocalDateTime.now()).toMillis();
+            }
+            traceCollector.recordWorkflowStep(new TraceCollector.WorkflowStepEvent(
+                    execution.getExecutionId(), step.getAgentName(), step.getIndex(),
+                    "FAILED", durationMs, step.getRetryCount(), null));
+        } catch (Exception e) {
+            log.warn("LangSmith 工作流步骤采集失败（降级跳过）: {}", e.getMessage());
+        }
     }
 }

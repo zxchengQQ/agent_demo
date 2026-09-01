@@ -9,6 +9,7 @@ import com.agentdemo.app.core.WorkflowTemplate;
 import com.agentdemo.app.execution.AgentExecutor;
 import com.agentdemo.app.execution.WorkflowEventPublisher;
 import com.agentdemo.app.service.WorkflowHITLException;
+import com.agentdemo.observability.TraceContextHolder;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
@@ -49,6 +50,12 @@ public class ParallelExecutionStrategy extends AbstractExecutionStrategy {
         super(agentExecutor);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public ParallelExecutionStrategy(AgentExecutor agentExecutor,
+                                     com.agentdemo.observability.TraceCollector traceCollector) {
+        super(agentExecutor, traceCollector);
+    }
+
     @Override
     public OrchestrationMode supportedMode() {
         return OrchestrationMode.PARALLEL;
@@ -81,13 +88,21 @@ public class ParallelExecutionStrategy extends AbstractExecutionStrategy {
         // 若组内运行时读共享 lastOutput，先完成的分组会覆盖它，导致其他分组首 Agent 误读他组输出（竞态）
         String groupInitialInput = ctx.readAsString("lastOutput");
 
-        // 业务含义：每个分组独立线程执行，组间并行、组内 Agent 串行（AC-004）
+        // 业务含义：每个分组独立线程执行，组间并行、组内 Agent 串行（AC-004）。
+        // CR-001 Task-19：捕获主线程 TraceContextHolder（executionId 聚合键）并包装传播至
+        // workflow-parallel-N 工作线程（ThreadLocal 不自动跨线程，AC-M03）；finally 清理防泄漏（AC-E05）
+        TraceContextHolder.TraceContext parallelCtx = TraceContextHolder.get();
         for (ParallelGroup group : template.getParallelGroups()) {
             int gIdx = groupIndex.getAndIncrement();
-            groupFutures.add(CompletableFuture.supplyAsync(() ->
-                    executeGroup(group, gIdx, groupInitialInput, ctx, emitter, execution,
-                            template.getMaxRetries(), modelId, cancelFlag),
-                    parallelExecutor));
+            groupFutures.add(CompletableFuture.supplyAsync(() -> {
+                TraceContextHolder.set(parallelCtx);
+                try {
+                    return executeGroup(group, gIdx, groupInitialInput, ctx, emitter, execution,
+                            template.getMaxRetries(), modelId, cancelFlag);
+                } finally {
+                    TraceContextHolder.clear();
+                }
+            }, parallelExecutor));
         }
 
         // 等待所有分组完成；解包 CompletableFuture 包装的异常（Cancelled/Timeout/Business），交协调层统一处理。

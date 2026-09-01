@@ -6,6 +6,8 @@ import com.agentdemo.rag.entity.KnowledgeBase;
 import com.agentdemo.rag.store.EmbeddingStoreFactory;
 import com.agentdemo.rag.store.KnowledgeBaseStore;
 import com.agentdemo.tools.sanitize.HtmlContentCleaner;
+import com.agentdemo.tools.sanitize.SecretRedactor;
+import com.agentdemo.tools.sanitize.InvisibleCharCleaner;
 import com.agentdemo.tools.sanitize.SuspiciousPatternDetector;
 import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.agentdemo.tools.sanitize.ToolOutputTempStore;
@@ -80,7 +82,8 @@ class KnowledgeRetrieverToolSanitizeTest {
         ToolSanitizeProperties p = new ToolSanitizeProperties();
         p.setTempDir(tempDir.resolve("data").resolve("tool-output").toString());
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(p,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(p),
+                new InvisibleCharCleaner(p), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(p), new SecretRedactor(p),
                 new ToolOutputTempStore(p, tempDir.resolve("data").toString()));
         tool = new KnowledgeRetrieverTool(knowledgeBaseStore, embeddingStoreFactory,
                 modelFactory, ragProperties, sanitizer);
@@ -117,7 +120,7 @@ class KnowledgeRetrieverToolSanitizeTest {
 
         assertTrue(result.contains("服务重启的步骤说明"), "片段内容应保留（AC-N01）");
         assertTrue(result.contains("来源: 运维知识库/运维手册.md"), "来源行应保留且格式不变（前端解析兼容）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "应包裹声明（AC-S06）");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "应包裹声明（AC-S06）");
         assertTrue(result.contains("rag:运维知识库"), "声明应含 rag 来源标识");
     }
 
@@ -128,7 +131,7 @@ class KnowledgeRetrieverToolSanitizeTest {
         String result = tool.searchByKbId("kb999", "q");
 
         assertTrue(result.contains("知识库 'kb999' 不存在"), "错误提示应保留（AC-E03）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "错误提示应一致包裹");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "错误提示应一致包裹");
     }
 
     @Test
@@ -154,7 +157,8 @@ class KnowledgeRetrieverToolSanitizeTest {
         p.setMaxChars(100);
         p.setTempDir(tempDir.resolve("data").resolve("tool-output").toString());
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(p,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(p),
+                new InvisibleCharCleaner(p), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(p), new SecretRedactor(p),
                 new ToolOutputTempStore(p, tempDir.resolve("data").toString()));
         tool = new KnowledgeRetrieverTool(knowledgeBaseStore, embeddingStoreFactory,
                 modelFactory, ragProperties, sanitizer);

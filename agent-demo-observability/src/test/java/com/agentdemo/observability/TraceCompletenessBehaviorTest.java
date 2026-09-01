@@ -144,4 +144,109 @@ class TraceCompletenessBehaviorTest {
         assertThat(exporter.getFinishedSpanItems()).hasSize(1);
         assertThat(exporter.getFinishedSpanItems().get(0).getName()).isEqualTo("agent.request");
     }
+
+    // ============ CR-001 Task-24：五域采集完整性（AC-N05~N09、AC-M03、AC-E05） ============
+
+    /**
+     * 模拟一次含五域事件 + LLM/工具的完整会话：检索/压缩/工作流+步骤/MCP/技能激活
+     * 全部 span 存在、共享根 trace、携带聚合属性（AC-N05~N09、AC-M03）
+     */
+    @Test
+    void fiveDomains_allSpansPresent_sharedTraceAndContext() {
+        collector.startRequest();
+        // 基础链路：LLM + 工具
+        collector.recordLlm(new TraceCollector.LlmCallEvent(
+                "modelA", "user: 分析", "tool_calls", 10, 5, 100L, true, null, "tool_calls"));
+        collector.recordTool(new TraceCollector.ToolCallEvent(
+                "queryData", "{\"id\":\"1\"}", "结果", 20L, true, null));
+        // RAG 检索
+        collector.recordRag(new TraceCollector.RagRetrievalEvent(
+                "kb-1", "什么是向量化", "产品手册", 2, 5, 0.9, "【片段1】...", 50L, true, null));
+        // 记忆压缩
+        collector.recordMemoryCompression(new TraceCollector.MemoryCompressionEvent(
+                20, 10, 11, 20, "【历史对话摘要】...", false, 800L));
+        // 工作流级 + 步骤级
+        collector.recordWorkflow(new TraceCollector.WorkflowExecutionEvent(
+                "exec-1", "tmpl-1", "内容审查", "SEQUENTIAL", "COMPLETED", 5000L, "报告"));
+        collector.recordWorkflowStep(new TraceCollector.WorkflowStepEvent(
+                "exec-1", "审查 Agent", 0, "COMPLETED", 1200L, 0, "草稿"));
+        // MCP 协议层
+        collector.recordMcp(new TraceCollector.McpCallEvent(
+                "weather-server", "getWeather", "{\"city\":\"北京\"}", 300L, true, false, null));
+        // Skill 激活
+        collector.recordSkillActivation(new TraceCollector.SkillActivationEvent(
+                "skill-1", "数据分析", "AUTO", "skill_1_analyze", true, null));
+        collector.endRequest();
+
+        List<SpanData> spans = exporter.getFinishedSpanItems();
+        // 1 根 + 1 LLM + 1 工具 + 1 检索 + 1 压缩 + 1 工作流 + 1 步骤 + 1 MCP + 1 激活 = 9
+        assertThat(spans).hasSize(9);
+
+        SpanData root = spanByName("agent.request");
+        String rootTraceId = root.getTraceId();
+        for (SpanData s : spans) {
+            assertThat(s.getTraceId()).isEqualTo(rootTraceId);
+            if (!"agent.request".equals(s.getName())) {
+                assertThat(s.getParentSpanId()).isEqualTo(root.getSpanId());
+            }
+        }
+
+        // AC-N05~N09：五域 span 必备字段
+        assertThat(spanByName("rag search 产品手册").getAttributes().get(AttributeKey.longKey("rag.hit_count"))).isEqualTo(2L);
+        assertThat(spanByName("memory compress").getAttributes().get(AttributeKey.booleanKey("memory.degraded"))).isFalse();
+        assertThat(attr(spanByName("workflow 内容审查"), "workflow.execution_id")).isEqualTo("exec-1");
+        assertThat(attr(spanByName("step 审查 Agent"), "workflow.step.output")).isEqualTo("草稿");
+        assertThat(attr(spanByName("mcp weather-server.getWeather"), "mcp.tool")).isEqualTo("getWeather");
+        assertThat(attr(spanByName("skill activate 数据分析"), "skill.source")).isEqualTo("AUTO");
+
+        // AC-M03：工作流/步骤 span 按 executionId 关联（workflow.execution_id 一致）
+        assertThat(attr(spanByName("workflow 内容审查"), "workflow.execution_id"))
+                .isEqualTo(attr(spanByName("step 审查 Agent"), "workflow.execution_id"));
+        // AC-M01/N02：会话聚合属性注入（holder sessionId）
+        assertThat(attr(spanByName("mcp weather-server.getWeather"), "gen_ai.conversation.id")).isEqualTo("session-react-1");
+        assertThat(attr(spanByName("skill activate 数据分析"), "log.trace_id")).isEqualTo("trace-react-1");
+    }
+
+    @Test
+    void fiveDomains_failureInjection_spansNotLost() {
+        // 失败注入：检索异常/MCP 断线/技能被拒均留痕（AC-N05~N09 失败不丢）
+        collector.startRequest();
+        collector.recordRag(new TraceCollector.RagRetrievalEvent(
+                "kb-1", "q", "产品手册", 0, 5, 0.0, null, 500L, false, "embedding 异常"));
+        collector.recordMcp(new TraceCollector.McpCallEvent(
+                "srv", "tool", "{}", 300L, false, true, "IO 异常断线"));
+        collector.recordSkillActivation(new TraceCollector.SkillActivationEvent(
+                "skill-1", null, "AUTO", null, false, "已达并发激活上限"));
+        collector.recordWorkflow(new TraceCollector.WorkflowExecutionEvent(
+                "exec-1", "tmpl-1", "内容审查", "SEQUENTIAL", "FAILED", 5000L, null));
+        collector.endRequest();
+
+        assertThat(spanByName("rag search 产品手册").getStatus().getStatusCode().name()).isEqualTo("ERROR");
+        assertThat(spanByName("mcp srv.tool").getAttributes().get(AttributeKey.booleanKey("mcp.disconnected"))).isTrue();
+        assertThat(spanByName("skill activate skill-1").getStatus().getStatusCode().name()).isEqualTo("ERROR");
+        assertThat(attr(spanByName("skill activate skill-1"), "skill.rejected_reason")).isEqualTo("已达并发激活上限");
+        assertThat(spanByName("workflow 内容审查").getStatus().getStatusCode().name()).isEqualTo("ERROR");
+    }
+
+    @Test
+    void contextHolder_cleared_noLeakAfterRequest() {
+        // AC-E05：请求结束（finally）清理上下文，无 ThreadLocal 泄漏
+        TraceContextHolder.set(new TraceContextHolder.TraceContext("trace-react-1", "session-react-1"));
+        collector.startRequest();
+        collector.recordRag(new TraceCollector.RagRetrievalEvent(
+                "kb-1", "q", "手册", 1, 5, 0.9, "c", 10L, true, null));
+        collector.endRequest();
+
+        // 模拟异步边界 finally 清理
+        TraceContextHolder.clear();
+        assertThat(TraceContextHolder.currentSessionId()).isNull();
+        assertThat(TraceContextHolder.currentTraceId()).isNull();
+        // 清理后采集不串扰（新建上下文后记录到不同会话）
+        TraceContextHolder.set(new TraceContextHolder.TraceContext("trace-2", "session-2"));
+        collector.startRequest();
+        collector.recordMcp(new TraceCollector.McpCallEvent("s", "t", "{}", 5L, true, false, null));
+        collector.endRequest();
+        assertThat(attr(spanByName("mcp s.t"), "gen_ai.conversation.id")).isEqualTo("session-2");
+        TraceContextHolder.clear();
+    }
 }

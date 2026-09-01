@@ -1,7 +1,7 @@
 # AI Agent 示例项目 知识库 (KNOWLEDGE_BASE.md)
 
-> **文档版本**：v3.5
-> **基线日期**：2026-08-27
+> **文档版本**：v3.7
+> **基线日期**：2026-08-31
 > **适用范围**：agent-demo（Java 后端 + Vue 3 前端工程）
 > **数据来源**：项目源码 + `pom.xml` + `application.yml` + `package.json` + `specs/` 文档体系
 > **维护方式**：每次功能迭代后由 `knowledge-base-generator` 技能增量更新
@@ -70,10 +70,13 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | 前端知识库管理 | ✅ 已实现 | 知识库 CRUD、文档上传/轮询/删除、对话知识库选择器、左右分栏管理页面 |
 | RAG 检索 | ✅ 已实现 | 知识库问答、文档分块、向量化（批量批处理）、向量检索、Agent 工具集成（CR-003: 动态 Tool 注册，每个知识库独立 Tool） |
 | MCP 协议 | ✅ 已实现 | MCP 客户端、双传输（stdio+SSE+Streamable HTTP）、动态/静态 Server 管理、ByteBuddy 工具代理 |
+| 工具产出安全清洗 | ✅ 已实现（20260826 迭代；20260831 CR-001 增强 / 20260901 CR-004 架构改造） | 4 类数据获取工具产出统一经 SanitizeStage SPI 可插拔清洗管道（变换段有序链：⓪ 隐形字符剥离/① HTML 剥离/② 可疑指令分级处置/②' 秘密脱敏 + 固定终段限长临时文件/包裹声明），工具结果作为数据而非指令进入上下文；秘密脱敏 [REDACTED]（AC-S09）、随机化分隔符防闭合标记逃逸（AC-S10）、隐形字符清洗（AC-S11）、统一限长 4000 字符 + 临时文件分段查询（AC-T01/T02）、双层降级铁律不阻断结果返回（AC-E02/E05/E06）、规则启动预编译 RULE_SKIPPED（AC-S12）、三子开关独立回退；评估侧 forbidden-keywords 拒绝断言（CR-001 审查加固） |
 | 多 Agent 协作 | ✅ 已实现 | langchain4j-agentic 编排引擎：串行/并行/条件/循环/Supervisor 五种模式（2026-08-13 应用编排层 P1~P3 交付） |
 | 工作流编排 | ✅ 已实现 | 模板注册、执行状态机（含 PAUSED/WAITING_USER）、自动重试、断点续执行、SSE 执行可视化、前端编排页面（工作流 HITL 已实现，拖拽编排规划中） |
 | 人机交互 HITL | ✅ 已实现（单 Agent + 工作流） | 单 Agent：askUser 工具 + 显式 ReAct 暂停-恢复 + `ask_user` SSE 事件 + 前端文本/选项卡片双形态；工作流：@HumanCheckpoint 检查点 + WAITING_USER 状态 + `workflow_waiting`/`workflow_resumed` 事件 + 5 模式执行视图等待 UI（20260824 迭代） |
 | Skill 能力域 | ✅ 已实现（20260826 迭代；20260827 CR-001/CR-002 演进） | 渐进式披露（目录段常驻元数据 + loadSkill 按需加载全文）、会话级激活态（自主/手动/排除 + `/skill` 指令，用户消息保留原始输入展示 CR-002）、多 Skill 并发（上限 3）、自带脚本工具（白名单 shell/python3 + 脚本护栏，动态注册 skill_{id}_{script}，CR-001）、标准目录结构存储（data/skills/{id}/SKILL.md+scripts/+reference/，启动自动迁移）、`skill_activated` SSE 事件、Skill 管理页（agent-demo-skill 模块，第 10 能力域） |
+| 可观测性 | ✅ 已实现（20260829 基础 + 20260831 CR-001 五域扩展） | LangSmith 云接入（OTel 标准 + OTLP HTTP + x-api-key，agent-demo-observability 模块第 11 能力域）：**基础** LLM+工具采集（listener/装饰器/ToolExecutor 收口）、**CR-001 五域事件采集**（RAG 检索/记忆压缩/工作流编排双层/MCP 协议层/Skill 激活）、脱敏单一出口（SensitiveDataMasker）、默认关零外联（Noop/Otlp 条件装配）、工作流 executionId 聚合 + 并行线程传播、project 归属双写、endpoint 完整 URL 含 /v1/traces（2026-08-31 404 修复）、AiServices 反射路径工具调用经 afterToolExecution 统一采集（2026-08-31 CR-002 审查补链，补齐生产同步路径工具 span）、**HITL 多轮 trace 续接（2026-09-01 BUG 修复：markHITLPause/resumeRequest 远程父续接，单任务多轮人机交互一条完整链路）** |
+| 评估能力域 | ✅ 已实现（20260831 CR-002 完整评估体系） | 本地评估 harness（agent-demo-evaluation 模块第 12 能力域）：**本地数据集执行**（10 用例含陷阱×2+密钥正例，Pass^runs 稳定性）、**LLM-as-judge**（三维度评分 + 幻觉 veto 代码层强制 + 多源 judge 对冲同源偏差 + 缺席降级）、**回归基线**（±30pp 噪声带宽 + 显式重建防静默覆盖）、**A/B 对比**（Pass^3 强制 + 统计显著性）、CLI 独立上下文（LlmConfigSeed 双厂商种子注入）、评估出境/落盘统一脱敏出口（AC-S07） |
 
 > **数据来源**：`specs/SDD-工程业务背景文档.md` 第 2.3 节、`docs/ARCHITECTURE.md`
 
@@ -104,6 +107,8 @@ LLM 提供商支持配置级切换，默认为**火山引擎方舟 Coding Plan**
 | RAG 知识库模块 | `specs/modules/RAG模块-业务说明书.md` |
 | MCP 协议模块 | `specs/modules/MCP协议模块-业务说明书.md` |
 | 应用编排模块 | `specs/modules/应用编排模块-业务说明书.md`（v2.9 新增） |
+| 可观测性模块 | `specs/modules/可观测性模块-业务说明书.md`（20260831 新增，第 11 能力域；覆盖 LangSmith 基础接入 + CR-001 五域事件采集） |
+| 评估模块 | `specs/modules/评估模块-业务说明书.md`（20260831 新增，第 12 能力域；覆盖 CR-002 完整评估体系：LLM-as-judge + 回归基线 + A/B 对比） |
 
 > 模块总目录：`specs/modules/README.md`（v2.9 新增，含模块依赖全景图）
 
@@ -181,6 +186,9 @@ springdoc.version=2.5.0            # OpenAPI 文档
 pdfbox.version=3.0.3               # PDF 文档解析（RAG 模块）
 tabula.version=1.0.5               # PDF 表格提取（RAG 模块 CR-001）
 bytebuddy.version=1.14.19          # 运行时动态生成带 @Tool 注解的知识库工具类（RAG 模块 CR-003）
+
+# 可观测性（20260829 新增，agent-demo-observability 模块）
+opentelemetry.version=1.42.1       # OTel SDK（api/sdk/exporter-otlp），OTLP HTTP 上报 LangSmith 云；exporter 直接使用 endpoint 完整 URL 不追加 /v1/traces（缺路径致 404）
 
 # 构建
 maven.version=3.9+
@@ -267,6 +275,8 @@ agent-demo/
 ├── agent-demo-splitter/                 # 文档分割模块（文档解析、多级级联切分、过短块合并、按类型专属分割策略）
 ├── agent-demo-mcp/                      # MCP 协议模块（MCP 客户端：三传输方式 + 动态/静态 Server 管理 + ByteBuddy 工具代理）
 ├── agent-demo-skill/                    # Skill 能力域（技能定义/存储/内容校验/会话激活态/提示词组装/loadSkill 工具，第 10 能力域，20260826 新增）
+├── agent-demo-observability/            # 可观测性（LangSmith 接入：TraceCollector 采集接口 + OTel span 构建 + 脱敏单一出口 + 条件装配，第 11 能力域，20260829 新增；CR-001 五域事件采集扩展 20260831）
+├── agent-demo-evaluation/               # 评估能力域（本地评估 harness：数据集执行 + LLM-as-judge + 回归基线 + A/B 对比，CLI 独立上下文 + LlmConfigSeed 多源 judge 种子注入，第 12 能力域，20260831 CR-002 新增）
 ├── agent-demo-agent/                    # Agent 核心模块（单 Agent ReAct）
 ├── agent-demo-app/                      # 应用编排层（P1~P3 完整实现：adapter 基础设施桥接 + core 领域模型 + strategy 五种编排策略 + execution 重试/SSE 基础设施 + service 协调层与断点恢复 + registry 模板注册 + template 5 个预置模板；工作流 HITL 迭代新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队）
 ├── agent-demo-web/                      # Web 接口层（REST + SSE + DTO + 配置）
@@ -314,6 +324,8 @@ agent-demo/
 | `agent-demo-splitter` | common |
 | `agent-demo-mcp` | common, tools |
 | `agent-demo-skill` | common, tools（20260826 新增） |
+| `agent-demo-observability` | common + OTel SDK（20260829 新增，叶子模块）；被 llm/tools/web + rag/memory/app/mcp/skill（CR-001）依赖 |
+| `agent-demo-evaluation` | common, observability, agent, llm, tools（20260831 CR-002 新增，评估叶子模块，不参与对话主链路装配） |
 | `agent-demo-agent` | common, llm, tools, memory, skill（20260826 +skill） |
 | `agent-demo-app` | agent, rag, mcp（已实现：另依赖 common/llm/tools 经传递引入） |
 | `agent-demo-web` | app, agent, memory, rag, mcp, skill（20260826 +skill） |
@@ -331,7 +343,8 @@ agent-demo-agent/
 │                          # + HitlTokenStream（HITL 流式接口，继承 ThinkingTokenStream 新增 onAskUser 回调，Task-02 新增）
 │                          # + HumanInteractionManager（HITL pending 状态管理：ConcurrentHashMap 按 sessionId 存储 + @Scheduled 超时清理）
 │                          # + PendingInteraction（暂停交互状态数据结构：消息列表/问题数据/追问计数/模型与工具信息）
-├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词；SCENARIO_HITL="hitl"）
+├── prompt/                # PromptTemplateLoader（角色×场景模板加载器，从 classpath 加载 prompts/roles/ + prompts/scenarios/ 并组合系统提示词；SCENARIO_HITL="hitl"；
+│                          #   CR-001 新增片段加载机制：{{include:fragment-name}} 单层展开 prompts/fragments/ 片段，缺失保留占位符降级不中断）
 └── single/                # SimpleAgent（单 Agent 实现，工具按需加载 CR 新增 sessionToolIds 会话缓存 + toolsFingerprint 缓存键）
                             # + PlanAgent（任务拆解 Agent，创建 TaskBreakdownStream）
                             # + HITLReActStream（HITL 显式 ReAct 循环：工具执行前检测 askUser 拦截 -> 暂停保存状态 -> resume 恢复，Task-02 新增）
@@ -369,7 +382,14 @@ agent-demo-tools/
                            #   工具按需加载 CR 新增 resolveTools/getAvailableTools/getDefaultTools/register(tool,serverName)；
                            #   Task-05 BUG 修复：getDefaultTools 用 LinkedHashSet 按对象去重，避免 TimeTool 多方法重复注册）
                            # + ToolSchemaConverter（Schema/描述转换，含 convertToDescriptionText 动态工具描述生成；
-                           #   Task-05 BUG 修复：mapJavaTypeToJsonType 增加 String[]/List 映射为 array）
+                           #   Task-05 BUG 修复：mapJavaTypeToJsonType 增加 String[]/List 映射为 array；
+                           #   CR-001 移除 convertToDescriptionText 尾部通用引导——工具描述仅输出清单本体，调用引导由场景模板承载）
+└── sanitize/              # 工具产出安全清洗（20260826 迭代，CR-004 SPI 化）：
+                           #   ToolOutputSanitizer（编排器：SanitizeStage 有序链 + 终段限长/包裹 + 双层降级）+
+                           #   SanitizeStage（阶段 SPI：order/name/appliesTo/process）+ 4 变换段
+                           #   （InvisibleCharCleaner⓪/HtmlContentCleaner①/SuspiciousPatternDetector②/SecretRedactor②'，
+                           #   规则启动预编译 + RULE_SKIPPED）+ ToolOutputTempStore/TempFileRecord（临时文件）+
+                           #   SanitizeContext + ToolSanitizeProperties（agent.tool.sanitize.* 配置）
 ```
 
 **agent-demo-memory**（记忆系统）：
@@ -453,6 +473,27 @@ agent-demo-common/
 ├── exception/             # BusinessException / ErrorCode
 ├── result/                # Result / PageResult
 └── utils/                 # DateUtils / JsonUtils
+```
+
+**agent-demo-evaluation**（评估能力域，20260831 CR-002 新增）：
+
+```
+agent-demo-evaluation/
+├── config/                # EvalProperties（eval.* 配置绑定）+ EvaluationHarnessConfig（eval.enabled 条件装配）
+│                          # + LlmConfigSeed（CLI 独立上下文 LLM 配置种子：Agent 厂商 + 多源 judge 厂商注入，无模型/无 Key fail-fast）
+├── cli/                   # EvaluationCli（CLI 入口：eval.enabled + run-on-startup 时执行一次评估）
+├── model/                 # EvalCase/EvalDataset/ExecutionRecord（含 toolTrace 名序列 + toolTraceDetail 含结果）/CaseResult/AggregateResult
+├── loader/                # EvalDatasetLoader（JSON 数据集解析，非法 JSON 明确异常）
+├── runner/                # AgentInvoker（抽象）/ SimpleAgentInvoker（真实 Agent）/ EvaluationRunner（逐例执行 + Pass^runs + 失败继续）
+│                          # + RecordingTraceCollector（TraceCollector 替身：录制工具轨迹名+结果）
+├── eval/                  # DeterministicEvaluator（工具/关键词/脱敏/陷阱断言 + Pass^runs 聚合）
+│                          # + JudgeEvaluator（judge 渲染/调用/解析 + 幻觉 veto 代码层强制 + 缺席降级）/ JudgeModelAccess/SpringJudgeModelAccess
+│                          # + JudgePromptTemplate / JudgeVerdict / JudgeResult
+│                          # + BaselineManager/BaselineEntry/MetricDelta/ComparisonReport（基线生成/加载/±30pp 对比）
+│                          # + ABComparisonRunner/RunSpec/ABRow/ABReport（A/B 对比，Pass^3 强制）
+├── harness/               # EvaluationHarness（端到端流水线编排）+ ReportWriter（Markdown 报告落盘，脱敏出口）
+├── resources/prompts/     # judge.md（LLM-as-judge 评估指令制品 v2，EDD 调优）
+└── resources/application.yml  # eval.* 配置段（默认全关）
 ```
 
 ### 4.4 包命名规范
@@ -1141,6 +1182,10 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 20 | BR-AGT-017 | 技能激活段从系统提示词移除，改为 SKILL_INSTRUCTION 附件注入记忆流（激活点单通道、流式/同步双路径覆盖）；技能激活不改变系统提示词，保证前缀缓存稳定（20260828 新增） | Agent 编排 | 🔴 强制 |
 | 21 | BR-AGT-018 | HITL 末轮强制总结前必须注入 `<agent_status>` 收尾消息（user 角色，读数+操作策略成对，显示配置上限），仅框架代码可写，模型/用户禁止伪造（20260828 新增） | Agent 编排 | 🔴 强制 |
 | 22 | BR-AGT-019 | 规划判断（TaskPlanJudge.judge）必须携带会话历史 recentHistory 参与意图判别，缺失时降级为默认规划模式不抛错（20260828 新增） | Agent 编排 | 🔴 强制 |
+| 23 | BR-AGT-020 | 模板公共规则单源化：hitl.txt/hitl-guidance.txt 公共规则经 `{{include:hitl-shared-rules}}` 共享片段引用（PromptTemplateLoader 片段加载，单层展开、片段缺失保留占位符降级不中断）（CR-001 新增） | Agent 编排 | 🔴 强制 |
+| 24 | BR-AGT-021 | 场景模板采用 XML 语义标签段（`<guardrails>`/`<scenario_behavior>`/`<interaction_rules>` 等），护栏条文内容零变更，仅结构标签包裹（CR-001 新增） | Agent 编排 | 🔴 强制 |
+| 25 | BR-AGT-022 | 工具引导语单源：convertToDescriptionText 仅输出工具清单本体（不含尾部通用引导），工具调用引导由场景模板差异化承载（CR-001 新增） | Agent 编排 | 🔴 强制 |
+| 26 | BR-AGT-023 | AgentConfig 降级默认值与场景模板语义一致（模板缺失降级质量不骤降），由一致性守护测试双向锚点防漂移（CR-001 新增） | Agent 编排 | 🔴 强制 |
 
 ### 9.3 工具调用规则
 
@@ -1149,7 +1194,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 13 | BR-TOOL-001 | 工具类必须加 `@Component`，工具方法必须加 `@Tool` 注解 | 工具调用 | 🔴 强制 |
 | 14 | BR-TOOL-002 | 工具注册采用懒加载，首次调用 `listTools()` 时扫描 | 工具调用 | 🔴 强制 |
 | 15 | BR-TOOL-003 | HTTP 工具必须执行 SSRF 防护，禁止访问内网地址 | 工具调用 | 🔴 强制 |
-| 16 | BR-TOOL-004 | HTTP 工具响应超过 10KB 必须截断 | 工具调用 | 🔴 强制 |
+| 16 | BR-TOOL-004 | 工具产出统一限长：清洗后超过 `agent.tool.sanitize.max-chars`（默认 4000 字符）进入"前缀 + 临时文件分段查询"机制（清洗管道③统一承担，取代原 HTTP 10KB 截断；20260826 CR-001 防腐更新） | 工具调用 | 🔴 强制 |
 | 17 | BR-TOOL-005 | 文件读取工具必须限定在 `agent.file-allowed-dir` 目录白名单内 | 工具调用 | 🔴 强制 |
 | 18 | BR-TOOL-006 | 工具执行失败必须抛出 `BusinessException` + 对应 ErrorCode | 工具调用 | 🔴 强制 |
 | 19 | BR-TOOL-007 | 动态注册/注销工具应通过 `ToolRegistry.register()` / `unregisterTool()` 操作（CR-003 新增注销方法） | 工具调用 | 🟡 尽量 |
@@ -1440,6 +1485,36 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 130 | BR-SKILL-013 | 自带脚本工具（skill_{id}_{script}）经脚本护栏（语言白名单 shell/python3、参数校验、执行超时 10s、危险命令拦截、输出截断 4K）管控，不进入系统权限确认流（AC-T03/S06） | Skill 域 | 🔴 强制 |
 | 131 | BR-SKILL-014 | `/skill 技能名 消息` 指令：用户消息气泡保留原始输入展示（含技能名，所见即所得），发送给 LLM 的消息剥离指令前缀，不额外插入 AI 提示消息/页面徽标（AC-N07，CR-002） | Skill 域 | 🔴 强制 |
 
+### 9.20 评估能力域规则（v3.6 新增，CR-002 完整评估体系）
+
+> **来源**：`specs/features/20260829_langsmith-observability/langsmith-observability_变更任务_CR002.md`（Task-26~34，AC-N10~N13/S07/E06）+ `langsmith-observability_CR002_代码审查报告.md`（2026-08-31 审查修复 + EDD 补跑沉淀）+ 评估模块业务说明书
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 132 | BR-EVAL-001 | 评估 harness 默认关闭：`eval.enabled=false` 零装配零影响，按需手动 CLI 触发（`mvn -pl agent-demo-evaluation spring-boot:run`），不随构建/正常启动执行（AC-N10 生态） | 评估域 | 🔴 强制 |
+| 133 | BR-EVAL-002 | 每用例独立会话执行 + Pass^runs 稳定性语义（runs 默认 3，A/B 强制下限 3 取均值）；单例失败标注后继续，不中断整体评估；禁止单次运行直接作为对比结论（AC-N10/N13） | 评估域 | 🔴 强制 |
+| 134 | BR-EVAL-003 | judge 输出 JSON 契约解析失败 / 调用异常 / 未配置模型 → 一律缺席标注（可辨原因），不误计 0 分、不抛异常中断（AC-E06/N11） | 评估域 | 🔴 强制 |
+| 135 | BR-EVAL-004 | 幻觉复核对 judge 输出执行代码层一票否决：hallucination=detected 时 overall 一律归一 fail（防止 judge 自相矛盾放过否决），报告标注"幻觉 detected（veto 判负）" | 评估域 | 🔴 强制 |
+| 136 | BR-EVAL-005 | 幻觉判定要点（judge.md v2）：回复点名声称调用具体工具或引用具体结果值，但工具轨迹无对应调用或结果不一致 → 编造 detected；仅泛化确认表述（如"好的，我已记录"）不属编造（EDD TUNE 沉淀） | 评估域 | 🔴 强制 |
+| 137 | BR-EVAL-006 | 多源 judge：判官默认独立厂商（百炼）与被评 Agent（ARK）不同模型家族，对冲同源偏差；judge-model-id 可配置 + 同源 WARN 不阻断（决策 13） | 评估域 | 🔴 强制 |
+| 138 | BR-EVAL-007 | 基线文件常规运行只读不覆盖，更新须显式重建（删除基线重跑首建）；对比按 ±30pp 噪声带宽判定（10 例规模 95% CI），带内差异标"不可决策"（AC-N12） | 评估域 | 🔴 强制 |
+| 139 | BR-EVAL-008 | 评估出境与落盘零明文：judge prompt 三要素（input/response/toolTrace）统一经脱敏出口，报告/基线/数据集无密钥明文；数据集仅含合成测试密钥夹具（AC-S07） | 评估域 | 🔴 强制 |
+| 140 | BR-EVAL-009 | 评估 CLI 独立上下文（无 web 配置面）经 LlmConfigSeed 注入模型配置（eval.api-key 默认 ${ARK_API_KEY:} / judge 默认 ${BAILIAN_API_KEY:}，禁止硬编码）；无模型/无 Key 启动即 fail-fast，不静默假成功 | 评估域 | 🔴 强制 |
+| 141 | BR-EVAL-010 | 工具轨迹观测：AiServices 反射路径工具调用经 `SimpleAgent.afterToolExecution` → `ToolExecutor.recordToolExecution` 统一采集（含结果，供工具选择断言与 judge 幻觉复核）；同时补齐生产同步路径工具 span（决策 3 边界收窄，净收益） | 评估域 | 🔴 强制 |
+| 142 | BR-EVAL-011 | 评估 Agent 工具集须与生产对齐：评估 CLI 独立上下文需配置 `agent.tools.default-tools`（与 bootstrap 一致），否则工具选择类用例必然失真 | 评估域 | 🔴 强制 |
+
+### 9.21 工具产出安全清洗规则（v3.7 新增，20260826 迭代 CR-001/CR-004）
+
+| # | 编号 | 规则 | 范围 | 级别 |
+|---|------|------|------|------|
+| 143 | BR-TOOL-032 | 4 类数据获取工具（HTTP/文件读取/MCP 动态工具/RAG 知识库检索）产出必须经清洗管道包裹"外部数据、非指令"边界声明（含来源标识/数据身份/禁执指令/用法引导四要素）后进入 LLM 上下文，模型不执行工具结果中的指令 | 工具调用 | 🔴 强制 |
+| 144 | BR-TOOL-033 | 清洗降级铁律：任何清洗环节异常不得阻断工具结果返回——编排器全局异常 ERROR+返回原文（AC-E02）；变换段逐段隔离 WARN+跳过该段继续（AC-E05/E06，CR-004 统一归一）；临时文件写失败降级纯截断（AC-E01）；随机分隔符生成失败降级固定分隔符 | 工具调用 | 🔴 强制 |
+| 145 | BR-TOOL-034 | 可疑指令分级处置：一般可疑保留原文+警示标记，高危移除片段+占位标记；误命中容忍（正文零丢失，AC-E04）；清洗动作统一 WARN 安全日志（仅元信息，不含正文与秘密值，AC-S07） | 工具调用 | 🔴 强制 |
+| 146 | BR-TOOL-035 | 秘密脱敏：秘密赋值形态（password=/api_key:/token=/Bearer 等）秘密值替换 `[REDACTED]` 键名保留（规则捕获组 1 = 秘密值）；安全日志不含原始秘密值；临时文件落盘内容为已脱敏文本（秘密不落盘扩散） | 工具调用 | 🔴 强制 |
+| 147 | BR-TOOL-036 | 包裹声明分隔符随机化：每次调用 SecureRandom 生成 16 位 hex token 头尾配对（64 bit 熵），工具内容无法预先伪造闭合标记逃逸；可经 random-delimiter 开关独立回退 | 工具调用 | 🔴 强制 |
+| 148 | BR-TOOL-037 | 清洗注入点契约：新增数据获取工具必须在成功返回路径调用 `sanitizer.sanitize()`（SanitizeContext 自描述 toolName/sourceDesc/htmlContent；异常路径不经管道，AC-E03）；新增清洗能力一律以新 `SanitizeStage` 实现（order 落位，编排器零修改接入，AC-T05），禁止在注入点或编排器内追加分支逻辑 | 工具调用 | 🔴 强制 |
+| 149 | BR-TOOL-038 | 清洗规则启动期预编译校验：非法正则或无值捕获组规则记 RULE_SKIPPED WARN 并跳过（合法规则生效、规则 ID 按原始位置稳定编号），禁止运行期静默忽略或因单条非法规则阻断清洗服务 | 工具调用 | 🔴 强制 |
+
 ---
 
 ## 十、开发环境与构建
@@ -1465,6 +1540,7 @@ private static final String[] PRIVATE_IP_PREFIXES = {
 | 变量名 | 必填 | 说明 |
 |--------|------|------|
 | 无（LLM 配置由前端动态管理，API Key 通过前端页面配置，无需环境变量） | - | LLM 配置已迁移至前端动态管理，无需设置环境变量 |
+| `ARK_API_KEY` / `BAILIAN_API_KEY`（仅评估 CLI 使用） | 评估触发时 | **评估 CLI 独立上下文**（无前端配置面）经 `eval.api-key`/`eval.judge-api-key` 默认引用：Agent 模型走 `ARK_API_KEY`（默认 ARK coding v3），多源 judge 默认走 `BAILIAN_API_KEY`（百炼）；未配置时启动 fail-fast |
 
 ### 10.3 多环境配置
 
@@ -1893,6 +1969,8 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 | v3.1 | 2026-08-21 | Agent-Human 交互（HITL，feature 20260820_agent-human-interaction）：1.4 能力矩阵新增"人机交互 HITL"行；4.1/4.3 节工程结构更新（agent-demo-agent 新增 HitlTokenStream/HITLReActStream/HumanInteractionManager/PendingInteraction，agent-demo-tools 新增 AskUserTool，前端新增 ConfirmCard.vue，ToolRegistry/ToolSchemaConverter 工具去重与数组类型 BUG 修复）；5.8 节 SSE 事件协议新增 ask_user 事件；7.2 节内存数据结构新增 pendingInteractions；9.16 节新增 12 条 HITL 业务规则（BR-HITL-001~012）；前端 HITL 渲染链路（chat.ts onAskUser 回调 + enableHitl 参数 / session.ts askUserData + isWaitingForUserInput / MessageItem.vue 双形态渲染 / ChatWindow.vue 开关与回复闭环） |
 | v3.3 | 2026-08-25 | 工作流 HITL（feature 20260824_workflow-hitl）：1.4 能力矩阵工作流编排行新增 WAITING_USER 状态，人机交互 HITL 行更新为"单 Agent + 工作流"双覆盖；4.1/4.3 节工程结构更新（agent-demo-app 新增 @HumanCheckpoint 注解 / WorkflowHITLState 快照 / WAITING_USER 状态 / hitlReply 恢复 / 并行 HITL 排队 PENDING_HITL_KEY，编排组件新增 SequentialExecuteView/ParallelExecuteView/LoopExecuteView/ConditionalExecuteView/SupervisorExecuteView 5 个模式专属视图并复用 AskUserCard/ConfirmCard，api/workflow.ts 从 7 个扩展为 8 个 REST 接口新增 replyToWorkflow HITL 回复）；5.8 节 SSE 事件协议新增工作流 SSE 事件表（workflow_waiting/workflow_resumed，复用 ask_user 事件）；7.2 节内存数据结构更新 resumableStates 为"暂停恢复快照（PAUSED 断点 + WAITING_USER HITL）"；9.18 节新增 12 条工作流 HITL 业务规则（BR-WHITL-001~012，含 WAITING_USER 状态语义分离、@HumanCheckpoint 反射检测、并行 HITL 排队、30 分钟超时清理、5 个模式视图 HITL 等待横幅 BUG 沉淀）；修复【研究-分析-总结】模板模式特定执行视图缺少 HITL 等待横幅导致页面卡住的 BUG（SequentialExecuteView 等 5 个模式视图全部补齐，useWorkflowStream.startExecution 重置 HITL 状态） |
 | v3.4 | 2026-08-28 | Agent 上下文工程优化（feature 20260828_agent-context-engineering）：5.4 节记忆窗口淘汰策略从 FIFO 更新为滚动摘要压缩（CompressingChatMemory 窗口 20/压缩至 10/附件保护/降级 FIFO）；9.2 节新增 BR-AGT-016（工具协议以 tools 参数为权威、基础工具集冻结）、BR-AGT-017（技能段附件化保证缓存稳定）、BR-AGT-018（末轮 `<agent_status>` 状态栏收尾）、BR-AGT-019（规划判断携带会话历史）；9.4 节更新 BR-MEM-003（滚动压缩），新增 BR-MEM-006（附件帧标记三类型，不参与压缩淘汰）、BR-MEM-007（输入框架标记剥离防伪造）、BR-MEM-008（记忆写入唯一化）；工程结构新增 CompressingChatMemory/MemoryCompressionProperties；修复 Spring bean 多构造器装配启动异常（AgentController/ChatMemoryManager/SkillLoadTool 补 @Autowired） |
+| v3.5 | 2026-08-31 | CR-001 Out of Scope 质量债清偿（feature 20260828_agent-context-engineering）：9.2 节新增 BR-AGT-020（模板公共规则单源化，{{include:hitl-shared-rules}} 共享片段 + PromptTemplateLoader 片段加载机制）、BR-AGT-021（场景模板 XML 语义标签段，护栏条文零变更）、BR-AGT-022（工具引导语单源，convertToDescriptionText 移除尾部通用引导）、BR-AGT-023（AgentConfig 降级默认值同步 + 一致性守护测试防漂移）；4.3 节 prompt/ 补充片段加载机制、ToolSchemaConverter 补充引导移除；数据架构文档 5.3 节提示词模板矩阵更新（移除已删除的 thinking/react，补齐 hitl 与 fragments/ 片段）；AgentConfig.defaultSystemPrompt 补"读取文件"语义与 chat 模板对齐
+| v3.6 | 2026-08-31 | 完整评估体系（CR-002，feature 20260829_langsmith-observability Task-26~34）：新增第 12 能力域 agent-demo-evaluation 评估模块（本地评估 harness）；1.4 能力矩阵新增"评估能力域"行并更新可观测性行（AiServices 工具采集补链）；2.2 文档地图新增评估模块业务说明书；4.1/4.2/4.3 节工程结构/依赖方向/内部分层新增评估模块；9.20 节新增 11 条评估能力域规则（BR-EVAL-001~011，含多源 judge、幻觉 veto 代码层强制、±30pp 噪声带宽、CLI 种子注入、工具轨迹观测）；10.2 节补充评估 CLI 环境变量（ARK/BAILIAN Key）；specs/modules 新增评估模块-业务说明书.md 并编目 README（第 12 能力域）；同步业务架构/技术架构文档；代码审查（ai-agent-code-review）+ EDD 补跑（judge-v1→v2 TUNE，解析率 100%，首建基线 Pass^runs=70%/工具选择率 100%/脱敏拦截率 100%） |
 
 ---
 
@@ -1903,3 +1981,4 @@ docs: update KNOWLEDGE_BASE.md to version 1.0
 3. 技术栈升级时，同步更新第三章与第十二章
 4. 新增模块时，更新第四章工程结构与第二章文档地图
 5. 所有数据来源已标注，便于追溯验证
+| v3.7 | 2026-09-01 | 工具产出安全清洗（feature 20260826_tool-output-sanitization，CR-001 + CR-004 双批交付并经代码审查通过）：1.4 能力矩阵新增"工具产出安全清洗"行；4.3 节 agent-demo-tools 内部分层新增 sanitize 包（ToolOutputSanitizer/SanitizeStage SPI/4 变换段/临时文件/配置类）；9.3 节 BR-TOOL-004 防腐更新（HTTP 10KB 截断 -> 统一 maxChars 4000 前缀+临时文件机制）；9.21 节新增 7 条工具产出安全清洗规则（BR-TOOL-032~038：包裹声明/降级铁律/分级处置/秘密脱敏/随机分隔符/注入点契约/SPI 扩展与规则预编译）；10.4 节关键配置项新增 agent.tool.sanitize.* 段；specs/modules/工具调用模块-业务说明书.md 同步（§1 概述/§3.4 防腐/新增 §3.12/§5/§7/§9 BR-TOOL-004 防腐+032~038/§10 降级矩阵/§11/§12 安全矩阵）；技术架构文档-TOGAF.md 更新安全沙箱约束与 tools 内部分层（sanitize 包）；MCP 协议模块业务说明书工具执行链补清洗环节 |

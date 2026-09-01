@@ -1,0 +1,38 @@
+# 本地评估 harness 配置（langsmith-observability CR-002，Task-26/34）
+# 默认全部关闭：不随构建/启动执行，按需手动触发（CLI）。
+# 手动触发示例：
+#   mvn -pl agent-demo-evaluation spring-boot:run \
+#     -Dspring-boot.run.arguments="--eval.enabled=true --eval.run-on-startup=true \
+#       --eval.dataset-path=data/eval/dataset.json --eval.baseline-path=data/eval/baseline.json \
+#       --eval.report-path=data/eval/report.md --eval.judge-model-id=<judge模型ID> \
+#       --eval.agent-model-id=<被评Agent模型ID> --eval.config-version=<本次变更版本>"
+eval:
+  enabled: false
+  dataset-path: data/eval/dataset.json
+  baseline-path: data/eval/baseline.json
+  report-path: data/eval/report.md
+  runs: 3
+  judge-model-id: ""
+  agent-model-id: ""
+  mask-max-chars: 4000
+  config-version: unknown
+  run-on-startup: false
+  # CLI 独立上下文 LLM 配置种子（真实评估前置）：API Key 仅经环境变量注入（禁止硬编码）
+  vendor-name: eval-cli
+  base-url: https://ark.cn-beijing.volces.com/api/coding/v3
+  api-key: ${ARK_API_KEY:}
+  # 多源 judge：判官独立厂商（默认百炼，与被评 Agent 的 ARK 不同模型家族，对冲同源偏差）
+  judge-vendor-name: eval-judge-cli
+  judge-base-url: ${BAILIAN_BASE_URL:https://dashscope.aliyuncs.com/compatible-mode/v1}
+  judge-api-key: ${BAILIAN_API_KEY:}
+
+# Agent 默认工具（与主应用 bootstrap application.yml 对齐——评估 CLI 独立上下文
+# 需与生产 Agent 一致的工具集，否则工具选择类用例必然失败）
+agent:
+  tools:
+    default-tools:
+      - builtin:getCurrentTime
+      - builtin:getCurrentTimeByZone
+      - builtin:getCurrentDate
+      - builtin:calculate
+      - builtin:loadSkill

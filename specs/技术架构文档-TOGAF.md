@@ -59,7 +59,7 @@
 | **懒加载隔离** | 延迟初始化避免循环依赖，会话记忆按 sessionId 隔离 |
 | **单一职责** | 11 个模块中等粒度拆分，每个模块职责清晰 |
 | **BOM 统一版本** | 第三方依赖通过 `agent-demo-bom` 集中管理，禁止子模块声明版本 |
-| **安全沙箱** | 工具调用受 SSRF 防护、目录白名单、响应截断三重约束 |
+| **安全沙箱** | 工具调用受 SSRF 防护、目录白名单、协议/MIME 白名单、工具产出安全清洗管道（SanitizeStage SPI 可插拔链：隐形字符剥离/HTML 剥离/分级处置/秘密脱敏 + 限长临时文件 + 包裹声明随机分隔符）多重约束（20260826 迭代） |
 | **配置外部化** | API Key 等敏感信息通过环境变量注入，禁止入库 |
 
 ---
@@ -291,7 +291,10 @@ agent-demo-llm/
 ```
 agent-demo-tools/
 ├── builtin/               # 内置工具（Calculator/Time/Http/FileRead）
-└── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展）+ ToolSchemaConverter（Schema/描述转换）
+├── registry/              # ToolRegistry（注册中心，含动态 register/unregisterTool/getToolCount，CR-003 扩展）+ ToolSchemaConverter（Schema/描述转换）
+└── sanitize/              # 工具产出安全清洗（20260826 迭代，CR-004 SPI 化）：ToolOutputSanitizer 编排器 +
+                          # SanitizeStage 阶段 SPI + 4 变换段（隐形字符/HTML/分级检测/秘密脱敏，规则启动预编译）+
+                          # ToolOutputTempStore 临时文件 + SanitizeContext + ToolSanitizeProperties
 ```
 
 #### 3.3.5 agent-demo-memory 内部分层
@@ -492,7 +495,8 @@ graph TD
 | 调用监控 | SLF4J 日志 | LLM 调用次数/耗时/失败率 |
 | 会话监控 | `SessionManager.activeSessionCount()` | 活跃会话数 |
 | 接口文档 | Springdoc OpenAPI 3 | Swagger UI 自动生成 |
-| LangSmith（规划中） | LangChain4j 集成 | 可视化 Agent 执行链路 |
+| LangSmith（已实现，2026-08 提前实施） | OTel SDK + OTLP HTTP 上报 | 可视化 Agent 执行链路（agent-demo-observability：LLM/工具/五域事件 span 采集 + LangSmith 云上报） |
+| 本地评估 harness（已实现，2026-08-31 CR-002） | agent-demo-evaluation（CLI + LlmConfigSeed 多源 judge） | 真实模型行为评估（LLM-as-judge + 回归基线 + A/B 对比，EDD 方法论闭环；与 LangSmith 平台侧评估路径并存） |
 
 ### 5.5 日志架构
 
@@ -581,7 +585,7 @@ flowchart LR
 |------|------|---------|
 | 短期 | ~~前端对话模块~~、~~RAG 检索模块~~、~~MCP 客户端集成~~、长期记忆（Milvus） | 2026 Q3（前端对话 + RAG + MCP 客户端已实现） |
 | 中期 | 多 Agent 协作、Spring Security 接入、MCP 服务端 | 2026 Q4 |
-| 长期 | 工作流编排、Guardrails、LangSmith 可观测性、MySQL 持久化 | 2027 Q1 |
+| 长期 | 工作流编排、Guardrails、~~LangSmith 可观测性~~（2026-08 已提前实施）、MySQL 持久化 | 2027 Q1 |
 
 ---
 

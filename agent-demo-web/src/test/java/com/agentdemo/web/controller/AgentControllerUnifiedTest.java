@@ -53,6 +53,7 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.mock;
@@ -507,6 +508,31 @@ class AgentControllerUnifiedTest {
         @Override
         public void recordTool(TraceCollector.ToolCallEvent event) {
         }
+
+        // CR-001：TraceCollector 接口新增六类事件（五域采集），测试辅助实现补空方法
+        @Override
+        public void recordRag(TraceCollector.RagRetrievalEvent event) {
+        }
+
+        @Override
+        public void recordMemoryCompression(TraceCollector.MemoryCompressionEvent event) {
+        }
+
+        @Override
+        public void recordWorkflow(TraceCollector.WorkflowExecutionEvent event) {
+        }
+
+        @Override
+        public void recordWorkflowStep(TraceCollector.WorkflowStepEvent event) {
+        }
+
+        @Override
+        public void recordMcp(TraceCollector.McpCallEvent event) {
+        }
+
+        @Override
+        public void recordSkillActivation(TraceCollector.SkillActivationEvent event) {
+        }
     }
 
     @Test
@@ -558,5 +584,77 @@ class AgentControllerUnifiedTest {
 
         // then：异步任务结束后上下文已清理（finally clear，防线程池复用泄漏）
         assertNull(TraceContextHolder.get(), "异步任务结束后 ThreadLocal 应已清理");
+    }
+
+    // ========== BUG 修复：HITL 暂停/恢复 trace 续接（单任务多轮人机交互一条完整链路） ==========
+
+    @Test
+    @DisplayName("HITL 恢复轮 -> resumeRequest 续接原 trace（BUG 修复）")
+    void hasPending_恢复轮续接原trace() throws Exception {
+        TraceCollector collector = mock(TraceCollector.class);
+        AgentController resumeController = new AgentController(simpleAgent, planAgent, sessionManager,
+                memoryManager, toolRegistry, agentConfig, humanInteractionManager, toolPermissionService,
+                mock(SkillSessionManager.class), collector, skillPromptComposer);
+        when(humanInteractionManager.hasPending("sess-1")).thenReturn(true);
+        when(sessionManager.exists("sess-1")).thenReturn(true);
+        UnifiedChatStream unifiedStream = spy(new UnifiedChatStream(
+                "sess-1", "回复", null, false, false, null, null,
+                null, memoryManager, agentConfig, null, null, null,
+                humanInteractionManager, null, null));
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(inv -> {
+            latch.countDown();
+            return null;
+        }).when(unifiedStream).start();
+        when(planAgent.resumeUnifiedStream("sess-1", "回复")).thenReturn(unifiedStream);
+
+        ChatRequest request = new ChatRequest();
+        request.setSessionId("sess-1");
+        request.setMessage("回复");
+        resumeController.chatStream(request);
+
+        assertTrue(latch.await(5, java.util.concurrent.TimeUnit.SECONDS), "异步任务应在超时内执行完成");
+        // 恢复轮以暂停轮根 span 为父续接同一 trace（不再每轮新建独立 trace 导致 LangSmith 碎片化）
+        verify(collector).resumeRequest("sess-1");
+    }
+
+    @Test
+    @DisplayName("askUser 暂停回调 -> markHITLPause 标记 trace 续接点（BUG 修复）")
+    void askUser暂停回调_标记trace续接点() throws Exception {
+        TraceCollector collector = mock(TraceCollector.class);
+        AgentController pauseController = new AgentController(simpleAgent, planAgent, sessionManager,
+                memoryManager, toolRegistry, agentConfig, humanInteractionManager, toolPermissionService,
+                mock(SkillSessionManager.class), collector, skillPromptComposer);
+        when(humanInteractionManager.hasPending("sess-1")).thenReturn(false);
+        when(sessionManager.exists("sess-1")).thenReturn(true);
+        UnifiedChatStream unifiedStream = spy(new UnifiedChatStream(
+                "sess-1", "你好", null, false, false, null, null,
+                null, memoryManager, agentConfig, null, null, null,
+                humanInteractionManager, null, null));
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        doAnswer(inv -> {
+            latch.countDown();
+            return null;
+        }).when(unifiedStream).start();
+        // 捕获注册的 askUser 消费者（注册发生在同步阶段，回调由流内 askUser 拦截触发）
+        java.util.concurrent.atomic.AtomicReference<com.agentdemo.agent.core.HitlTokenStream.AskUserConsumer>
+                askUserCb = new java.util.concurrent.atomic.AtomicReference<>();
+        doAnswer(inv -> {
+            askUserCb.set(inv.getArgument(0));
+            return inv.callRealMethod();
+        }).when(unifiedStream).onAskUser(any());
+        when(planAgent.chatUnifiedStream(anyString(), anyString(), isNull(), any(), anyBoolean()))
+                .thenReturn(unifiedStream);
+
+        ChatRequest request = new ChatRequest();
+        request.setSessionId("sess-1");
+        request.setMessage("你好");
+        pauseController.chatStream(request);
+
+        assertTrue(latch.await(5, java.util.concurrent.TimeUnit.SECONDS), "异步任务应在超时内执行完成");
+        org.junit.jupiter.api.Assertions.assertNotNull(askUserCb.get(), "onAskUser 回调应已注册");
+        // 模拟 Agent askUser 暂停触发回调：应标记暂停续接点（根 span 关闭前捕获上下文）
+        askUserCb.get().accept("text", "请补充信息", null, 0);
+        verify(collector).markHITLPause("sess-1");
     }
 }

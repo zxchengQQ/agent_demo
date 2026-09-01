@@ -1,6 +1,9 @@
 package com.agentdemo.memory.shortterm;
 
 import com.agentdemo.llm.registry.ModelFactory;
+import com.agentdemo.observability.NoopTraceCollector;
+import com.agentdemo.observability.TraceCollector;
+import com.agentdemo.observability.TraceContextHolder;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
@@ -56,18 +59,28 @@ public class ChatMemoryManager {
 
     private final ModelFactory modelFactory;
     private final MemoryCompressionProperties compressionProperties;
+    private final TraceCollector traceCollector;
 
     /**
-     * Spring 装配构造（LLM 摘要 + 压缩开关）
+     * Spring 装配构造（LLM 摘要 + 压缩开关 + 追踪埋点）
      * <p>
      * 业务含义：多构造器场景下必须标注 @Autowired，否则 Spring 选用默认（无参）构造器，
      * 导致压缩静默退化为 FIFO（压缩不生效）。
      * </p>
      */
     @org.springframework.beans.factory.annotation.Autowired
-    public ChatMemoryManager(ModelFactory modelFactory, MemoryCompressionProperties compressionProperties) {
+    public ChatMemoryManager(ModelFactory modelFactory, MemoryCompressionProperties compressionProperties,
+                             TraceCollector traceCollector) {
         this.modelFactory = modelFactory;
         this.compressionProperties = compressionProperties;
+        this.traceCollector = traceCollector != null ? traceCollector : new NoopTraceCollector();
+    }
+
+    /**
+     * 兼容构造（未装配 LLM/测试场景：压缩关闭，退化为 FIFO 现状；埋点 Noop）
+     */
+    public ChatMemoryManager(ModelFactory modelFactory, MemoryCompressionProperties compressionProperties) {
+        this(modelFactory, compressionProperties, new NoopTraceCollector());
     }
 
     /**
@@ -76,6 +89,7 @@ public class ChatMemoryManager {
     public ChatMemoryManager() {
         this.modelFactory = null;
         this.compressionProperties = null;
+        this.traceCollector = new NoopTraceCollector();
     }
 
     /**
@@ -84,7 +98,7 @@ public class ChatMemoryManager {
      */
     public ChatMemory getMemory(String sessionId) {
         return memoryMap.computeIfAbsent(sessionId, id -> {
-            ChatMemory memory = createMemory();
+            ChatMemory memory = buildMemory(id, DEFAULT_WINDOW_SIZE);
             log.info("创建会话记忆: sessionId={}, maxMessages={}, compressionEnabled={}",
                     id, DEFAULT_WINDOW_SIZE, compressionEnabled());
             return memory;
@@ -92,10 +106,10 @@ public class ChatMemoryManager {
     }
 
     /**
-     * 创建新会话记忆
+     * 创建新会话记忆（放入存储）
      */
     public ChatMemory createMemory(String sessionId) {
-        ChatMemory memory = createMemory();
+        ChatMemory memory = buildMemory(sessionId, DEFAULT_WINDOW_SIZE);
         memoryMap.put(sessionId, memory);
         log.info("创建会话记忆: sessionId={}, maxMessages={}, compressionEnabled={}",
                 sessionId, DEFAULT_WINDOW_SIZE, compressionEnabled());
@@ -103,19 +117,28 @@ public class ChatMemoryManager {
     }
 
     /**
-     * 创建带窗口大小的会话记忆
+     * 创建带窗口大小的会话记忆（放入存储）
      *
-     * @param sessionId  会话 ID
+     * @param sessionId   会话 ID
      * @param maxMessages 最大消息数
      */
     public ChatMemory createMemory(String sessionId, int maxMessages) {
-        ChatMemory memory = compressionEnabled()
-                ? new CompressingChatMemory(maxMessages, this::summarize)
-                : MessageWindowChatMemory.withMaxMessages(maxMessages);
+        ChatMemory memory = buildMemory(sessionId, maxMessages);
         memoryMap.put(sessionId, memory);
         log.info("创建会话记忆: sessionId={}, maxMessages={}, compressionEnabled={}",
                 sessionId, maxMessages, compressionEnabled());
         return memory;
+    }
+
+    /**
+     * 构建记忆实例（不写入存储——getMemory 的 computeIfAbsent 回调内禁止修改同一 map，
+     * 否则触发 Recursive update 异常；createMemory 系列负责 put）
+     */
+    private ChatMemory buildMemory(String sessionId, int maxMessages) {
+        if (compressionEnabled()) {
+            return new CompressingChatMemory(maxMessages, this::summarize, listenerFor(sessionId));
+        }
+        return MessageWindowChatMemory.withMaxMessages(maxMessages);
     }
 
     /**
@@ -189,11 +212,31 @@ public class ChatMemoryManager {
         return modelFactory != null && compressionProperties != null && compressionProperties.isEnabled();
     }
 
-    private ChatMemory createMemory() {
-        if (compressionEnabled()) {
-            return new CompressingChatMemory(DEFAULT_WINDOW_SIZE, this::summarize);
-        }
-        return MessageWindowChatMemory.withMaxMessages(DEFAULT_WINDOW_SIZE);
+    /**
+     * 构造压缩事件监听器（CR-001 Task-18，决策 10：闭包捕获 sessionId）
+     * <p>
+     * 业务含义：压缩在消息写入线程同步触发，该线程可能无显式 TraceContextHolder（如 Controller
+     * 线程）。上报前将闭包捕获的 sessionId 注入上下文（traceId 保留当前值），保证压缩 span
+     * 关联当次会话（AC-N06）；上报后恢复原上下文（finally 清理，AC-E05 无泄漏）。
+     * </p>
+     */
+    private CompressingChatMemory.CompressionListener listenerFor(String sessionId) {
+        return stats -> {
+            TraceContextHolder.TraceContext prev = TraceContextHolder.get();
+            TraceContextHolder.set(new TraceContextHolder.TraceContext(
+                    TraceContextHolder.currentTraceId(), sessionId));
+            try {
+                traceCollector.recordMemoryCompression(new TraceCollector.MemoryCompressionEvent(
+                        stats.messagesBefore(), stats.messagesAfter(), stats.compressedCount(),
+                        stats.window(), stats.summary(), stats.degraded(), stats.durationMs()));
+            } finally {
+                if (prev != null) {
+                    TraceContextHolder.set(prev);
+                } else {
+                    TraceContextHolder.clear();
+                }
+            }
+        };
     }
 
     /**

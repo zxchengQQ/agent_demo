@@ -7,6 +7,8 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * 提示词模板加载器
@@ -36,6 +38,10 @@ public class PromptTemplateLoader {
 
     private static final String ROLES_DIR = "prompts/roles/";
     private static final String SCENARIOS_DIR = "prompts/scenarios/";
+    private static final String FRAGMENTS_DIR = "prompts/fragments/";
+
+    /** include 占位符：{{include:fragment-name}}，单层展开（不递归嵌套） */
+    private static final Pattern INCLUDE_PATTERN = Pattern.compile("\\{\\{include:([\\w-]+)}}");
 
     private final AgentConfig agentConfig;
 
@@ -125,12 +131,20 @@ public class PromptTemplateLoader {
     }
 
     /**
-     * 从 classpath 加载模板文件
+     * 从 classpath 加载模板文件，并对内容执行单层片段展开（CR-001 Task-19）
      *
      * @param path classpath 相对路径，如 "prompts/roles/general.txt"
-     * @return 文件内容字符串，文件不存在时返回 null
+     * @return 文件内容字符串（含 include 展开），文件不存在时返回 null
      */
     private String loadTemplate(String path) {
+        String raw = loadRawTemplate(path);
+        return expandFragments(raw);
+    }
+
+    /**
+     * 纯读取模板文件内容（不做片段展开）
+     */
+    private String loadRawTemplate(String path) {
         try (InputStream is = getClass().getClassLoader().getResourceAsStream(path)) {
             if (is == null) {
                 return null;
@@ -140,5 +154,29 @@ public class PromptTemplateLoader {
             log.error("加载模板文件失败: {}", path, e);
             return null;
         }
+    }
+
+    /**
+     * 单层片段展开：{{include:fragment-name}} 替换为 prompts/fragments/{fragment-name}.txt 内容。
+     * 片段缺失时 WARN 并原样保留占位符（降级不中断）；片段内容不递归展开（单层语义，防循环引用）。
+     */
+    private String expandFragments(String template) {
+        if (template == null || !template.contains("{{include:")) {
+            return template;
+        }
+        Matcher matcher = INCLUDE_PATTERN.matcher(template);
+        StringBuilder sb = new StringBuilder();
+        while (matcher.find()) {
+            String fragmentName = matcher.group(1);
+            String fragment = loadRawTemplate(FRAGMENTS_DIR + fragmentName + ".txt");
+            if (fragment == null) {
+                log.warn("片段 [{}] 不存在，保留 include 占位符（降级不中断）", fragmentName);
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(matcher.group()));
+            } else {
+                matcher.appendReplacement(sb, Matcher.quoteReplacement(fragment));
+            }
+        }
+        matcher.appendTail(sb);
+        return sb.toString();
     }
 }

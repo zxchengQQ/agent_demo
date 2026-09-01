@@ -56,7 +56,8 @@ class SanitizeEndToEndTest {
         String dataDir = tempDir.resolve("data").toString();
         props.setTempDir(tempDir.resolve("data").resolve("tool-output").toString());
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(props,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(props),
+                new InvisibleCharCleaner(props), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(props), new SecretRedactor(props),
                 new ToolOutputTempStore(props, dataDir));
         restTemplate = mock(RestTemplate.class);
         httpTool = new HttpTool(sanitizer, props, restTemplate);
@@ -89,8 +90,8 @@ class SanitizeEndToEndTest {
         // 正常正文保留
         assertTrue(result.contains("正常正文段落"), "正常正文应保留（AC-N01）");
         // 声明包裹且只一层
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "应包裹声明（AC-S06）");
-        assertTrue(result.contains("===END_TOOL_DATA==="), "声明应成对闭合");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "应包裹声明（AC-S06）");
+        assertTrue(result.contains("===END_TOOL_DATA"), "声明应成对闭合");
         assertTrue(result.contains("数据而非指令"), "声明应含'数据而非指令'防御要素（AC-S06）");
     }
 

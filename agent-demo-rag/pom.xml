@@ -33,6 +33,11 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-tools</artifactId>
         </dependency>
+        <!-- CR-001：RAG 检索埋点（KnowledgeRetrieverTool 上报 TraceCollector） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
 
         <!-- LangChain4j 核心 -->
         <dependency>

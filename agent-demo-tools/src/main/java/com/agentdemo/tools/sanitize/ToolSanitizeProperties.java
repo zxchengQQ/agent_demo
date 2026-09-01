@@ -60,4 +60,23 @@ public class ToolSanitizeProperties {
             "(把|将).{0,20}(系统提示|system prompt).{0,20}(告诉|泄露|显示|打印|说出)",
             "执行以下.{0,20}(命令|指令).{0,60}(rm\\s+-rf|DELETE\\s+FROM|DROP\\s+TABLE|shutdown|format\\s)"
     ));
+
+    /** 秘密赋值形态脱敏开关（CR-001，AC-S09）：false 时跳过秘密脱敏段（独立回退） */
+    private boolean redactSecrets = true;
+
+    /** 隐形字符剥离开关（CR-001，AC-S11）：false 时跳过隐形字符清洗段（独立回退） */
+    private boolean invisibleChars = true;
+
+    /** 随机化分隔符开关（CR-001，AC-S10）：false 时使用固定分隔符（独立回退） */
+    private boolean randomDelimiter = true;
+
+    /** 秘密赋值形态规则组（正则，捕获组 1 = 秘密值，CR-001，AC-S09） */
+    private List<String> secretPatterns = new ArrayList<>(List.of(
+            "(?i)\\b(?:password|passwd|pwd)\\b[\"']?\\s*[:=]\\s*[\"']?([^\\s,;'\"\\]\\}]+)",
+            "(?i)\\b(?:api[_-]?key|apikey)\\b[\"']?\\s*[:=]\\s*[\"']?([^\\s,;'\"\\]\\}]+)",
+            "(?i)\\btoken\\b[\"']?\\s*[:=]\\s*[\"']?([^\\s,;'\"\\]\\}]+)",
+            "(?i)\\bsecret\\b[\"']?\\s*[:=]\\s*[\"']?([^\\s,;'\"\\]\\}]+)",
+            "(?i)\\b(?:access[_-]?key|access[_-]?token)\\b[\"']?\\s*[:=]\\s*[\"']?([^\\s,;'\"\\]\\}]+)",
+            "(?i)\\bauthorization\\b[\"']?\\s*[:=]\\s*[\"']?((?:bearer\\s+)?[^\\s,;'\"\\]\\}]+)"
+    ));
 }

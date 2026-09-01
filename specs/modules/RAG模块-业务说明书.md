@@ -181,7 +181,7 @@ flowchart TD
 
 | 组件 | 类型 | 职责 |
 |---------|------|------|
-| KnowledgeRetrieverTool | @Component | 核心检索逻辑提供者。原 @Tool 入口已废弃（@Deprecated），新增 `searchByKbId(kbId, query)` 方法供动态 Tool 委托调用。CR-002 新增来源元数据注入。 |
+| KnowledgeRetrieverTool | @Component | 核心检索逻辑提供者。原 @Tool 入口已废弃（@Deprecated），新增 `searchByKbId(kbId, query)` 方法供动态 Tool 委托调用。CR-002 新增来源元数据注入；检索产出经工具调用模块清洗管道（sanitize）包裹边界声明后返回（20260826 迭代，详见工具调用模块业务说明书 §3.12）。 |
 | KnowledgeBaseToolFactory | @Component | 动态工具工厂。使用 ByteBuddy 运行时生成带 `@Tool` 注解的知识库工具类，方法名 `kb_{kbId}`，方法调用时委托 `KnowledgeRetrieverTool.searchByKbId()`。 |
 | KnowledgeBaseToolRegistrar | @Component | 生命周期管理器。实现 `ApplicationRunner`，系统启动时批量注册已有知识库 Tool；提供 `registerToolForKb()` / `unregisterToolForKb()` 供 Service 层联动调用。 |
 

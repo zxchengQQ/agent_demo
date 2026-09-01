@@ -70,4 +70,8 @@ coverage/
 
 # --- Playwright browsers ---
 .playwright-browsers/
-data/
+# data/* 忽略 data 目录全部直接子项；data/eval 例外：评估数据集与基线/报告为版本库管理
+# 交付物（CR-002 决策 14），不被忽略；data/skills 等运行时数据仍忽略
+data/*
+!data/eval/
+!data/eval/*

@@ -258,11 +258,11 @@ class ToolSchemaConverterTest {
     }
 
     /**
-     * 验证返回的字符串包含前缀和后缀
-     * 业务含义：工具描述文本需要引导 LLM 理解这是可用工具列表
+     * 验证返回的字符串包含前缀、不包含尾部通用引导（CR-001 Task-22，AC-N05）
+     * 业务含义：工具描述只承载工具清单本体，通用调用引导由场景模板差异化承载（单源）
      */
     @Test
-    void shouldContainPrefixAndSuffix() {
+    void shouldContainPrefixNotSuffix() {
         when(mockRegistry.listTools()).thenReturn(
                 List.of(new CalculatorTool(), new TimeTool()));
 
@@ -270,8 +270,10 @@ class ToolSchemaConverterTest {
 
         assertTrue(description.contains("你可以调用以下工具来辅助回答"),
                 "工具描述应包含前缀引导语");
-        assertTrue(description.contains("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具"),
-                "工具描述应包含后缀引导语");
+        assertFalse(description.contains("主动调用对应工具"),
+                "工具描述不应包含尾部通用引导（AC-N05，引导由场景模板承载）");
+        assertFalse(description.contains("简要提及"),
+                "工具描述不应包含'简要提及'通用引导（AC-N05）");
     }
 
     /**
@@ -315,11 +317,11 @@ class ToolSchemaConverterTest {
     }
 
     /**
-     * 验证无工具注册时仍包含前缀和后缀
-     * 业务含义：即使没有工具，提示词结构也应完整，不应报错
+     * 验证无工具注册时仍包含前缀、不含尾部引导（CR-001 Task-22，AC-N05）
+     * 业务含义：即使没有工具，提示词结构也应完整，不应报错；引导由场景模板承载
      */
     @Test
-    void shouldHandleEmptyToolListWithPrefixAndSuffix() {
+    void shouldHandleEmptyToolListWithPrefixOnly() {
         when(mockRegistry.listTools()).thenReturn(Collections.emptyList());
 
         String description = converter.convertToDescriptionText();
@@ -327,8 +329,8 @@ class ToolSchemaConverterTest {
         assertNotNull(description, "空工具列表不应返回 null");
         assertTrue(description.contains("你可以调用以下工具来辅助回答"),
                 "空列表仍应包含前缀引导语");
-        assertTrue(description.contains("当问题需要实时信息、精确计算或文件读取时，请主动调用对应工具"),
-                "空列表仍应包含后缀引导语");
+        assertFalse(description.contains("主动调用对应工具"),
+                "空列表也不应包含尾部通用引导（AC-N05）");
     }
 
     // ==================== 辅助方法 ====================

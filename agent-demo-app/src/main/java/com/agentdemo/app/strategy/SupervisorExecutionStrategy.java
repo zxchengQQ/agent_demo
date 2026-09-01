@@ -50,6 +50,12 @@ public class SupervisorExecutionStrategy extends AbstractExecutionStrategy {
         super(agentExecutor);
     }
 
+    @org.springframework.beans.factory.annotation.Autowired
+    public SupervisorExecutionStrategy(AgentExecutor agentExecutor,
+                                       com.agentdemo.observability.TraceCollector traceCollector) {
+        super(agentExecutor, traceCollector);
+    }
+
     @Override
     public OrchestrationMode supportedMode() {
         return OrchestrationMode.SUPERVISOR;

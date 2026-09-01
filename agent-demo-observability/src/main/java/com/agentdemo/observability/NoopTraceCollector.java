@@ -35,4 +35,38 @@ public class NoopTraceCollector implements TraceCollector {
     public void recordTool(ToolCallEvent event) {
         log.debug("LangSmith 未启用，跳过工具采集: tool={}", event.toolName());
     }
+
+    @Override
+    public void recordRag(RagRetrievalEvent event) {
+        // 业务含义：默认关闭时静默丢弃五域采集事件（CR-001，AC-S02 零开销语义保持）
+        log.debug("LangSmith 未启用，跳过 RAG 检索采集: kb={}, query={}", event.kbId(), event.query());
+    }
+
+    @Override
+    public void recordMemoryCompression(MemoryCompressionEvent event) {
+        log.debug("LangSmith 未启用，跳过记忆压缩采集: before={}, degraded={}",
+                event.messagesBefore(), event.degraded());
+    }
+
+    @Override
+    public void recordWorkflow(WorkflowExecutionEvent event) {
+        log.debug("LangSmith 未启用，跳过工作流采集: executionId={}, status={}",
+                event.executionId(), event.status());
+    }
+
+    @Override
+    public void recordWorkflowStep(WorkflowStepEvent event) {
+        log.debug("LangSmith 未启用，跳过工作流步骤采集: agent={}, status={}", event.agentName(), event.status());
+    }
+
+    @Override
+    public void recordMcp(McpCallEvent event) {
+        log.debug("LangSmith 未启用，跳过 MCP 采集: server={}, tool={}", event.serverName(), event.toolName());
+    }
+
+    @Override
+    public void recordSkillActivation(SkillActivationEvent event) {
+        log.debug("LangSmith 未启用，跳过技能激活采集: skill={}, source={}",
+                event.skillId(), event.source());
+    }
 }

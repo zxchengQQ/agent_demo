@@ -25,6 +25,11 @@
             <groupId>com.agentdemo</groupId>
             <artifactId>agent-demo-tools</artifactId>
         </dependency>
+        <!-- CR-001：MCP 协议层埋点（McpToolExecutor 上报 TraceCollector） -->
+        <dependency>
+            <groupId>com.agentdemo</groupId>
+            <artifactId>agent-demo-observability</artifactId>
+        </dependency>
 
         <!-- LangChain4j 核心 -->
         <dependency>

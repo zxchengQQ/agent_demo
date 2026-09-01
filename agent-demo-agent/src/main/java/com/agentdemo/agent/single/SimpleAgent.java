@@ -151,6 +151,9 @@ public class SimpleAgent implements BaseAgent {
                             .streamingChatModel(streamingChatModel)
                             .chatMemoryProvider(memoryId -> memoryManager.getMemory((String) memoryId))
                             .tools(toolObjects.toArray())
+                            // 业务含义：AiServices 反射路径的工具调用经 ToolExecutor 统一采集（CR-002 评估观测补链，
+                            // 同时补齐生产同步路径工具 span）；采集失败内部降级不影响工具执行（AC-S04）
+                            .afterToolExecution(toolExecutor::recordToolExecution)
                             // 业务含义：systemMessageProvider 按 memoryId（=sessionId）动态组装技能段，
                             // delegate 无需按会话重建（agent-skill 技术方案 2.1 同步路径注入点）
                             .systemMessageProvider(memoryId -> composeSystemPromptWithSkills((String) memoryId))

@@ -2,6 +2,8 @@ package com.agentdemo.tools.builtin;
 
 import com.agentdemo.common.exception.BusinessException;
 import com.agentdemo.tools.sanitize.HtmlContentCleaner;
+import com.agentdemo.tools.sanitize.InvisibleCharCleaner;
+import com.agentdemo.tools.sanitize.SecretRedactor;
 import com.agentdemo.tools.sanitize.SuspiciousPatternDetector;
 import com.agentdemo.tools.sanitize.ToolOutputSanitizer;
 import com.agentdemo.tools.sanitize.ToolOutputTempStore;
@@ -48,7 +50,8 @@ class HttpToolTest {
         props.setTempDir(tempDir.resolve("data").resolve("tool-output").toString());
         String allowedDir = tempDir.resolve("data").toString();
         ToolOutputSanitizer sanitizer = new ToolOutputSanitizer(props,
-                new HtmlContentCleaner(), new SuspiciousPatternDetector(props),
+                new InvisibleCharCleaner(props), new HtmlContentCleaner(),
+                new SuspiciousPatternDetector(props), new SecretRedactor(props),
                 new ToolOutputTempStore(props, allowedDir));
         restTemplate = mock(RestTemplate.class);
         tool = new HttpTool(sanitizer, props, restTemplate);
@@ -94,7 +97,7 @@ class HttpToolTest {
 
         assertFalse(result.contains("<script"), "script 应被剥离（AC-S03）");
         assertTrue(result.contains("正文内容"), "正文应保留");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "应包裹声明（AC-S06）");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "应包裹声明（AC-S06）");
         assertTrue(result.contains("httpGet"), "声明应含来源工具标识");
     }
 
@@ -106,7 +109,7 @@ class HttpToolTest {
         String result = tool.httpGet(url);
 
         assertTrue(result.contains(body), "JSON 正文应完整保留（AC-N01）");
-        assertTrue(result.contains("===BEGIN_TOOL_DATA==="), "应包裹声明（AC-S06）");
+        assertTrue(result.contains("===BEGIN_TOOL_DATA"), "应包裹声明（AC-S06）");
         assertTrue(result.contains("httpGet"), "声明应含来源工具标识");
     }
 

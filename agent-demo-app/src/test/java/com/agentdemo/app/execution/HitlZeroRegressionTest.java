@@ -5,6 +5,7 @@ import com.agentdemo.agent.prompt.PromptTemplateLoader;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -39,6 +40,35 @@ class HitlZeroRegressionTest {
         String guidance = loader.loadScenarioTemplate(PromptTemplateLoader.SCENARIO_HITL_GUIDANCE);
         assertNotNull(guidance, "hitl-guidance 应可加载");
         assertTrue(guidance.contains("askUser"), "引导段应含 askUser 使用引导");
+        assertTrue(guidance.contains("{{tools}}"), "引导段应保留 {{tools}} 占位符");
+    }
+
+    @Test
+    @DisplayName("hitl-guidance 经共享片段展开后公共规则完整且不再内联重复（CR-001 AC-N04）")
+    void hitlGuidance_共享片段展开() {
+        PromptTemplateLoader loader = new PromptTemplateLoader(new AgentConfig());
+        String guidance = loader.loadScenarioTemplate(PromptTemplateLoader.SCENARIO_HITL_GUIDANCE);
+        assertNotNull(guidance, "hitl-guidance 应可加载");
+
+        String[] sharedKeywords = {
+                "tools 参数",
+                "缺少必要参数",
+                "多种可选方案",
+                "有副作用",
+                "无需确认",
+                "不要为确认而确认",
+                "最多追问 3 次",
+                "选项或示例引导",
+                "2-4 个选项",
+                "更具体的选项",
+                "不要盲目重试",
+                "超出已有工具的能力范围"
+        };
+        for (String kw : sharedKeywords) {
+            assertTrue(guidance.contains(kw), "hitl-guidance 展开后应包含公共规则: " + kw);
+        }
+        assertFalse(guidance.contains("### 追问策略"),
+                "hitl-guidance 不应再内联重复的追问策略段落（应来自共享片段）");
         assertTrue(guidance.contains("{{tools}}"), "引导段应保留 {{tools}} 占位符");
     }
 }

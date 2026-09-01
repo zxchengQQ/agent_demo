@@ -58,10 +58,48 @@ public class CompressingChatMemory implements ChatMemory {
         String summarize(String previousSummary, List<ChatMessage> messagesToCompress);
     }
 
+    /**
+     * 压缩统计（CR-001 Task-18：压缩事件数据载体，供监听器上报追踪）
+     *
+     * @param messagesBefore  压缩前消息数
+     * @param messagesAfter   压缩后消息数
+     * @param compressedCount 本次压缩条数（降级时 1）
+     * @param window          窗口上限
+     * @param summary         新摘要正文（降级时 null）
+     * @param degraded        是否降级为 FIFO
+     * @param durationMs      压缩耗时（毫秒）
+     */
+    public record CompressionStats(
+            int messagesBefore,
+            int messagesAfter,
+            int compressedCount,
+            int window,
+            String summary,
+            boolean degraded,
+            long durationMs) {
+    }
+
+    /**
+     * 压缩事件监听器（CR-001 Task-18）
+     * <p>
+     * 业务含义：压缩完成（成功/降级）后触发，由 ChatMemoryManager 注入（闭包捕获 sessionId
+     * 上报 TraceCollector）；无监听器时为空操作，既有压缩行为零变化。
+     * </p>
+     */
+    @FunctionalInterface
+    public interface CompressionListener {
+        void onCompressed(CompressionStats stats);
+    }
+
+    /** 无监听器默认实现（空操作） */
+    private static final CompressionListener NOOP = stats -> {
+    };
+
     private final Object id = new Object();
     private final int maxMessages;
     private final int compressTarget;
     private final SummaryGenerator summarizer;
+    private final CompressionListener compressionListener;
     private final List<ChatMessage> messages = new ArrayList<>();
 
     /**
@@ -69,7 +107,17 @@ public class CompressingChatMemory implements ChatMemory {
      * @param summarizer  摘要生成回调
      */
     public CompressingChatMemory(int maxMessages, SummaryGenerator summarizer) {
-        this(maxMessages, Math.max(1, maxMessages / 2), summarizer);
+        this(maxMessages, Math.max(1, maxMessages / 2), summarizer, NOOP);
+    }
+
+    /**
+     * @param maxMessages         窗口上限（超出触发压缩）
+     * @param summarizer          摘要生成回调
+     * @param compressionListener 压缩事件监听器（可空）
+     */
+    public CompressingChatMemory(int maxMessages, SummaryGenerator summarizer,
+                                 CompressionListener compressionListener) {
+        this(maxMessages, Math.max(1, maxMessages / 2), summarizer, compressionListener);
     }
 
     /**
@@ -78,9 +126,21 @@ public class CompressingChatMemory implements ChatMemory {
      * @param summarizer     摘要生成回调
      */
     public CompressingChatMemory(int maxMessages, int compressTarget, SummaryGenerator summarizer) {
+        this(maxMessages, compressTarget, summarizer, NOOP);
+    }
+
+    /**
+     * @param maxMessages         窗口上限
+     * @param compressTarget      压缩目标（压缩后消息数上限）
+     * @param summarizer          摘要生成回调
+     * @param compressionListener 压缩事件监听器（可空，为空时使用空操作）
+     */
+    public CompressingChatMemory(int maxMessages, int compressTarget, SummaryGenerator summarizer,
+                                 CompressionListener compressionListener) {
         this.maxMessages = maxMessages;
         this.compressTarget = compressTarget;
         this.summarizer = summarizer;
+        this.compressionListener = compressionListener != null ? compressionListener : NOOP;
     }
 
     @Override
@@ -191,6 +251,8 @@ public class CompressingChatMemory implements ChatMemory {
                 .findFirst()
                 .orElse(null);
 
+        int messagesBefore = messages.size();
+        long startNanos = System.nanoTime();
         try {
             String summary = summarizer.summarize(previousSummary, segment);
             if (summary == null || summary.isBlank()) {
@@ -210,11 +272,28 @@ public class CompressingChatMemory implements ChatMemory {
 
             messages.clear();
             messages.addAll(rebuilt);
+            fireListener(new CompressionStats(messagesBefore, messages.size(), toCompress,
+                    maxMessages, summary, false, elapsedMs(startNanos)));
         } catch (Exception e) {
             // 降级铁律：摘要失败不得阻断对话，FIFO 丢弃最旧非保护消息（现状行为）
             log.warn("[memory-compress] 摘要生成失败，降级 FIFO 丢弃最旧可压缩消息: {}", e.getMessage());
             removeOldestCompressible();
+            fireListener(new CompressionStats(messagesBefore, messages.size(), 1,
+                    maxMessages, null, true, elapsedMs(startNanos)));
         }
+    }
+
+    private void fireListener(CompressionStats stats) {
+        // 业务含义：压缩事件上报（CR-001 Task-18）；监听器自身异常不影响压缩主流程（AC-E05）
+        try {
+            compressionListener.onCompressed(stats);
+        } catch (Exception e) {
+            log.warn("[memory-compress] 压缩监听器异常（降级忽略）: {}", e.getMessage());
+        }
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
     }
 
     private void removeOldestCompressible() {

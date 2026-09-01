@@ -63,4 +63,30 @@ class ToolSanitizePropertiesTest {
         assertEquals("自定义一般规则", props.getSuspiciousPatterns().get(0));
         assertEquals("自定义高危规则", props.getHighRiskPatterns().get(0));
     }
+
+    // ==================== CR-001 新增配置（Task-16） ====================
+
+    @Test
+    void CR001新增三子开关默认开启且秘密规则组非空() {
+        ToolSanitizeProperties props = new ToolSanitizeProperties();
+        assertTrue(props.isRedactSecrets(), "秘密脱敏开关默认应开启（AC-S09）");
+        assertTrue(props.isInvisibleChars(), "隐形字符清洗开关默认应开启（AC-S11）");
+        assertTrue(props.isRandomDelimiter(), "随机分隔符开关默认应开启（AC-S10）");
+        assertNotNull(props.getSecretPatterns(), "秘密规则组不应为 null");
+        assertFalse(props.getSecretPatterns().isEmpty(), "秘密规则组应有默认规则");
+    }
+
+    @Test
+    void CR001新增三子开关与秘密规则组可经配置覆盖() {
+        ToolSanitizeProperties props = new ToolSanitizeProperties();
+        props.setRedactSecrets(false);
+        props.setInvisibleChars(false);
+        props.setRandomDelimiter(false);
+        props.setSecretPatterns(java.util.List.of("自定义秘密规则"));
+        assertFalse(props.isRedactSecrets(), "redactSecrets 应可覆盖");
+        assertFalse(props.isInvisibleChars(), "invisibleChars 应可覆盖");
+        assertFalse(props.isRandomDelimiter(), "randomDelimiter 应可覆盖");
+        assertEquals(1, props.getSecretPatterns().size(), "秘密规则组应可注入覆盖");
+        assertEquals("自定义秘密规则", props.getSecretPatterns().get(0));
+    }
 }

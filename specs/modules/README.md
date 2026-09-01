@@ -15,6 +15,8 @@
 | 8 | MCP 协议模块 | `agent-demo-mcp` | [MCP协议模块-业务说明书.md](MCP协议模块-业务说明书.md) |
 | 9 | 应用编排模块 | `agent-demo-app` | [应用编排模块-业务说明书.md](应用编排模块-业务说明书.md)（2026-08-17 新增，应用编排层 P1/P2/P3 交付；2026-08-25 更新，工作流 HITL 迭代） |
 | 10 | Skill 能力域模块 | `agent-demo-skill` | [Skill模块-业务说明书.md](Skill模块-业务说明书.md)（2026-08-26 新增，第 10 能力域；2026-08-27 更新，CR-001 脚本工具+标准目录结构、CR-002 展示调整） |
+| 11 | 可观测性模块 | `agent-demo-observability` | [可观测性模块-业务说明书.md](可观测性模块-业务说明书.md)（2026-08-31 新增，第 11 能力域；LangSmith 接入 Task-01~14 + CR-001 五域事件采集扩展） |
+| 12 | 评估能力域模块 | `agent-demo-evaluation` | [评估模块-业务说明书.md](评估模块-业务说明书.md)（2026-08-31 新增，第 12 能力域；CR-002 完整评估体系：LLM-as-judge + 回归基线 + A/B 对比，Task-26~34） |
 
 ## 模块依赖全景
 
@@ -31,4 +33,17 @@ graph LR
     TOOLS --> COMMON
     AGENT --> SKILL["agent-demo-skill"]
     SKILL --> TOOLS
+    LLM --> OBS["agent-demo-observability"]
+    TOOLS --> OBS
+    WEB --> OBS
+    RAG --> OBS
+    MEM["agent-demo-memory"] --> OBS
+    APP --> OBS
+    MCP --> OBS
+    SKILL --> OBS
+    OBS --> COMMON
+    EVAL["agent-demo-evaluation"] --> AGENT
+    EVAL --> LLM
+    EVAL --> OBS
+    EVAL --> TOOLS
 ```
