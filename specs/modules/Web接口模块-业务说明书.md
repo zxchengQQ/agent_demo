@@ -92,7 +92,8 @@ Web 接口模块（agent-demo-web）是 AI Agent 示例项目的对外接入层�
 - **异常处理**：SSE 响应一旦开始写入，异常无法走 `@RestControllerAdvice`，需内部捕获并通过 `error` 事件通知前端；emitter.onTimeout/onError 时清理 HITL pending 状态。
 - **v2.0 扩展**：AgentController 读取 `ChatRequest.model` 作为 modelId 透传给 SimpleAgent/PlanAgent（chat/chatStream/chatThinkingReActStream/chatTaskBreakdownStream），为空时使用默认模型。
 - **20260820 扩展**：onAskUser 回调发送 `ask_user` 事件后立即发送 `done` 并 `emitter.complete()` 结束当前流；前端据 data.type 渲染文本追问或确认卡片，用户回复（同 sessionId）自动走恢复路径（技术决策 4：复用 /chat/stream 端点，无需专用回复端点）。
-- **20260824 扩展（工具权限）**：ask 级工具被拦截时 onToolConfirm 回调发送 `tool_confirm` 事件——与 ask_user 不同，事件后**不 complete**（emitter 保持打开、pending 挂起），前端渲染权限确认卡片，用户批准/拒绝后经同一端点携带 `ChatRequest.toolApproved`（boolean）恢复执行；前端决策必须携带非空 message（空 message 被前置条件双重拒绝会导致流程卡死）。
+- **20260824 扩展（工具权限）**：ask 级工具被拦截时 onToolConfirm 回调发送 `tool_confirm` 事件，前端渲染权限确认卡片，用户批准/拒绝后经同一端点携带 `ChatRequest.toolApproved`（boolean）恢复执行；前端决策必须携带非空 message（空 message 被前置条件双重拒绝会导致流程卡死）。
+- **20260902 BUG 修复（tool_confirm 流终止）**：tool_confirm 事件后与 ask_user 同构——立即发送 `done` 并 `emitter.complete()` 终止当前流（原实现 emitter 保持打开，前端 streamChat 永久 pending 且 SSE 连接泄漏，多轮人机交互累积触发浏览器同域连接上限，导致页面卡死、刷新转圈、后端无请求日志）。恢复不依赖旧连接：用户决策后前端发起新 /chat/stream，后端按 hasPending 路由恢复。
 
 ### 3.9 厂商配置管理（CRUD，v2.0 新增）
 
@@ -267,7 +268,7 @@ flowchart TD
 | BR-WEB-015 | 对话请求 tools 参数先经 `ToolRegistry.resolveTools` 校验，格式错误返回 5102、工具不存在返回 5101，失败通过 SSE `error` 事件返回并终止对话（CR 新增） | 🔴 强制 |
 | BR-WEB-016 | `enableHitl=true` 时路由到 `SimpleAgent.chatHITLStream`；onAskUser 回调发送 `ask_user` SSE 事件（JSON: type/question/options/retryCount）后立即发送 `done` 并 `emitter.complete()` 结束当前流（20260820 新增） | 🔴 强制 |
 | BR-WEB-017 | 请求入口检测 `humanInteractionManager.hasPending(sessionId)`，有 pending 时走 HITL 恢复路径（加载状态 + 用户回复作为 Observation 继续循环），无 pending 时降级为正常对话不报错；emitter.onTimeout/onError 时清理 pending 状态（20260820 新增） | 🔴 强制 |
-| BR-WEB-018 | ask 级工具拦截时 onToolConfirm 回调发送 `tool_confirm` SSE 事件（JSON: toolName/toolDescription/arguments），事件后**不发送 done 也不 complete**——emitter 保持打开、pending 挂起，等用户批准/拒绝后经同一端点携带 toolApproved 恢复（20260824 新增） | 🔴 强制 |
+| BR-WEB-018 | ask 级工具拦截时 onToolConfirm 回调发送 `tool_confirm` SSE 事件（JSON: toolName/toolDescription/arguments），事件后**立即发送 done 并 complete 终止流**（与 ask_user 同构，20260902 BUG 修复；原保持打开的设计导致连接泄漏），等用户批准/拒绝后经同一端点携带 toolApproved 发起新流恢复（20260824 新增） | 🔴 强制 |
 | BR-WEB-019 | 工具权限恢复请求必须携带非空 message：message 为空会被 `@NotBlank` 校验 400 拒绝（前端亦有空消息拦截），双重拦截导致确认流程卡死（2026-08-24 BUG 修复沉淀） | 🔴 强制 |
 | BR-WEB-020 | `PUT /api/agent/tools/{toolId}/permission` 变更权限持久化至 JSON 文件，无需重启即时生效，下一轮对话重建工具列表（20260824 新增） | 🔴 强制 |
 | BR-WEB-021 | 对话请求入参中的框架标记（`【框架附件·`/`【历史对话摘要】`/`<agent_status>`）必须经 stripFrameworkMarkers 剥离后写入，禁止用户伪造框架消息（20260828 新增） | 🔴 强制 |
@@ -364,3 +365,4 @@ curl -X DELETE http://localhost:8080/api/agent/session/a1b2c3d4e5f6/memory
 - v2.0（2026-08-11）：LLM 厂商模型配置迭代 — 新增 LlmConfigController（/api/llm/config 9 个 API）与 8 个 DTO（VendorRequest/VendorResponse/ModelResponse/PredefinedVendorResponse/TestConnectionRequest/TestConnectionResponse/SyncConfigRequest/ConfigStatusResponse）；ChatRequest.model 启用为 modelId 透传给 Agent 层；新增 4 条业务规则（BR-WEB-011~014）；补充 8 个错误码（5008-5015）
 - v2.9（2026-08-12）：Agent 工具按需加载迭代 — 新增 GET /api/agent/tools 接口；ChatRequest 新增 tools 字段；新增 ToolInfo DTO（common 模块）；对话接口分流前先校验 tools 参数（5102/5101）；新增业务规则 BR-WEB-015
 - v3.2（2026-08-24）：工具权限控制迭代 — 新增 PUT /api/agent/tools/{toolId}/permission 接口；ChatRequest 新增 toolApproved 字段；GET /api/agent/tools 响应附带 permission；SSE 事件协议新增 tool_confirm（emitter 不 complete，挂起等待恢复）；新增业务规则 BR-WEB-018~020（含 2026-08-24 BUG 修复沉淀：权限恢复请求必须非空 message）
+- v3.6（2026-09-02）：多轮人机交互卡死 BUG 修复 — `tool_confirm` 事件后改为发送 done 并 complete 终止流（与 ask_user 同构），消除前端 streamChat 永久 pending 与 SSE 连接泄漏（多轮交互触发浏览器同域连接上限 → 页面卡死/刷新转圈）；BR-WEB-018 同步修订

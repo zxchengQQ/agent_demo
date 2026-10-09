@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import type { Message, SubTaskStatus, ToolConfirmData, AskUserData } from '@/types';
 import { renderMarkdown } from '@/utils/markdown';
 import { useMermaid } from '@/composables/useMermaid';
@@ -248,7 +248,7 @@ const hitlRecords = computed<AskUserData[]>(() => {
  * - 单记录（无 askUserHistory，CR-002 行为）：匹配最后一个对应工具调用（当前轮追问）
  * - 多记录（CR-003，AC-N06）：逐条"首个未占用匹配"——askUser 类匹配 toolName==='askUser'，
  *   权限类匹配 toolName===记录工具名；已被更早记录占用的工具调用不再复用（支持同工具重复审批）
- * 无匹配的记录回退底部 ask-user-block 兜底渲染（不丢记录）。
+ * 无匹配的记录收编于推理框内容末尾 react-hitl-tail 渲染（不丢记录）。
  */
 const inlineTargetByPos = computed<Map<string, number>>(() => {
   const map = new Map<string, number>();
@@ -290,11 +290,45 @@ function inlineRecordAt(stepIndex: number, callIndex: number): AskUserData | nul
   return idx === undefined ? null : hitlRecords.value[idx];
 }
 
-/** 无内嵌匹配、需兜底渲染于底部 ask-user-block 的记录（CR-003：不丢记录） */
-const fallbackRecords = computed<AskUserData[]>(() => {
+/** 无内嵌匹配、需渲染于推理框（react-content）内容末尾的记录（不丢记录）
+ * <p>
+ * BUG 修复：原实现兜底渲染于消息末尾独立 ask-user-block，对话执行结束后
+ * 表现为"在末尾追加人机交互对话框作为提示"，不符合交互预期——已移除该块，
+ * 无匹配记录统一收编进推理框内部末尾（与内嵌卡片同属推理过程，语义一致）。
+ * </p>
+ */
+const unmatchedRecords = computed<AskUserData[]>(() => {
   const matched = new Set(inlineTargetByPos.value.values());
   return hitlRecords.value.filter((_, index) => !matched.has(index));
 });
+
+// ===== BUG 修复：人机交互触发时推理框自动滚动到末尾 =====
+
+const reactContentRef = ref<HTMLDivElement | null>(null);
+
+/**
+ * 推理框内容滚动到底部
+ * 业务含义：react-content 是 max-height+overflow-y 的独立滚动容器，内嵌 HITL 卡片
+ * 位于内容末尾（对应工具步骤处或末尾收编区），内容超高一卡片被埋在滚动区外，
+ * 用户需手动滚动才能看到审批/拒绝按钮。人机交互触发（卡片数据变化）时自动滚动到底。
+ */
+function scrollReactContentToBottom() {
+  nextTick(() => {
+    const el = reactContentRef.value;
+    if (el) el.scrollTop = el.scrollHeight;
+  });
+}
+
+watch(
+  () => {
+    const m = props.message;
+    const hitl = m.askUserData;
+    if (!hitl) return '';
+    const identity = hitl.kind === 'permission' ? (hitl.toolName ?? '') : hitl.question;
+    return `${hitl.kind ?? 'askUser'}:${identity}:${m.askUserHistory?.length ?? 0}`;
+  },
+  () => scrollReactContentToBottom(),
+);
 </script>
 
 <template>
@@ -325,7 +359,7 @@ const fallbackRecords = computed<AskUserData[]>(() => {
 
       <!-- ReAct 推理过程折叠区块：位于 thinking-block 下方、bubble 上方 -->
       <div
-        v-if="props.message.role === 'assistant' && hasReactSteps"
+        v-if="props.message.role === 'assistant' && (hasReactSteps || unmatchedRecords.length > 0)"
         class="react-block"
       >
         <div class="react-header" @click="toggleReact">
@@ -333,6 +367,7 @@ const fallbackRecords = computed<AskUserData[]>(() => {
           <span class="react-title">{{ reactTitle }}</span>
         </div>
         <div
+          ref="reactContentRef"
           class="react-content"
           :style="{ display: isReactExpanded ? 'block' : 'none' }"
         >
@@ -386,6 +421,28 @@ const fallbackRecords = computed<AskUserData[]>(() => {
                 />
               </div>
             </div>
+          </div>
+          <!-- BUG 修复：无内嵌匹配的记录渲染于推理框内容末尾（原实现为消息末尾独立
+               ask-user-block"提示"块，不符合交互预期已移除）。仍收编在推理框内，不丢记录 -->
+          <div
+            v-if="unmatchedRecords.length > 0"
+            class="react-hitl-tail"
+          >
+            <template v-for="(record, index) in unmatchedRecords" :key="index">
+              <ConfirmCard
+                v-if="record.kind === 'permission'"
+                :data="recordToolConfirmData(record)!"
+                :answered="record.approved !== undefined || !!record.answer"
+                :approved="!!record.approved"
+                @approve="emit('approve')"
+                @deny="emit('deny')"
+              />
+              <AskUserCard
+                v-else
+                :ask-user-data="record"
+                @reply="emit('reply', $event)"
+              />
+            </template>
           </div>
         </div>
       </div>
@@ -488,34 +545,10 @@ const fallbackRecords = computed<AskUserData[]>(() => {
         ></span>
       </div>
 
-      <!-- HITL 人机交互区块（unified-chat-mode Task-17）：助手消息含交互记录时渲染 -->
-      <!-- 权限确认形态（kind=permission）走 ConfirmCard；其余（含存量无 kind 数据）走 AskUserCard（AC-H01） -->
-      <!-- CR-002/CR-003：已内嵌于 react-block 对应工具步骤的记录不在此重复渲染；
-           无内嵌匹配的记录（fallbackRecords）兜底渲染于此（多条可堆叠，不丢记录） -->
-      <div
-        v-if="props.message.role === 'assistant' && fallbackRecords.length > 0"
-        class="ask-user-block"
-      >
-        <template v-for="(record, index) in fallbackRecords" :key="index">
-          <!-- 业务含义：权限决策语义为三态——true=已批准，false=已拒绝，undefined=待决策。
-               BUG 修复：原判定 !!approved 在拒绝时（false）恒为假，卡片不锁定、按钮可重复点击；
-               正确判定是 approved !== undefined（answer 兜底兼容旧会话数据） -->
-          <ConfirmCard
-            v-if="record.kind === 'permission'"
-            :data="recordToolConfirmData(record)!"
-            :answered="record.approved !== undefined || !!record.answer"
-            :approved="!!record.approved"
-            @approve="emit('approve')"
-            @deny="emit('deny')"
-          />
-          <AskUserCard
-            v-else
-            :ask-user-data="record"
-            @reply="emit('reply', $event)"
-          />
-        </template>
-      </div>
-
+      <!-- HITL 人机交互区块（unified-chat-mode Task-17）：已全部内嵌/收编于上方推理框
+           （react-block 对应工具步骤处或 react-content 内容末尾 react-hitl-tail），
+           BUG 修复：移除原消息末尾独立 ask-user-block 兜底块（执行结束后表现为
+           "在末尾追加人机交互对话框作为提示"，不符合交互预期） -->
       <!-- 状态标记 -->
       <div v-if="props.message.status === 'incomplete' && !props.message.content" class="status-hint">
         生成中...
@@ -900,9 +933,19 @@ const fallbackRecords = computed<AskUserData[]>(() => {
   margin: var(--spacing-sm) 0;
 }
 
-/* ===== unified-chat-mode Task-17 HITL 人机交互区块样式（统一交互卡片由 AskUserCard 内部渲染） ===== */
-.ask-user-block {
-  margin-top: var(--spacing-sm);
+/* ===== unified-chat-mode Task-17 HITL 人机交互卡片样式 ===== */
+
+/* BUG 修复：推理框内容末尾收编区（无内嵌匹配的记录渲染于此，
+ * 原消息末尾独立 ask-user-block 兜底块已移除） */
+.react-hitl-tail {
+  margin-top: var(--spacing-xs);
+  border-top: 1px dashed var(--border);
+  padding-top: var(--spacing-xs);
+}
+
+.react-hitl-tail .ask-user-card,
+.react-hitl-tail .confirm-card {
+  margin-top: 0;
 }
 
 /* ===== CR-002：内嵌于 react-block 工具步骤的 HITL 卡片（AC-N04/N05） ===== */

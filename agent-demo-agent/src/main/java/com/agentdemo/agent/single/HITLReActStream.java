@@ -269,6 +269,26 @@ public class HITLReActStream implements HitlTokenStream {
                     log.info("HITL ReAct 循环暂停: sessionId={}, retryCount={}", sessionId, retryCount);
                     return;
                 }
+            } else {
+                // 业务含义（BUG 修复）：finishReason 非 stop/tool_calls（如 length/content_filter/流中断
+                // 未回调 onComplete 导致 finishReason 为 null）时，原实现静默进入下一迭代空转，
+                // 消耗全部 maxIterations 轮真实 LLM 调用且中途无任何 SSE 事件，用户侧表现为"一直生成中"。
+                // length 截断语义为内容有效交付已有内容；其余异常立即报错终止。
+                if ("length".equals(result.finishReason)) {
+                    finalResponse = result.content.toString();
+                    if (finalAnswerConsumer != null) {
+                        finalAnswerConsumer.accept(currentIteration);
+                    }
+                    shouldContinue = false;
+                } else {
+                    log.warn("HITL ReAct 循环收到异常 finishReason，终止循环: sessionId={}, finishReason={}, iteration={}",
+                            sessionId, result.finishReason, currentIteration);
+                    if (errorConsumer != null) {
+                        errorConsumer.accept(new IllegalStateException(
+                                "模型流异常终止（finishReason=" + result.finishReason + "），请重试"));
+                    }
+                    return;
+                }
             }
         }
 

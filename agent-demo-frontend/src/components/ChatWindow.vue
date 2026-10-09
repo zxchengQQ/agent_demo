@@ -365,7 +365,8 @@ async function sendMessage(message: string, toolApproved?: boolean, silent?: boo
         // Task-17: 工具权限确认请求（tool_confirm 事件）
         // 业务含义：ask 级工具被 Agent 调用时，将确认卡片四要素
         // （工具名/用途描述/参数摘要）写入助手消息（kind=permission），
-        // 前端据此渲染 ConfirmCard 等待用户批准/拒绝；事件后流保持打开（pending 挂起）。
+        // 前端据此渲染 ConfirmCard 等待用户批准/拒绝；事件后后端发送 done 并关闭流（BUG 修复），
+        // 用户决策后 sendMessage 携带 toolApproved 发起新流恢复。
         onToolConfirm: (data) => {
           store.setToolConfirmData(assistantMsgId, data);
         },

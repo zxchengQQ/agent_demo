@@ -116,7 +116,7 @@ public class UnifiedChatStream {
     // HITL 暂停（SSE: ask_user + done）
     private HitlTokenStream.AskUserConsumer onAskUser;
 
-    // 工具权限确认（SSE: tool_confirm；事件后流保持打开，等待用户操作回传 toolApproved）
+    // 工具权限确认（SSE: tool_confirm；事件后由 Controller 发送 done 并终止流，等待用户操作回传 toolApproved）
     private HitlTokenStream.ToolConfirmConsumer onToolConfirm;
 
     // 技能激活（SSE: skill_activated，agent-skill 新增）

@@ -739,16 +739,18 @@ describe('MessageItem', () => {
     expect(lastToolCard.find('.ask-user-card').exists()).toBe(true);
   });
 
-  it('无匹配工具步骤时卡片回退底部 ask-user-block 兜底渲染（CR-002 兜底）', () => {
+  it('无匹配工具步骤时卡片收编于推理框内容末尾渲染，不再出现消息末尾独立提示块（BUG 修复）', () => {
     const msg = buildAskUserMsgWithReact({
       reactSteps: [
         { iteration: 1, thought: '计算', toolCalls: [{ toolName: 'calc', arguments: '{}', result: '42' }] },
       ],
     });
     const wrapper = mount(MessageItem, { props: { message: msg } });
-    // 无 askUser 工具步骤 -> 兜底底部渲染
+    // 无 askUser 工具步骤 -> 收编于推理框（react-content）内容末尾
     expect(wrapper.find('.tool-card .ask-user-card').exists()).toBe(false);
-    expect(wrapper.find('.ask-user-block .ask-user-card').exists()).toBe(true);
+    expect(wrapper.find('.react-hitl-tail .ask-user-card').exists()).toBe(true);
+    // 原消息末尾独立 ask-user-block 兜底块已移除
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
   });
 
   it('内嵌卡片 reply 事件正常向上传递（CR-002）', async () => {
@@ -891,10 +893,40 @@ describe('MessageItem', () => {
     // httpGet 记录内嵌于对应工具步骤
     expect(wrapper.findAll('.tool-card .confirm-card')).toHaveLength(1);
     expect(wrapper.findAll('.tool-card')[0].find('.answered-line').text()).toBe('已批准');
-    // fileWrite 记录无匹配 -> 兜底底部渲染（已拒绝），不丢记录
-    const fallbackCards = wrapper.findAll('.ask-user-block .confirm-card');
-    expect(fallbackCards).toHaveLength(1);
-    expect(wrapper.find('.ask-user-block .answered-line').text()).toBe('已拒绝');
+    // fileWrite 记录无匹配 -> 收编于推理框内容末尾渲染（已拒绝），不丢记录
+    const tailCards = wrapper.findAll('.react-hitl-tail .confirm-card');
+    expect(tailCards).toHaveLength(1);
+    expect(wrapper.find('.react-hitl-tail .answered-line').text()).toBe('已拒绝');
+    // 消息末尾独立 ask-user-block 已移除
+    expect(wrapper.find('.ask-user-block').exists()).toBe(false);
+  });
+
+  it('人机交互触发时推理框（react-content）自动滚动到内容末尾露出审批/拒绝按钮（BUG 修复）', async () => {
+    const msg: Message = {
+      id: 'react-scroll-1',
+      role: 'assistant',
+      content: '',
+      createdAt: 0,
+      status: 'streaming',
+      reactSteps: [
+        { iteration: 1, thought: '思考中', toolCalls: [{ toolName: 'askUser', arguments: '{}', result: '' }] },
+      ],
+    };
+    const wrapper = mount(MessageItem, { props: { message: msg } });
+    const reactEl = wrapper.find('.react-content').element as HTMLDivElement;
+    Object.defineProperty(reactEl, 'scrollHeight', { value: 300, configurable: true });
+    expect(reactEl.scrollTop).toBe(0);
+
+    // 模拟 HITL 触发：卡片数据写入（推理框内部滚动条应自动滚到末尾）
+    await wrapper.setProps({
+      message: {
+        ...msg,
+        askUserData: { type: 'confirm', question: '确认调用工具？', retryCount: 0 },
+      },
+    });
+    await nextTick();
+
+    expect(reactEl.scrollTop).toBe(300);
   });
 
   it('含历史记录的消息 status=complete 时 react-block 恒展开（AC-N05/N06 延续）', () => {
@@ -1337,6 +1369,93 @@ describe('MessageList', () => {
     await nextTick();
 
     // 验证 scrollToBottom 被触发（scrollTop 应被设为 scrollHeight）
+    expect(listEl.scrollTop).toBe(500);
+  });
+
+  // ========== BUG 修复：人机交互卡片出现时自动滚动到底部 ==========
+
+  /** 构造流式中的助手消息（content/status 在 HITL 触发时保持不变） */
+  function makeStreamingMsg(overrides: Partial<Message> = {}): Message {
+    return {
+      id: 'hitl-scroll-1',
+      role: 'assistant',
+      content: '正在处理…',
+      createdAt: 0,
+      status: 'streaming',
+      ...overrides,
+    };
+  }
+
+  it('ask_user 卡片出现时自动滚动到底部（BUG 修复：askUserData 变化不改变 content/status，原 watch 不触发）', async () => {
+    const msg = makeStreamingMsg();
+    const wrapper = mount(MessageList, { props: { messages: [msg] } });
+    const listEl = wrapper.find('.message-list').element as HTMLDivElement;
+    Object.defineProperty(listEl, 'scrollHeight', { value: 500, configurable: true });
+    expect(listEl.scrollTop).toBe(0);
+
+    // 模拟触发 HITL：ask_user 事件写入卡片数据（content/status 均不变）
+    await wrapper.setProps({
+      messages: [
+        { ...msg, askUserData: { type: 'text', question: '请提供订单号', retryCount: 0 } },
+      ],
+    });
+    await nextTick();
+
+    // 卡片渲染在视口外时应自动滚动到底部，让用户实时感知需要回复
+    expect(listEl.scrollTop).toBe(500);
+  });
+
+  it('tool_confirm 卡片出现时自动滚动到底部（BUG 修复：permission 卡片同理）', async () => {
+    const msg = makeStreamingMsg();
+    const wrapper = mount(MessageList, { props: { messages: [msg] } });
+    const listEl = wrapper.find('.message-list').element as HTMLDivElement;
+    Object.defineProperty(listEl, 'scrollHeight', { value: 500, configurable: true });
+
+    // 模拟触发工具权限确认：tool_confirm 事件写入 permission 卡片（content/status 均不变）
+    await wrapper.setProps({
+      messages: [
+        {
+          ...msg,
+          askUserData: {
+            type: 'confirm',
+            kind: 'permission',
+            question: '确认调用工具？',
+            retryCount: 0,
+            toolName: 'builtin:http',
+            toolDescription: 'HTTP GET 工具',
+          },
+        },
+      ],
+    });
+    await nextTick();
+
+    expect(listEl.scrollTop).toBe(500);
+  });
+
+  it('多轮同气泡续写时新交互卡片出现仍自动滚动（askUserHistory 增长触发）', async () => {
+    const msg = makeStreamingMsg({
+      askUserData: { type: 'text', question: '第一个问题', retryCount: 0 },
+      askUserHistory: [{ type: 'text', question: '第一个问题', retryCount: 0 }],
+    });
+    const wrapper = mount(MessageList, { props: { messages: [msg] } });
+    const listEl = wrapper.find('.message-list').element as HTMLDivElement;
+    Object.defineProperty(listEl, 'scrollHeight', { value: 500, configurable: true });
+
+    // 模拟多轮 HITL：同一气泡出现第二条交互记录（镜像更新 + 历史增长，content/status 不变）
+    await wrapper.setProps({
+      messages: [
+        {
+          ...msg,
+          askUserData: { type: 'text', question: '第二个问题', retryCount: 1 },
+          askUserHistory: [
+            { type: 'text', question: '第一个问题', retryCount: 0 },
+            { type: 'text', question: '第二个问题', retryCount: 1 },
+          ],
+        },
+      ],
+    });
+    await nextTick();
+
     expect(listEl.scrollTop).toBe(500);
   });
 });

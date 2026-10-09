@@ -319,7 +319,8 @@ export interface StreamCallbacks {
    * 收到 tool_confirm 事件（ask 级工具权限确认请求）
    * 业务含义：Agent 调用 ask 级工具时后端推送确认卡片所需四要素（工具名/描述/参数摘要），
    * 前端渲染确认卡片，用户批准/拒绝后以 toolApproved 参数重新发起流式请求恢复执行。
-   * 事件后流保持打开（pending 挂起），不等 done。
+   * 事件后后端发送 done 并关闭流（BUG 修复：不再保持打开），
+   * 用户批准/拒绝后以 toolApproved 参数重新发起流式请求恢复执行。
    * 可选回调，向前兼容（未注册时 handleSseEvent 用可选链跳过，不报错）。
    */
   onToolConfirm?: (data: ToolConfirmData) => void;

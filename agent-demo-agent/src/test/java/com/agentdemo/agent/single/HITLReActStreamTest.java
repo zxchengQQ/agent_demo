@@ -531,4 +531,58 @@ class HITLReActStreamTest {
                     "正常 stop 路径不应注入收尾状态消息");
         }
     }
+
+    // ========== BUG 修复：异常 finishReason 静默空转（多轮人机交互卡死 BUG 次因） ==========
+
+    @Test
+    void 异常finishReason_立即报错终止_不空转消耗迭代() {
+        // 模拟 LLM 流中断：onComplete 从未回调，finishReason 保持 null
+        doAnswer(inv -> {
+            ThinkingStreamHandler handler = inv.getArgument(2);
+            handler.onPartialResponse("片段");
+            return null; // 不回调 onComplete —— 模拟流异常终止
+        }).when(model).stream(any(), any(), any());
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("帮我查询一下今天的新闻"));
+
+        HitlTokenStream.ErrorConsumer errorConsumer = mock(HitlTokenStream.ErrorConsumer.class);
+        HitlTokenStream.CompleteConsumer completeConsumer = mock(HitlTokenStream.CompleteConsumer.class);
+
+        HITLReActStream stream = new HITLReActStream(
+                model, messages, "[tools]", toolExecutor,
+                humanInteractionManager, "sess-err", "model-001", 0, 8);
+        stream.onError(errorConsumer);
+        stream.onComplete(completeConsumer);
+        stream.start();
+
+        // BUG 修复断言：仅 1 次 LLM 调用即报错终止（修复前静默空转 8 轮）
+        verify(model, times(1)).stream(any(), any(), any());
+        verify(errorConsumer).accept(any(IllegalStateException.class));
+        verify(completeConsumer, never()).accept(anyString());
+    }
+
+    @Test
+    void length截断_交付已有内容_不空转() {
+        doAnswer(inv -> {
+            ThinkingStreamHandler handler = inv.getArgument(2);
+            handler.onPartialResponse("部分新闻内容");
+            handler.onComplete("部分新闻内容", "length", null);
+            return null;
+        }).when(model).stream(any(), any(), any());
+
+        List<ChatMessage> messages = new ArrayList<>();
+        messages.add(UserMessage.from("帮我查询一下今天的新闻"));
+
+        HitlTokenStream.CompleteConsumer completeConsumer = mock(HitlTokenStream.CompleteConsumer.class);
+
+        HITLReActStream stream = new HITLReActStream(
+                model, messages, "[tools]", toolExecutor,
+                humanInteractionManager, "sess-len", "model-001", 0, 8);
+        stream.onComplete(completeConsumer);
+        stream.start();
+
+        verify(model, times(1)).stream(any(), any(), any());
+        verify(completeConsumer).accept("部分新闻内容");
+    }
 }

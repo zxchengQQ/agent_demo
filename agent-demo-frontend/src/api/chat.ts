@@ -312,7 +312,8 @@ function handleSseEvent(event: string, data: string, callbacks: StreamCallbacks)
     case 'tool_confirm': {
       // 工具权限确认请求，data 为 JSON（含 toolName/toolDescription/arguments）
       // 业务含义：ask 级工具被 Agent 调用时后端推送确认卡片四要素，
-      // 前端渲染卡片等待用户批准/拒绝，事件后流保持打开（pending 挂起），不触发 done。
+      // 前端渲染卡片等待用户批准/拒绝；事件后后端发送 done 并关闭流（BUG 修复：原实现流保持
+      // 打开导致前端 pending 与连接泄漏），用户决策后前端发起新 /chat/stream 恢复（toolApproved）。
       try {
         const parsed = JSON.parse(data) as ToolConfirmData;
         callbacks.onToolConfirm?.(parsed);

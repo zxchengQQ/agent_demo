@@ -37,6 +37,23 @@ watch(
   () => props.messages.map((m) => `${m.content}:${m.status}`).join(''),
   () => scrollToBottom(),
 );
+
+// 人机交互卡片出现时滚动到底部（BUG 修复：ask_user/tool_confirm 事件写入 askUserData
+// 不改变 content/status，上述 watch 不触发，卡片渲染在视口外，用户需手动拖动滚动条
+// 才能感知需要回复/审核。监听卡片数据指纹（形态 + 问题/工具名 + 历史条数），
+// 覆盖首次触发、多轮同气泡镜像更新与历史增长；用户回答（answer）/决策（approved）
+// 写入不改变指纹，避免锁定态回看时多余滚动）
+watch(
+  () => props.messages
+    .map((m) => {
+      const hitl = m.askUserData;
+      if (!hitl) return '';
+      const identity = hitl.kind === 'permission' ? (hitl.toolName ?? '') : hitl.question;
+      return `${hitl.kind ?? 'askUser'}:${identity}:${m.askUserHistory?.length ?? 0}`;
+    })
+    .join('|'),
+  () => scrollToBottom(),
+);
 </script>
 
 <template>

@@ -320,7 +320,7 @@ class AgentControllerUnifiedTest {
     }
 
     @Test
-    @DisplayName("onToolConfirm 回调 -> SSE 发送 tool_confirm 事件，payload 三字段完整，连接不关闭（AC-H01）")
+    @DisplayName("onToolConfirm 回调 -> SSE 发送 tool_confirm 事件（payload 三字段完整）+ done 终止流（BUG 修复：防连接泄漏，AC-H01）")
     void onToolConfirm_发送toolConfirm事件() throws Exception {
         when(sessionManager.exists("sess-1")).thenReturn(true);
         when(humanInteractionManager.hasPending("sess-1")).thenReturn(false);
@@ -402,11 +402,15 @@ class AgentControllerUnifiedTest {
         assertTrue(allEvents.contains("发送 HTTP GET 请求"), "toolDescription 字段应完整");
         assertTrue(allEvents.contains("https://example.com"), "arguments 字段应完整");
 
-        // 业务含义：事件后连接不关闭（与 ask_user 不同，tool_confirm 等待用户操作），再次触发仍可发送
+        // BUG 修复契约：事件后发送 done 并 complete 终止 SSE 流（与 ask_user 同构），
+        // 防止前端 streamChat 永久 pending 与 SSE 连接泄漏（多轮交互触发浏览器连接上限）
+        assertTrue(allEvents.contains("event:done"), "tool_confirm 后应发送 done 事件复位前端流式状态: " + allEvents);
+
+        // 业务含义：流已终止，再次触发回调发送失败被 sendEvent 降级吞掉，不产生第二条 tool_confirm
         consumer.accept("call_http", "httpGet", "发送 HTTP GET 请求", "{\"url\":\"https://example.com\"}");
         long confirmCount = captured.stream().filter(String.class::isInstance)
                 .map(String.class::cast).filter(s -> s.contains("tool_confirm")).count();
-        assertEquals(2, confirmCount, "事件后 emitter 应保持打开，可继续发送事件");
+        assertEquals(1, confirmCount, "流终止后不应再发送 tool_confirm 事件");
     }
 
     // ==================== Task-09: 输入处理改造（agent-context-engineering，AC-S03/M02/S01） ====================

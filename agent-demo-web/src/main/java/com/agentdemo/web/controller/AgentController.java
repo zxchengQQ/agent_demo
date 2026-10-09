@@ -473,8 +473,10 @@ public class AgentController {
                     emitter.complete();
                 })
                 // 工具权限确认：tool_confirm（AC-H01）
-                // 业务含义：ask 级工具被拦截时推送确认卡片数据。与 ask_user 不同——事件后不 complete，
-                // emitter 保持打开（pending 挂起），前端渲染卡片等用户操作，随后经 resumeUnifiedStream 回传 toolApproved。
+                // 业务含义：ask 级工具被拦截时推送确认卡片数据。与 ask_user 同构——事件后发送 done
+                // 并 complete 终止 SSE 流（BUG 修复：原实现流保持打开，前端 streamChat 永久 pending
+                // 且 SSE 连接泄漏，多轮人机交互累积触发浏览器同域连接上限，导致页面卡死、刷新转圈）。
+                // 恢复不依赖旧连接：用户批准/拒绝后前端发起新 /chat/stream，后端按 hasPending 路由恢复。
                 .onToolConfirm((toolCallId, toolName, toolDescription, arguments) -> {
                     // BUG 修复：tool_confirm 暂停同样标记 trace 续接点（恢复轮续接同一 trace）
                     traceCollector.markHITLPause(sessionId);
@@ -482,6 +484,8 @@ public class AgentController {
                             Map.of("toolName", toolName, "toolDescription",
                                     toolDescription != null ? toolDescription : "", "arguments",
                                     arguments != null ? arguments : ""));
+                    sendEvent(emitter, "done", System.currentTimeMillis() - start);
+                    emitter.complete();
                 })
                 // 技能激活：skill_activated（agent-skill，AC-S04）
                 // 业务含义：loadSkill 拦截激活成功时推送激活事件（技能 id/名称/来源/绑定工具），
